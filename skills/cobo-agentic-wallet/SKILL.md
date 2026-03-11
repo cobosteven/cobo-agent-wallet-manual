@@ -11,7 +11,7 @@ Operate wallets through the `caw` CLI with policy enforcement. Owners configure 
 ## Install
 
 ```bash
-pip install cobo-agent-wallet
+pip install cobo-agentic-wallet
 caw --help
 ```
 
