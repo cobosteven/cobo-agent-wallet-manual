@@ -26,9 +26,10 @@ caw --format json policy get <policy_id>
 Test whether a transfer would be allowed without executing it:
 
 ```bash
-caw --format json policy dry-run <policy_id> \
-  --action transfer \
-  --params '{"amount": "100", "token": "USDC", "chain": "BASE"}'
+caw --format json policy dry-run <wallet_id> \
+  --operation-type transfer \
+  --amount 100 --chain-id BASE \
+  --token-id USDC --dst-addr 0x1234...abcd
 ```
 
 ## View delegation details

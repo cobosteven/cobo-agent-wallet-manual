@@ -35,7 +35,7 @@ Use `--format json` for programmatic output and `--format table` for human-reada
 |---------|-------------|
 | `caw tx transfer <wallet_uuid> --to <addr> --token <id> --amount <n> --chain <id>` | Transfer tokens with policy enforcement |
 | `caw tx list <wallet_uuid>` | List recent transactions with status |
-| `caw tx get <tx_id>` | Get transaction details |
+| `caw tx get <wallet_uuid> <tx_id>` | Get transaction details |
 | `caw tx call <wallet_uuid> --contract <addr> --calldata <hex> --chain <id>` | Execute contract call |
 | `caw tx estimate-transfer-fee <wallet_uuid> --to <addr> --token <id> --amount <n> --chain <id>` | Estimate transfer fee |
 | `caw tx estimate-call-fee <wallet_uuid> --contract <addr> --calldata <hex> --chain <id>` | Estimate contract call fee |
@@ -60,7 +60,7 @@ Use `--format json` for programmatic output and `--format table` for human-reada
 |---------|-------------|
 | `caw policy list --scope <scope>` | List policies (scope: global, wallet, delegation) |
 | `caw policy get <policy_id>` | Get policy details |
-| `caw policy dry-run <policy_id> --action <action> --params <json>` | Test policy evaluation |
+| `caw policy dry-run <wallet_id> --operation-type <type> --amount <n> --chain-id <id> [--token-id <id>] [--delegation-id <id>] [--dst-addr <addr>] [--contract-addr <addr>] [--calldata <hex>] [--principal-id <id>]` | Dry-run a policy evaluation |
 
 ## Pending Operations (`caw pending`)
 

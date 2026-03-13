@@ -15,6 +15,13 @@ pip install cobo-agentic-wallet
 caw --help
 ```
 
+## Environments
+
+| Environment | API URL | TSS env |
+|-------------|---------|---------|
+| Sandbox | `https://api-agent-wallet-core.sandbox.cobo.com` | `sandbox` |
+| Dev | `https://api-agent-wallet-core.dev.cobo.com` | `dev` |
+
 ## Auth Setup
 
 Credentials are auto-stored by `caw onboard provision`. Set API URL before running any command:
@@ -31,9 +38,15 @@ export AGENT_WALLET_API_KEY=<your_api_key>  # obtained from caw onboard provisio
 **Web Console (Sandbox):** https://agenticwallet.sandbox.cobo.com/ — use it to get a setup token, set policies, and delegate wallets.
 
 1. Owner opens the [Web Console](https://agenticwallet.sandbox.cobo.com/) or Human App and gets a setup token.
-2. Agent runs:
+2. Agent runs (must match the environment of the setup token):
    ```bash
-   caw --format table onboard provision --token <TOKEN>
+   # Sandbox
+   caw --api-url https://api-agent-wallet-core.sandbox.cobo.com \
+     onboard provision --token <TOKEN> --tss-env sandbox
+
+   # Dev
+   caw --api-url https://api-agent-wallet-core.dev.cobo.com \
+     onboard provision --token <TOKEN> --tss-env dev
    ```
 3. An API key is created and bound to the owner's account. Write it to your environment:
    ```bash
@@ -54,6 +67,16 @@ export AGENT_WALLET_API_KEY=<your_api_key>  # obtained from caw onboard provisio
    caw --format json tx transfer <wallet_uuid> \
      --to 0x1234...abcd --token USDC --amount 1 --chain BASE
    ```
+
+### Reset / Cleanup
+
+When onboarding fails and you need to start over, run the reset script:
+
+```bash
+bash scripts/reset-env.sh
+```
+
+This will stop the TSS Node, back up existing state, and remove state files to allow re-provisioning. See [scripts/reset-env.sh](scripts/reset-env.sh) for details.
 
 ### Execution guidance for AI agents
 
