@@ -52,9 +52,22 @@ USDC_DECIMALS=6
 
 ## Prerequisites
 
-- Wallet funded with collateral token on the target chain
-- For testnet: obtain LINK from the [Aave Testnet Faucet](https://staging.aave.com/faucet/)
-- For mainnet: ensure sufficient token balance via `caw wallet balance`
+**Tools**
+- `caw` CLI installed and configured (`caw onboard` complete)
+- Python 3 with `eth-abi`: `pip install eth-abi`
+
+**Wallet state**
+- Collateral token balance on the target chain (LINK on Ethereum/Sepolia, WETH on Base)
+- For testnet: obtain LINK from the [Aave Testnet Faucet](https://staging.aave.com/faucet/) or use `caw faucet deposit`
+- For mainnet: verify balance via `caw wallet balance <wallet_uuid>`
+- Extra USDC buffer for repayment (Aave accrues interest; repay amount may exceed borrowed amount)
+
+**One-time setup**
+- Approve collateral token for the Aave Pool before supplying (included in script, step 1).
+- Approve borrowed asset for repayment before repaying (included in script, step 4).
+
+**Gas**
+- Gas is sponsored by Cobo Gasless by default (`--sponsor true`). No native ETH needed for gas.
 
 ---
 

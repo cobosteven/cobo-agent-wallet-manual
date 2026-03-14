@@ -13,6 +13,30 @@ Use `caw tx call` to submit Solana program instructions.
 
 ---
 
+## Prerequisites
+
+**Tools**
+- `caw` CLI installed and configured (`caw onboard` complete)
+- `curl` — for Jupiter API requests (mainnet)
+- `jq` — for JSON parsing: `brew install jq` / `apt install jq`
+- `python3` — for base64 encoding (devnet) and lamport/USDC conversion (mainnet)
+- `bc` — for floating-point arithmetic in shell
+
+**Wallet state**
+- Devnet: SOL balance on `SOLDEV_SOL` (fund via `caw faucet deposit`)
+- Mainnet SELL levels: SOL balance for total SELL grid lamports plus fees
+- Mainnet BUY levels: USDC balance for total BUY grid amounts
+- Verify balance via `caw wallet balance <wallet_uuid>`
+
+**One-time setup**
+- Mainnet: download and make executable the [convert_jupiter.sh](../scripts/convert_jupiter.sh) helper script
+- Update `SOL_PRICE_USD` in the script to current market price before running BUY levels
+
+**Gas**
+- Solana transaction fees are paid in SOL. Ensure the wallet holds extra SOL beyond grid amounts (~0.001 SOL per transaction)
+
+---
+
 ## Option A — Devnet (simulation)
 
 ### Grid trading simulation script

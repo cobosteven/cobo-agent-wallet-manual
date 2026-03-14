@@ -13,6 +13,28 @@ Use `caw tx call` to submit Solana program instructions.
 
 ---
 
+## Prerequisites
+
+**Tools**
+- `caw` CLI installed and configured (`caw onboard` complete)
+- `curl` — for Jupiter API requests
+- `jq` — for JSON parsing: `brew install jq` / `apt install jq`
+- `python3` — for base64 encoding (devnet simulation)
+
+**Wallet state**
+- Devnet: SOL balance on `SOLDEV_SOL` (fund via `caw faucet deposit`)
+- Mainnet BUY (SOL → USDC): SOL balance on `SOL`
+- Mainnet SELL (USDC → SOL): USDC balance on `SOL`
+
+**One-time setup**
+- Mainnet: download and make executable the [convert_jupiter.sh](../scripts/convert_jupiter.sh) helper script
+- No token approvals needed — Jupiter handles WSOL wrapping/unwrapping automatically
+
+**Gas**
+- Solana transaction fees are paid in SOL. Ensure the wallet holds a small SOL balance for fees (~0.001 SOL per transaction)
+
+---
+
 ## Option A — Devnet (Memo + System Transfer simulation)
 
 ### Step 1: Build instructions JSON

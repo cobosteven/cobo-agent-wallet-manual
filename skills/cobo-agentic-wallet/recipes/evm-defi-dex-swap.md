@@ -16,6 +16,26 @@ Use `caw tx call` to submit EVM contract calls.
 
 ---
 
+## Prerequisites
+
+**Tools**
+- `caw` CLI installed and configured (`caw onboard` complete)
+- Python 3 with `eth-abi`: `pip install eth-abi`
+- `jq` — for JSON parsing in scripts: `brew install jq` / `apt install jq`
+
+**Wallet state**
+- WETH balance on the target chain for BUY (WETH → USDC) swaps
+  - If holding native ETH, wrap it first — see [WETH wrapping](#weth-wrapping)
+- USDC balance on the target chain for SELL (USDC → WETH) swaps
+
+**One-time setup**
+- Approve the Uniswap Router to spend WETH and/or USDC before the first swap (included in scripts).
+
+**Gas**
+- Gas is sponsored by Cobo Gasless by default (`--sponsor true`). No native ETH needed for gas.
+
+---
+
 ## Network configuration
 
 ```bash
@@ -198,16 +218,43 @@ echo "DEX swap cycle complete."
 
 ## WETH wrapping
 
-If the wallet holds native ETH (not WETH), wrap it first:
+If the wallet holds native ETH (not WETH), wrap it first, then approve the router:
 
 ```bash
-# deposit() — selector 0xd0e30db0, no arguments
-caw tx call <wallet_uuid> \
-  --contract 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2 \
+WALLET_UUID="<wallet_uuid>"
+WALLET_ADDR="<wallet_addr>"
+WETH="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+ROUTER="0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"
+
+# Step 1: deposit() — wrap ETH → WETH (selector 0xd0e30db0, no arguments)
+DEPOSIT_REQ=$(caw --format json tx call "$WALLET_UUID" \
+  --contract "$WETH" \
   --calldata 0xd0e30db0 \
-  --value 10000000000000000 \
+  --value 0.01 \
   --chain ETH \
-  --src-addr <wallet_addr>
+  --src-addr "$WALLET_ADDR" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+
+# Poll until deposit is Completed before approving
+# (approve can reference the same nonce sequence, but we confirm first to catch failures early)
+echo "Waiting for deposit to confirm..."
+while true; do
+  STATUS=$(caw --format json tx get "$WALLET_UUID" "$DEPOSIT_REQ" 2>/dev/null \
+    | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null)
+  [ "$STATUS" = "Completed" ] && break
+  [ "$STATUS" = "Failed" ]    && { echo "Deposit failed, aborting"; exit 1; }
+  sleep 5
+done
+
+# Step 2: approve(router, max_uint256) — must approve BEFORE swapping
+APPROVE_CALLDATA=$(python3 -c "
+from eth_abi import encode
+calldata = '0x095ea7b3' + encode(['address', 'uint256'], ['$ROUTER', 2**256-1]).hex()
+print(calldata)")
+caw tx call "$WALLET_UUID" \
+  --contract "$WETH" \
+  --calldata "$APPROVE_CALLDATA" \
+  --chain ETH \
+  --src-addr "$WALLET_ADDR"
 ```
 
 ---

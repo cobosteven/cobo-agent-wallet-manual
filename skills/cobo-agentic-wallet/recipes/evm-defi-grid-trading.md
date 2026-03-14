@@ -14,6 +14,27 @@ Use `caw tx call` to submit EVM contract calls.
 
 ---
 
+## Prerequisites
+
+**Tools**
+- `caw` CLI installed and configured (`caw onboard` complete)
+- Python 3 with `eth-abi`: `pip install eth-abi`
+- `bc` — for floating-point arithmetic in shell: `brew install bc` / `apt install bc`
+
+**Wallet state**
+- WETH balance for SELL levels (18 decimals)
+- USDC balance for BUY levels (6 decimals)
+- For testnet: fund via `caw faucet deposit`
+- For mainnet: verify balance via `caw wallet balance <wallet_uuid>`
+
+**One-time setup**
+- Approve both WETH and USDC for the router before running (included in script). A single `approve(MAX)` per token covers all grid levels.
+
+**Gas**
+- Gas is sponsored by Cobo Gasless by default (`--sponsor true`). No native ETH needed for gas.
+
+---
+
 ## Network configuration
 
 ```bash

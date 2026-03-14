@@ -2,7 +2,6 @@
 name: cobo-agentic-wallet
 description: |
   Use this skill whenever a task involves a Cobo Agentic Wallet — including wallet setup and onboarding, token transfers, contract calls, balance checks, transaction queries, and policy denial handling. Also use it for DeFi strategy execution: Aave V3 borrow/repay, DEX token swaps (Uniswap V3), DCA (dollar cost averaging), grid trading, and prediction market positions — on EVM chains (Ethereum, Base, Arbitrum, Optimism, Polygon) or Solana (mainnet via Jupiter, devnet). Use it whenever the user mentions `caw`, `cobo-agentic-wallet`, MPC wallet agent operations, or needs to call a smart contract or DeFi protocol through a policy-enforced wallet. Use it even if they don't say "Cobo" — if they're building or operating an AI agent that needs to spend crypto with guardrails, this skill applies.
-  Deterministic execution — follow steps exactly, no improvisation.
 ---
 
 # Cobo Agentic Wallet
@@ -22,10 +21,10 @@ caw --help
 
 ## Environments
 
-| Environment | `--env` value | API URL | Web Console |
-|-------------|---------------|---------|-------------|
+| Environment | `--env` value | API URL                                          | Web Console |
+|-------------|---------------|--------------------------------------------------|-------------|
 | Sandbox | `sandbox` | `https://api-agent-wallet-core.sandbox.cobo.com` | https://agenticwallet.sandbox.cobo.com/ |
-| Dev | `dev` | `https://api-agent-wallet-core.dev.cobo.com` | https://agenticwallet.dev.cobo.com/ |
+| Dev | `dev` | `https://api-agentic-wallet-core.dev.cobo.com`   | https://agenticwallet.dev.cobo.com/ |
 
 Set the API URL before any command:
 
@@ -33,28 +32,7 @@ Set the API URL before any command:
 export AGENT_WALLET_API_URL=https://api-agent-wallet-core.sandbox.cobo.com
 ```
 
-## Directory Structure
-
-Credentials and TSS node files are stored per-profile:
-
-```
-~/.cobo-agentic-wallet/
-├── config                              # global config (default_profile)
-└── profiles/
-    └── profile_{agent_id}/
-        ├── credentials                 # api_key, wallet_uuid, env, onboarded_at
-        └── tss-node/                   # TSS binary, db, keys
-```
-
----
-
 ## Onboarding Modes
-
-| Mode | Initiator | Human Entry Point | Key Custody | Description |
-|------|-----------|-------------------|-------------|-------------|
-| **Autonomous** | Agent | None | TSS Node in agent env | Agent self-creates wallet; human can claim later |
-| **Supervised** | Human | Web Console | TSS Node in agent env | Primary path; pairing code connects agent to owner |
-| **On-device** (tentative) | Human | Human App | User's mobile device | Mobile entry; device holds keys; highest security |
 
 Choose the mode that matches the user's instruction:
 
@@ -104,18 +82,6 @@ caw --format json onboard self-test
 **Step 6 — Report to user**
 
 Print a summary with: `agent_id`, `wallet_uuid`, address(es), `env`, and config paths.
-
----
-
-### On-device Mode (tentative)
-
-Human initiates from the Human App, provides a setup token. Agent registers identity only; no wallet is created. The owner delegates a wallet from the mobile app later.
-
-```bash
-caw onboard --token <TOKEN>
-```
-
-After completion, inform the user: wallet was not created — the owner needs to delegate a wallet to this agent via the Human App.
 
 ---
 

@@ -14,6 +14,25 @@ Use `caw tx call` to submit EVM contract calls.
 
 ---
 
+## Prerequisites
+
+**Tools**
+- `caw` CLI installed and configured (`caw onboard` complete)
+- Python 3 with `eth-abi`: `pip install eth-abi`
+
+**Wallet state**
+- WETH balance sufficient for `DCA_ROUNDS × DCA_AMOUNT` on the target chain
+- For testnet: fund via `caw faucet deposit`
+- For mainnet: verify balance via `caw wallet balance <wallet_uuid>`
+
+**One-time setup**
+- Approve WETH for the router once before the first round (included in script, Step 0). A single `approve(MAX)` covers all DCA rounds.
+
+**Gas**
+- Gas is sponsored by Cobo Gasless by default (`--sponsor true`). No native ETH needed for gas.
+
+---
+
 ## Network configuration
 
 ```bash

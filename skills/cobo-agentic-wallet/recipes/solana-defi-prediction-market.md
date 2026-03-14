@@ -13,6 +13,30 @@ Use `caw tx call` to submit Solana program instructions.
 
 ---
 
+## Prerequisites
+
+**Tools**
+- `caw` CLI installed and configured (`caw onboard` complete)
+- `python3` — for base64 encoding of instruction data
+- `bc` — for lamport conversion
+- Mainnet (Drift): `pip install driftpy aiohttp anchorpy solders` and a Solana RPC endpoint
+
+**Wallet state**
+- Devnet: SOL balance on `SOLDEV_SOL` sufficient for stake amounts plus fees (fund via `caw faucet deposit`)
+- Mainnet (Drift): funded Drift account with USDC collateral deposited; SOL for transaction fees
+- Mainnet (Polymarket/Polygon): USDC balance on `MATIC`
+
+**One-time setup**
+- Devnet: provide a `DEST_ADDR` (any valid Solana address to receive the simulated stake transfer)
+- Mainnet (Drift): set `SOLANA_RPC_URL` environment variable; ensure Drift user account exists
+- Mainnet (Polymarket): install `py-clob-client` SDK and configure API credentials
+
+**Gas**
+- Solana: transaction fees paid in SOL (~0.001 SOL per transaction)
+- Polygon: transaction fees paid in MATIC (or sponsored via Cobo Gasless)
+
+---
+
 ## Option A — Devnet (simulation)
 
 Each prediction is a Memo-labeled SOL transfer that records the position on-chain.
