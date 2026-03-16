@@ -45,6 +45,7 @@ Core capabilities:
 
 Always use --format json for programmatic output. Check exit code and stderr on failure.
 If a transfer is denied by policy, parse the error's "suggestion" field for the corrected parameters.
+See error-handling.md for common error codes and recovery steps.
 
 For DeFi operations (Uniswap swaps, Aave lending, Jupiter swaps on Solana), use caw tx call
 with the appropriate contract address and calldata.
@@ -63,9 +64,23 @@ The cobo-agentic-wallet skill is installed at ./skills/cobo-agentic-wallet/.
 When asked to perform wallet operations:
 1. Use `caw` CLI with `--format json` for all commands
 2. Always check transaction status after submission
-3. Handle policy denials by parsing the suggestion field
+3. Handle policy denials by parsing the suggestion field — see [Error Handling](./skills/cobo-agentic-wallet/recipes/error-handling.md)
 4. For DeFi operations, refer to the skill's recipe files
 ```
+
+### Post-setup persistence
+
+After completing wallet setup, the agent should save the following to its memory or config file:
+
+| Field | Source | Purpose |
+|-------|--------|---------|
+| `wallet_uuid` | `caw profile current` | Identify the wallet |
+| `api_key` | onboard output | Authenticate API calls |
+| `addresses` | `caw address list` | Per-chain addresses |
+| `env` | setup parameter | sandbox/dev/prod |
+| `policy_limits` | `caw policy list` (if available) | Know spending constraints |
+
+Without this, the agent loses wallet context on restart and must re-onboard or re-discover.
 
 ## DeFi recipes
 
