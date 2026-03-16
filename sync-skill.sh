@@ -8,6 +8,7 @@ set -e
 # Define source and target paths
 SOURCE_DIR="../cobo-agent-wallets/cobo-agent-wallet/sdk/skills/cobo-agentic-wallet"
 TARGET_DIR="./skills/cobo-agentic-wallet"
+GITHUB_URL="https://github.com/cobosteven/cobo-agent-wallet-manual/tree/master/skills/cobo-agentic-wallet"
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -38,8 +39,16 @@ rsync -av --delete \
     --exclude='evals' \
     "$SOURCE_DIR/" "$TARGET_DIR/"
 
-# Replace placeholder path in README.md with the GitHub URL
-GITHUB_URL="https://github.com/cobosteven/cobo-agent-wallet-manual/tree/master/skills/cobo-agentic-wallet"
+# Copy skills README.md from source
+SKILLS_SOURCE_DIR="../cobo-agent-wallets/cobo-agent-wallet/sdk/skills"
+SKILLS_README="$SKILLS_SOURCE_DIR/README.md"
+if [ -f "$SKILLS_README" ]; then
+    cp "$SKILLS_README" "./skills/README.md"
+    sed -i '' "s|/path/to/cobo-agentic-wallet/|${GITHUB_URL}|g" "./skills/README.md"
+    echo -e "${GREEN}✓ Copied and updated skills README.md to ./skills/${NC}"
+fi
+
+# Replace placeholder path in skill's README.md with the GitHub URL
 README_FILE="$TARGET_DIR/README.md"
 if [ -f "$README_FILE" ]; then
     sed -i '' "s|/path/to/cobo-agentic-wallet/|${GITHUB_URL}|g" "$README_FILE"
