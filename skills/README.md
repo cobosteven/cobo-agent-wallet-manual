@@ -108,20 +108,45 @@ cd cobo-agentic-wallet/evals/
 ./run_evals.sh all       # Run both (~5 min, requires claude CLI)
 ```
 
+## Updating the skill
+
+Skill 分为三个版本：canonical source 和两个环境特定版本。
+
+1. **编辑 canonical source** — 修改 `cobo-agentic-wallet/` 下的文件（SKILL.md、recipes 等）
+2. **运行同步脚本** — 将改动同步到 sandbox 和 dev 版本：
+
+```bash
+cd skills/
+python3 sync_env_skills.py
+```
+
+脚本会从 canonical source 自动生成 `cobo-agentic-wallet-sandbox/` 和 `cobo-agentic-wallet-dev/` 的全部内容（SKILL.md + recipes），环境相关的字段（name、URL、`--env` 值）自动替换。
+
+> **不要直接编辑** `cobo-agentic-wallet-sandbox/` 或 `cobo-agentic-wallet-dev/` 下的文件，下次运行同步脚本会被覆盖。
+
 ## File structure
 
 ```
 skills/
 ├── README.md                            # This file
-└── cobo-agentic-wallet/
-    ├── SKILL.md                         # Main instructions (loaded on trigger)
-    ├── commands.md                      # caw CLI command reference
-    ├── recipes.md                       # Recipe index
-    ├── recipes/                         # DeFi + operational recipes
-    ├── scripts/
-    │   └── convert_jupiter.sh           # Jupiter API → caw CLI format converter
-    └── evals/
-        ├── trigger-eval.json            # Trigger accuracy tests
-        ├── evals.json                   # Output quality tests
-        └── run_evals.sh                 # Eval runner script
+├── sync_env_skills.py                   # Sync canonical → env-specific skills
+├── cobo-agentic-wallet/                 # Canonical source (edit here)
+│   ├── SKILL.md                         # Main instructions (loaded on trigger)
+│   ├── commands.md                      # caw CLI command reference
+│   ├── recipes.md                       # Recipe index
+│   ├── recipes/                         # DeFi + operational recipes
+│   ├── scripts/
+│   │   └── convert_jupiter.sh           # Jupiter API → caw CLI format converter
+│   └── evals/
+│       ├── trigger-eval.json            # Trigger accuracy tests
+│       ├── evals.json                   # Output quality tests
+│       └── run_evals.sh                 # Eval runner script
+├── cobo-agentic-wallet-sandbox/         # Auto-generated (sandbox env)
+│   ├── SKILL.md
+│   ├── recipes.md
+│   └── recipes/
+└── cobo-agentic-wallet-dev/             # Auto-generated (dev env)
+    ├── SKILL.md
+    ├── recipes.md
+    └── recipes/
 ```

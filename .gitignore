@@ -41,3 +41,6 @@ ehthumbs.db
 *.tmp
 *.temp
 .cache/
+
+# Sync script (local tool, not distributed)
+sync-skill.sh

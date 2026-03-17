@@ -1,10 +1,14 @@
 ---
-name: cobo-agentic-wallet
+name: cobo-agentic-wallet-sandbox
 description: |
-  Use this skill whenever a task involves a Cobo Agentic Wallet — including wallet setup and onboarding, token transfers, contract calls, balance checks, transaction queries, and policy denial handling. Also use it for DeFi strategy execution: Aave V3 borrow/repay, DEX token swaps (Uniswap V3), DCA (dollar cost averaging), grid trading, and prediction market positions — on EVM chains (Ethereum, Base, Arbitrum, Optimism, Polygon) or Solana (mainnet via Jupiter, devnet). Use it whenever the user mentions `caw`, `cobo-agentic-wallet`, MPC wallet agent operations, or needs to call a smart contract or DeFi protocol through a policy-enforced wallet. Use it even if they don't say "Cobo" — if they're building or operating an AI agent that needs to spend crypto with guardrails, this skill applies.
+  Cobo Agentic Wallet skill for the **sandbox** environment (`--env sandbox`, API: api-agent-wallet-core.sandbox.cobo.com).
+  Use for agent wallet use cases and agent-wallet-related guidance — including Cobo Agentic Wallet operations via the `caw` CLI or Cobo API: wallet onboarding and setup, transfers of stablecoins (USDC, USDT, DAI) and tokens (ETH, WETH, WBTC, SOL, ARB, OP, MATIC), smart contract calls, balance and transaction queries, and policy denial handling.
+  Covers DeFi execution through Cobo's MPC/TSS policy layer on EVM chains (Base, Ethereum, Arbitrum, Optimism, Polygon) and Solana (mainnet via Jupiter, devnet): Aave V3 borrow/repay, Uniswap V3 swaps, DCA strategies, grid trading, and prediction market positions.
+  Use when: user mentions caw, cobo-agentic-wallet, MPC wallet, TSS node, Cobo Portal; needs smart contract or DeFi protocol access through a policy-enforced agent wallet; or asks about agent wallets, policy-enforced wallets, or how agents manage crypto in general — and the target environment is sandbox.
+  NOT for: fiat currency operations — credit card payments, bank wire transfers, or crypto-to-fiat off-ramp flows.
 ---
 
-# Cobo Agentic Wallet
+# Cobo Agentic Wallet (Sandbox)
 
 Cobo Agentic Wallet is a policy-enforced crypto wallet for AI agents. Owners set spending limits and approve transactions; agents operate within those guardrails. The `caw` CLI is the primary interface.
 
@@ -15,12 +19,11 @@ pip install --upgrade cobo-agentic-wallet  # always update to latest before use
 caw --help
 ```
 
-## Environments
+## Environment
 
 | Environment | `--env` value | API URL                                          | Web Console |
 |-------------|---------------|--------------------------------------------------|-------------|
 | Sandbox | `sandbox` | `https://api-agent-wallet-core.sandbox.cobo.com` | https://agenticwallet.sandbox.cobo.com/ |
-| Dev | `dev` | `https://api-agentic-wallet-core.dev.cobo.com`   | https://agenticwallet.dev.cobo.com/ |
 
 Set the API URL before any command:
 
