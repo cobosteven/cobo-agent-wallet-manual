@@ -14,10 +14,13 @@ Cobo Agentic Wallet is a policy-enforced crypto wallet for AI agents. Owners set
 
 ## Install
 
+On first use in a conversation, run this to ensure the latest version:
+
 ```bash
-pip install --upgrade cobo-agentic-wallet  # always update to latest before use
-caw --help
+pip install --upgrade cobo-agentic-wallet && caw --version
 ```
+
+Skip if you have already confirmed the version in this session.
 
 ## Environment
 
