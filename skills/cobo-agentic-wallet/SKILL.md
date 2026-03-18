@@ -48,8 +48,6 @@ caw onboard --create-wallet --env sandbox
 
 This single command completes the full setup. **Do NOT create addresses or run self-test after this** — the wallet is ready to use immediately. Only proceed with further steps if the user explicitly requests them.
 
-Notes:
-- **`--sponsor false` is required** for transfers — autonomous wallets do NOT support gas sponsorship.
 
 ### Supervised Path (token provided)
 
@@ -66,13 +64,8 @@ Runs 5 sequential steps (~60–180s):
 
 > **IMPORTANT:** Long-running command. Run in background, poll output every 10–15s, report each `[n/5]` step to the user.
 
-**Step 2 — Save API key**
 
-```bash
-export AGENT_WALLET_API_KEY=<api_key_from_output>
-```
-
-**Step 3 — Verify profile**
+**Step 2 — Verify profile**
 
 ```bash
 caw profile current
@@ -80,7 +73,7 @@ caw profile current
 
 Confirm `agent_id`, `wallet_uuid`, `env`, and `onboarded_at` are populated.
 
-**Step 4 — Create an address**
+**Step 3 — Create an address**
 
 ```bash
 caw --format json address create --chain SOL
@@ -88,13 +81,13 @@ caw --format json address create --chain SOL
 
 > `--chain` accepts user-friendly chain IDs (e.g., `SOL`, `ETH`). The CLI resolves them to internal identifiers automatically.
 
-**Step 5 — Validate with self-test**
+**Step 4 — Validate with self-test**
 
 ```bash
 caw --format json onboard self-test
 ```
 
-**Step 6 — Report to user**
+**Step 5 — Report to user**
 
 Print a summary with: `agent_id`, `wallet_uuid`, address(es), `env`, and config paths.
 
@@ -136,7 +129,7 @@ See `caw profile --help` for all profile subcommands (`list`, `current`, `use`, 
 ## Key Notes
 
 - **`--format json`** for programmatic output; `--format table` only when displaying to the user.
-- **`--sponsor` option**: `--sponsor true` (default) uses Cobo Gasless. Autonomous mode wallets must use `--sponsor false`.
+- **`--sponsor`**: `true` to have gas fees covered by Cobo Gasless; `false` to pay gas from the wallet's own balance.
 - **Long-running commands** (`caw onboard --create-wallet`): run in background, poll output every 10–15s, report each `[n/total]` progress step.
 - **TSS Node auto-start**: `caw tx transfer` and `caw tx call` automatically check TSS Node status and start it if offline. `caw node stop` checks for pending transactions — use `--force` to skip.
 - **wallet_uuid is optional** in most commands — if omitted, the CLI uses the active profile's wallet.
