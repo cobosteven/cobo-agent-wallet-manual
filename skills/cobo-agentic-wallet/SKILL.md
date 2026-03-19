@@ -14,19 +14,26 @@ Cobo Agentic Wallet is a policy-enforced crypto wallet for AI agents. Owners set
 
 ## Install
 
-On first use in a conversation, verify Python >= 3.11 and install/upgrade the CLI:
+On first use in a conversation, detect the platform and install the `caw` binary:
 
 ```bash
-python3 -c "import sys; assert sys.version_info >= (3, 11), f'Python >= 3.11 required, got {sys.version}'" \
-  && pip install --upgrade cobo-agentic-wallet && caw --version
+# Detect platform
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m)
+case "$ARCH" in x86_64) ARCH="amd64" ;; aarch64) ARCH="arm64" ;; esac
+
+# Download and install
+PACKAGE_URL="https://raw.githubusercontent.com/cobosteven/cobo-agent-wallet-manual/master/skills/temp_packages/caw-${OS}-${ARCH}.tar.gz"
+curl -fSL "$PACKAGE_URL" | tar xz -C /usr/local/bin/
+chmod +x /usr/local/bin/caw
+
+# macOS: remove quarantine attribute
+[ "$OS" = "darwin" ] && xattr -d com.apple.quarantine /usr/local/bin/caw 2>/dev/null || true
+
+caw --version
 ```
 
-If the Python check fails, install Python 3.11+ first:
-- macOS: `brew install python@3.11`
-- Ubuntu/Debian: `sudo apt install python3.11`
-- Or use pyenv: `pyenv install 3.11 && pyenv local 3.11`
-
-Then re-run the install command above. Skip if you have already confirmed the version in this session.
+If `/usr/local/bin` requires sudo, prefix the `tar` and `chmod` commands with `sudo`. Skip if `caw --version` already succeeds in this session.
 
 ## Environment
 
