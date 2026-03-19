@@ -24,7 +24,7 @@ ARCH=$(uname -m)
 case "$ARCH" in x86_64) ARCH="amd64" ;; aarch64) ARCH="arm64" ;; esac
 
 # Download and install
-PACKAGE_URL="https://github.com/cobosteven/cobo-agent-wallet-manual/raw/refs/heads/master/skills/temp_packages/caw-${VERSION}-${OS}-${ARCH}.tar.gz"
+PACKAGE_URL="https://download.agenticwallet.cobo.com/binary-release/${VERSION}/caw-${VERSION}-${OS}-${ARCH}.tar.gz"
 curl -fSL "$PACKAGE_URL" | tar xz -C /usr/local/bin/
 chmod +x /usr/local/bin/caw
 
