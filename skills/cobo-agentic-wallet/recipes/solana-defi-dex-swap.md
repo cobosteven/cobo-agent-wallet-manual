@@ -19,7 +19,7 @@ Use `caw tx call` to submit Solana program instructions.
 - `caw` CLI installed and configured (`caw onboard` complete)
 - `curl` — for Jupiter API requests
 - `jq` — for JSON parsing: `brew install jq` / `apt install jq`
-- `python3` — for base64 encoding (devnet simulation)
+- `Node.js` — for base64 encoding (devnet simulation)
 
 **Wallet state**
 - Devnet: SOL balance on `SOLDEV_SOL` (fund via `caw faucet deposit`)
@@ -61,7 +61,7 @@ Create a file `dex_swap_devnet.json` with memo + transfer instructions:
 ]
 ```
 
-> **Note**: The `data` field for System Transfer is base64-encoded: `struct.pack("<I", 2) + struct.pack("<Q", lamports)`. For 10,000,000 lamports (0.01 SOL), use `"AgAAAACAehIAAAAAAA=="`.
+> **Note**: The `data` field for System Transfer is base64-encoded little-endian bytes: 4-byte instruction index (2) + 8-byte lamports (uint64). For 10,000,000 lamports (0.01 SOL), use `"AgAAAACAehIAAAAAAA=="`. To generate: `node -e "const b=Buffer.alloc(12); b.writeUInt32LE(2,0); b.writeBigUInt64LE(BigInt(LAMPORTS),4); console.log(b.toString('base64'))"`.
 
 ### Step 2: Execute swap simulation
 

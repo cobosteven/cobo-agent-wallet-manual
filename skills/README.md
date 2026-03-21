@@ -35,7 +35,7 @@ If none of the above apply, this skill is probably not what you need.
 In Claude Code or another AI agent that supports skills, say:
 
 ```
-Install the cobo-agentic-wallet skill from https://github.com/cobosteven/cobo-agent-wallet-manual/tree/master/skills/cobo-agentic-wallet
+Install the cobo-agentic-wallet skill from https://agenticwallet.cobo.com/skills/cobo-agentic-wallet
 ```
 
 ### 2. Restart the gateway

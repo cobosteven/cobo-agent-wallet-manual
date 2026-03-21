@@ -20,7 +20,7 @@ Use `caw tx call` to submit EVM contract calls.
 
 **Tools**
 - `caw` CLI installed and configured (`caw onboard` complete)
-- Python 3 with `eth-abi`: `pip install eth-abi`
+- Node.js with `ethers.js`: `npm install ethers`
 - `jq` — for JSON parsing in scripts: `brew install jq` / `apt install jq`
 
 **Wallet state**
@@ -86,13 +86,10 @@ ACTION=$1
 if [ "$ACTION" == "approve" ]; then
   SPENDER=$2
   # approve(address,uint256) with max uint256
-  # Selector: 0x095ea7b3
-  python3 -c "
-from eth_abi import encode
-spender = '$SPENDER'
-max_uint = 2**256 - 1
-calldata = '0x095ea7b3' + encode(['address', 'uint256'], [spender, max_uint]).hex()
-print(calldata)
+  node -e "
+const {ethers}=require('ethers');
+const iface=new ethers.Interface(['function approve(address,uint256)']);
+console.log(iface.encodeFunctionData('approve',['$SPENDER',ethers.MaxUint256]));
 "
 elif [ "$ACTION" == "swap" ]; then
   TOKEN_IN=$2
@@ -101,14 +98,12 @@ elif [ "$ACTION" == "swap" ]; then
   RECIPIENT=$5
   AMOUNT_IN=$6
   AMOUNT_OUT_MIN=${7:-0}
-  
+
   # exactInputSingle((tokenIn,tokenOut,fee,recipient,amountIn,amountOutMinimum,sqrtPriceLimitX96))
-  # Selector: 0x04e45aaf
-  python3 -c "
-from eth_abi import encode
-params = ('$TOKEN_IN', '$TOKEN_OUT', $FEE, '$RECIPIENT', $AMOUNT_IN, $AMOUNT_OUT_MIN, 0)
-calldata = '0x04e45aaf' + encode(['(address,address,uint24,address,uint256,uint256,uint160)'], [params]).hex()
-print(calldata)
+  node -e "
+const {ethers}=require('ethers');
+const iface=new ethers.Interface(['function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96) params) returns(uint256)']);
+console.log(iface.encodeFunctionData('exactInputSingle',[{tokenIn:'$TOKEN_IN',tokenOut:'$TOKEN_OUT',fee:$FEE,recipient:'$RECIPIENT',amountIn:BigInt('$AMOUNT_IN'),amountOutMinimum:BigInt('$AMOUNT_OUT_MIN'),sqrtPriceLimitX96:0n}]));
 "
 fi
 ```
@@ -168,19 +163,20 @@ FEE="500"
 # Helper functions
 approve_calldata() {
   local SPENDER=$1
-  python3 -c "
-from eth_abi import encode
-calldata = '0x095ea7b3' + encode(['address', 'uint256'], ['$SPENDER', 2**256-1]).hex()
-print(calldata)"
+  node -e "
+const {ethers}=require('ethers');
+const iface=new ethers.Interface(['function approve(address,uint256)']);
+console.log(iface.encodeFunctionData('approve',['$SPENDER',ethers.MaxUint256]));
+"
 }
 
 swap_calldata() {
   local TOKEN_IN=$1 TOKEN_OUT=$2 AMOUNT_IN=$3 MIN_OUT=${4:-0}
-  python3 -c "
-from eth_abi import encode
-params = ('$TOKEN_IN', '$TOKEN_OUT', $FEE, '$WALLET_ADDR', $AMOUNT_IN, $MIN_OUT, 0)
-calldata = '0x04e45aaf' + encode(['(address,address,uint24,address,uint256,uint256,uint160)'], [params]).hex()
-print(calldata)"
+  node -e "
+const {ethers}=require('ethers');
+const iface=new ethers.Interface(['function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96) params) returns(uint256)']);
+console.log(iface.encodeFunctionData('exactInputSingle',[{tokenIn:'$TOKEN_IN',tokenOut:'$TOKEN_OUT',fee:$FEE,recipient:'$WALLET_ADDR',amountIn:BigInt('$AMOUNT_IN'),amountOutMinimum:BigInt('$MIN_OUT'),sqrtPriceLimitX96:0n}]));
+"
 }
 
 echo "=== DEX Swap Cycle ==="
@@ -232,24 +228,25 @@ DEPOSIT_REQ=$(caw --format json tx call "$WALLET_UUID" \
   --calldata 0xd0e30db0 \
   --value 0.01 \
   --chain ETH \
-  --src-addr "$WALLET_ADDR" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+  --src-addr "$WALLET_ADDR" | jq -r '.id')
 
 # Poll until deposit is Completed before approving
 # (approve can reference the same nonce sequence, but we confirm first to catch failures early)
 echo "Waiting for deposit to confirm..."
 while true; do
   STATUS=$(caw --format json tx get "$WALLET_UUID" "$DEPOSIT_REQ" 2>/dev/null \
-    | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null)
+    | jq -r '.status // ""' 2>/dev/null)
   [ "$STATUS" = "Completed" ] && break
   [ "$STATUS" = "Failed" ]    && { echo "Deposit failed, aborting"; exit 1; }
   sleep 5
 done
 
 # Step 2: approve(router, max_uint256) — must approve BEFORE swapping
-APPROVE_CALLDATA=$(python3 -c "
-from eth_abi import encode
-calldata = '0x095ea7b3' + encode(['address', 'uint256'], ['$ROUTER', 2**256-1]).hex()
-print(calldata)")
+APPROVE_CALLDATA=$(node -e "
+const {ethers}=require('ethers');
+const iface=new ethers.Interface(['function approve(address,uint256)']);
+console.log(iface.encodeFunctionData('approve',['$ROUTER',ethers.MaxUint256]));
+")
 caw tx call "$WALLET_UUID" \
   --contract "$WETH" \
   --calldata "$APPROVE_CALLDATA" \

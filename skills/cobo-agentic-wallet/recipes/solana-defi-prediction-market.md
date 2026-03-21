@@ -17,9 +17,9 @@ Use `caw tx call` to submit Solana program instructions.
 
 **Tools**
 - `caw` CLI installed and configured (`caw onboard` complete)
-- `python3` — for base64 encoding of instruction data
+- `Node.js` — for base64 encoding of instruction data
 - `bc` — for lamport conversion
-- Mainnet (Drift): `pip install driftpy aiohttp anchorpy solders` and a Solana RPC endpoint
+- Mainnet (Drift): `npm install @drift-labs/sdk @solana/web3.js` and a Solana RPC endpoint
 
 **Wallet state**
 - Devnet: SOL balance on `SOLDEV_SOL` sufficient for stake amounts plus fees (fund via `caw faucet deposit`)
@@ -62,7 +62,12 @@ PREDICTIONS=(
 )
 
 encode_transfer_data() {
-  python3 -c "import struct, base64; print(base64.b64encode(struct.pack('<I', 2) + struct.pack('<Q', $1)).decode())"
+  node -e "
+const b=Buffer.alloc(12);
+b.writeUInt32LE(2,0);
+b.writeBigUInt64LE(BigInt($1),4);
+console.log(b.toString('base64'));
+"
 }
 
 echo "=== Prediction Market (devnet) ==="
@@ -126,7 +131,7 @@ caw tx get <wallet_uuid> <tx_id>
 
 > **Note**: This section provides a reference framework for Drift Protocol integration. Full implementation requires:
 > - A Solana RPC endpoint (e.g., Helius, QuickNode)
-> - The `driftpy` Python library with proper setup
+> - The `@drift-labs/sdk` Node.js library with proper setup
 > - A funded Drift account with USDC collateral
 >
 > The code below shows the pattern; you must complete the RPC configuration for your environment.
@@ -135,9 +140,9 @@ Drift Protocol (`dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH`) supports LONG/SHO
 
 ### Prerequisites
 
-1. Install `driftpy` to build instructions:
+1. Install `@drift-labs/sdk` to build instructions:
    ```bash
-   pip install driftpy aiohttp anchorpy solders
+   npm install @drift-labs/sdk @solana/web3.js
    ```
 
 2. Set up Solana RPC endpoint (required):
@@ -149,101 +154,89 @@ Drift Protocol (`dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH`) supports LONG/SHO
 
 Create a helper script to generate Drift order instructions:
 
-```python
-#!/usr/bin/env python3
-# generate_drift_ix.py - Generate Drift perp order instructions
-#
-# Usage: python3 generate_drift_ix.py <SIDE> <SIZE_USD> <WALLET_ADDR>
-# Example: python3 generate_drift_ix.py LONG 10 7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU
-#
-# IMPORTANT: This script requires:
-# 1. A valid SOLANA_RPC_URL environment variable
-# 2. An existing Drift account with USDC collateral
-# 3. pip install driftpy aiohttp anchorpy solders
+```js
+#!/usr/bin/env node
+// generate_drift_ix.js - Generate Drift perp order instructions
+//
+// Usage: node generate_drift_ix.js <SIDE> <SIZE_USD> <WALLET_ADDR>
+// Example: node generate_drift_ix.js LONG 10 7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU
+//
+// IMPORTANT: This script requires:
+// 1. A valid SOLANA_RPC_URL environment variable
+// 2. An existing Drift account with USDC collateral
+// 3. npm install @drift-labs/sdk @solana/web3.js
 
-import asyncio
-import json
-import base64
-import os
-import sys
+const { Connection, PublicKey } = require('@solana/web3.js');
+const {
+  DriftClient, PositionDirection, OrderType, MarketType, BN, BASE_PRECISION
+} = require('@drift-labs/sdk');
 
-from solana.rpc.async_api import AsyncClient
-from solders.pubkey import Pubkey
-from driftpy.drift_client import DriftClient
-from driftpy.types import PositionDirection, OrderType, OrderParams, MarketType, PostOnlyParams
-from driftpy.constants.numeric_constants import BASE_PRECISION
-from anchorpy import Provider, Wallet
+const SOL_PERP_MARKET_INDEX = 0;
 
-SOL_PERP_MARKET_INDEX = 0
+function toCliInstruction(ix) {
+  return {
+    program_id: ix.programId.toBase58(),
+    accounts: ix.keys.map(k => ({
+      pubkey: k.pubkey.toBase58(),
+      is_signer: k.isSigner,
+      is_writable: k.isWritable,
+    })),
+    data: Buffer.from(ix.data).toString('base64'),
+  };
+}
 
-def to_cli_instruction(ix):
-    """Convert solders Instruction to caw CLI format."""
-    accounts = [
-        {
-            "pubkey": str(meta.pubkey),
-            "is_signer": meta.is_signer,
-            "is_writable": meta.is_writable,
-        }
-        for meta in ix.accounts
-    ]
-    return {
-        "program_id": str(ix.program_id),
-        "accounts": accounts,
-        "data": base64.b64encode(bytes(ix.data)).decode(),
-    }
+async function main() {
+  const [,, side, sizeUsd, walletAddr] = process.argv;
+  if (!side || !sizeUsd || !walletAddr) {
+    console.error('Usage: node generate_drift_ix.js <SIDE> <SIZE_USD> <WALLET_ADDR>');
+    process.exit(1);
+  }
 
-async def main():
-    if len(sys.argv) < 4:
-        print("Usage: python3 generate_drift_ix.py <SIDE> <SIZE_USD> <WALLET_ADDR>", file=sys.stderr)
-        sys.exit(1)
-    
-    side = sys.argv[1].upper()
-    size_usd = float(sys.argv[2])
-    wallet_addr = sys.argv[3]
-    
-    rpc_url = os.environ.get("SOLANA_RPC_URL")
-    if not rpc_url:
-        print("Error: SOLANA_RPC_URL environment variable not set", file=sys.stderr)
-        sys.exit(1)
-    
-    # Connect to Solana
-    connection = AsyncClient(rpc_url)
-    
-    # Create a dummy wallet for read-only operations
-    # The actual signing is done by Cobo's TSS
-    dummy_wallet = Wallet.local()
-    provider = Provider(connection, dummy_wallet)
-    
-    # Initialize Drift client
-    drift_client = DriftClient(provider, authority=Pubkey.from_string(wallet_addr))
-    await drift_client.subscribe()
-    
-    try:
-        direction = PositionDirection.Long() if side == "LONG" else PositionDirection.Short()
-        
-        order_params = OrderParams(
-            order_type=OrderType.Market(),
-            market_type=MarketType.Perp(),
-            direction=direction,
-            market_index=SOL_PERP_MARKET_INDEX,
-            base_asset_amount=int(size_usd * BASE_PRECISION / 100),
-            price=0,
-            reduce_only=False,
-            post_only=PostOnlyParams.None_(),
-        )
-        
-        # Get instruction from driftpy
-        ix = await drift_client.get_place_perp_order_ix(order_params)
-        
-        # Output in caw CLI format
-        print(json.dumps([to_cli_instruction(ix)]))
-    
-    finally:
-        await drift_client.unsubscribe()
-        await connection.close()
+  const rpcUrl = process.env.SOLANA_RPC_URL;
+  if (!rpcUrl) {
+    console.error('Error: SOLANA_RPC_URL environment variable not set');
+    process.exit(1);
+  }
 
-if __name__ == "__main__":
-    asyncio.run(main())
+  const connection = new Connection(rpcUrl);
+  const authority = new PublicKey(walletAddr);
+
+  // Dummy wallet for read-only operations; actual signing is done by Cobo's TSS
+  const driftClient = new DriftClient({
+    connection,
+    wallet: {
+      publicKey: authority,
+      signTransaction: async (tx) => tx,
+      signAllTransactions: async (txs) => txs,
+    },
+    programID: new PublicKey('dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH'),
+  });
+
+  await driftClient.subscribe();
+
+  try {
+    const direction = side.toUpperCase() === 'LONG'
+      ? PositionDirection.LONG
+      : PositionDirection.SHORT;
+
+    const orderParams = {
+      orderType: OrderType.MARKET,
+      marketType: MarketType.PERP,
+      direction,
+      marketIndex: SOL_PERP_MARKET_INDEX,
+      baseAssetAmount: new BN(parseFloat(sizeUsd) * BASE_PRECISION.toNumber() / 100),
+      price: new BN(0),
+      reduceOnly: false,
+    };
+
+    const ix = await driftClient.getPlacePerpOrderIx(orderParams);
+    console.log(JSON.stringify([toCliInstruction(ix)]));
+  } finally {
+    await driftClient.unsubscribe();
+  }
+}
+
+main().catch(err => { console.error(err); process.exit(1); });
 ```
 
 ### Execute Drift position
@@ -261,8 +254,8 @@ SIZE_USD="${2:-10}"
 
 echo "Opening $SIDE position, ~\$$SIZE_USD notional..."
 
-# Generate instructions using driftpy
-INSTRUCTIONS=$(python3 generate_drift_ix.py "$SIDE" "$SIZE_USD" "$WALLET_ADDR")
+# Generate instructions using @drift-labs/sdk
+INSTRUCTIONS=$(node generate_drift_ix.js "$SIDE" "$SIZE_USD" "$WALLET_ADDR")
 
 if [ -z "$INSTRUCTIONS" ] || [ "$INSTRUCTIONS" == "null" ]; then
   echo "Error: Failed to generate Drift instructions"
@@ -287,8 +280,9 @@ If on-chain Solana instruction complexity is a barrier, Polymarket provides a RE
 # List prediction markets
 curl -s "https://clob.polymarket.com/markets?search=SOL" | jq '.[] | {id, question, outcome_prices}'
 
-# For trading, use the py-clob-client Python SDK:
-# pip install py-clob-client
+# For trading, use the Polymarket CLOB client SDK:
+# Python: pip install py-clob-client
+# JavaScript: npm install @polymarket/clob-client
 ```
 
 

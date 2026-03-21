@@ -19,7 +19,7 @@ Use `caw tx call` to submit Solana program instructions.
 - `caw` CLI installed and configured (`caw onboard` complete)
 - `curl` — for Jupiter API requests (mainnet)
 - `jq` — for JSON parsing: `brew install jq` / `apt install jq`
-- `python3` — for base64 encoding (devnet) and lamport/USDC conversion (mainnet)
+- `Node.js` — for base64 encoding (devnet) and lamport/USDC conversion (mainnet)
 - `bc` — for floating-point arithmetic in shell
 
 **Wallet state**
@@ -63,7 +63,12 @@ GRID=(
 )
 
 encode_transfer_data() {
-  python3 -c "import struct, base64; print(base64.b64encode(struct.pack('<I', 2) + struct.pack('<Q', $1)).decode())"
+  node -e "
+const b=Buffer.alloc(12);
+b.writeUInt32LE(2,0);
+b.writeBigUInt64LE(BigInt($1),4);
+console.log(b.toString('base64'));
+"
 }
 
 echo "=== Grid Trading (devnet) ==="
@@ -162,7 +167,7 @@ CONVERT_JUPITER="$SCRIPT_DIR/../scripts/convert_jupiter.sh"
 
 lamports_to_usdc() {
   # USDC has 6 decimals
-  python3 -c "print(int($1 * $SOL_PRICE_USD / 1e9 * 1e6))"
+  node -e "console.log(Math.floor($1 * $SOL_PRICE_USD / 1e9 * 1e6))"
 }
 
 execute_grid_level() {

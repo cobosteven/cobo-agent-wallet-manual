@@ -18,7 +18,8 @@ Use `caw tx call` to submit EVM contract calls.
 
 **Tools**
 - `caw` CLI installed and configured (`caw onboard` complete)
-- Python 3 with `eth-abi`: `pip install eth-abi`
+- Node.js with `ethers.js`: `npm install ethers`
+- `jq` — for JSON parsing: `brew install jq` / `apt install jq`
 - `bc` — for floating-point arithmetic in shell: `brew install bc` / `apt install bc`
 
 **Wallet state**
@@ -95,24 +96,25 @@ GRID=(
 # Helper functions
 approve_calldata() {
   local SPENDER=$1
-  python3 -c "
-from eth_abi import encode
-calldata = '0x095ea7b3' + encode(['address', 'uint256'], ['$SPENDER', 2**256-1]).hex()
-print(calldata)"
+  node -e "
+const {ethers}=require('ethers');
+const iface=new ethers.Interface(['function approve(address,uint256)']);
+console.log(iface.encodeFunctionData('approve',['$SPENDER',ethers.MaxUint256]));
+"
 }
 
 swap_calldata() {
   local TOKEN_IN=$1 TOKEN_OUT=$2 AMOUNT_IN=$3 MIN_OUT=${4:-0}
-  python3 -c "
-from eth_abi import encode
-params = ('$TOKEN_IN', '$TOKEN_OUT', $FEE, '$WALLET_ADDR', $AMOUNT_IN, $MIN_OUT, 0)
-calldata = '0x04e45aaf' + encode(['(address,address,uint24,address,uint256,uint256,uint160)'], [params]).hex()
-print(calldata)"
+  node -e "
+const {ethers}=require('ethers');
+const iface=new ethers.Interface(['function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96) params) returns(uint256)']);
+console.log(iface.encodeFunctionData('exactInputSingle',[{tokenIn:'$TOKEN_IN',tokenOut:'$TOKEN_OUT',fee:$FEE,recipient:'$WALLET_ADDR',amountIn:BigInt('$AMOUNT_IN'),amountOutMinimum:BigInt('$MIN_OUT'),sqrtPriceLimitX96:0n}]));
+"
 }
 
 weth_to_usdc() {
   # Convert WETH amount (wei) to USDC amount using approximate price
-  python3 -c "print(int($1 * $ETH_PRICE_USD / 10**18 * 10**$USDC_DECIMALS))"
+  node -e "console.log(Math.floor($1 * $ETH_PRICE_USD / 1e18 * Math.pow(10,$USDC_DECIMALS)))"
 }
 
 echo "=== Grid Trading ==="
@@ -175,10 +177,11 @@ WETH="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 FEE="500"
 
 # BUY 0.008 WETH-worth (~24 USDC at $3000/ETH)
-CALLDATA=$(python3 -c "
-from eth_abi import encode
-params = ('$USDC', '$WETH', $FEE, '$WALLET_ADDR', 24000000, 0, 0)
-print('0x04e45aaf' + encode(['(address,address,uint24,address,uint256,uint256,uint160)'], [params]).hex())")
+CALLDATA=$(node -e "
+const {ethers}=require('ethers');
+const iface=new ethers.Interface(['function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96) params) returns(uint256)']);
+console.log(iface.encodeFunctionData('exactInputSingle',[{tokenIn:'$USDC',tokenOut:'$WETH',fee:$FEE,recipient:'$WALLET_ADDR',amountIn:24000000n,amountOutMinimum:0n,sqrtPriceLimitX96:0n}]));
+")
 
 caw tx call "$WALLET_UUID" \
   --contract "$ROUTER" \
@@ -230,7 +233,7 @@ GRID=(
 get_eth_price() {
   # Fetch ETH price from CoinGecko
   curl -s "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd" | \
-    python3 -c "import sys,json; print(json.load(sys.stdin)['ethereum']['usd'])"
+    jq -r '.ethereum.usd'
 }
 
 echo "Starting grid bot at base price \$$BASE_PRICE..."

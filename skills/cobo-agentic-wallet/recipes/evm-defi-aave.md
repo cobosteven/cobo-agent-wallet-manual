@@ -54,7 +54,7 @@ USDC_DECIMALS=6
 
 **Tools**
 - `caw` CLI installed and configured (`caw onboard` complete)
-- Python 3 with `eth-abi`: `pip install eth-abi`
+- Node.js with `ethers.js`: `npm install ethers`
 
 **Wallet state**
 - Collateral token balance on the target chain (LINK on Ethereum/Sepolia, WETH on Base)
@@ -93,10 +93,11 @@ MAX_UINT="1157920892373161954235709850086879078532699846656405640394575840079131
 # Helper: build approve calldata
 approve_calldata() {
   local SPENDER=$1
-  python3 -c "
-from eth_abi import encode
-calldata = '0x095ea7b3' + encode(['address', 'uint256'], ['$SPENDER', 2**256-1]).hex()
-print(calldata)"
+  node -e "
+const {ethers}=require('ethers');
+const iface=new ethers.Interface(['function approve(address,uint256)']);
+console.log(iface.encodeFunctionData('approve',['$SPENDER',ethers.MaxUint256]));
+"
 }
 
 echo "=== Aave V3 Lifecycle ==="
@@ -115,10 +116,11 @@ sleep 30
 # supply(address asset, uint256 amount, address onBehalfOf, uint16 referralCode)
 # Selector: 0x617ba037
 echo "[2/7] Supplying LINK..."
-CALLDATA=$(python3 -c "
-from eth_abi import encode
-calldata = '0x617ba037' + encode(['address', 'uint256', 'address', 'uint16'], ['$LINK', $SUPPLY_AMOUNT, '$WALLET_ADDR', 0]).hex()
-print(calldata)")
+CALLDATA=$(node -e "
+const {ethers}=require('ethers');
+const iface=new ethers.Interface(['function supply(address,uint256,address,uint16)']);
+console.log(iface.encodeFunctionData('supply',['$LINK',BigInt('$SUPPLY_AMOUNT'),'$WALLET_ADDR',0]));
+")
 caw tx call "$WALLET_UUID" \
   --contract "$POOL" \
   --calldata "$CALLDATA" \
@@ -130,10 +132,11 @@ sleep 30
 # borrow(address asset, uint256 amount, uint256 interestRateMode, uint16 referralCode, address onBehalfOf)
 # Selector: 0xa415bcad
 echo "[3/7] Borrowing USDC..."
-CALLDATA=$(python3 -c "
-from eth_abi import encode
-calldata = '0xa415bcad' + encode(['address', 'uint256', 'uint256', 'uint16', 'address'], ['$USDC', $BORROW_AMOUNT, 2, 0, '$WALLET_ADDR']).hex()
-print(calldata)")
+CALLDATA=$(node -e "
+const {ethers}=require('ethers');
+const iface=new ethers.Interface(['function borrow(address,uint256,uint256,uint16,address)']);
+console.log(iface.encodeFunctionData('borrow',['$USDC',BigInt('$BORROW_AMOUNT'),2n,0,'$WALLET_ADDR']));
+")
 caw tx call "$WALLET_UUID" \
   --contract "$POOL" \
   --calldata "$CALLDATA" \
@@ -155,10 +158,11 @@ sleep 30
 # repay(address asset, uint256 amount, uint256 interestRateMode, address onBehalfOf)
 # Selector: 0x573ade81
 echo "[5/7] Repaying USDC..."
-CALLDATA=$(python3 -c "
-from eth_abi import encode
-calldata = '0x573ade81' + encode(['address', 'uint256', 'uint256', 'address'], ['$USDC', $MAX_UINT, 2, '$WALLET_ADDR']).hex()
-print(calldata)")
+CALLDATA=$(node -e "
+const {ethers}=require('ethers');
+const iface=new ethers.Interface(['function repay(address,uint256,uint256,address)']);
+console.log(iface.encodeFunctionData('repay',['$USDC',ethers.MaxUint256,2n,'$WALLET_ADDR']));
+")
 caw tx call "$WALLET_UUID" \
   --contract "$POOL" \
   --calldata "$CALLDATA" \
@@ -180,10 +184,11 @@ sleep 30
 # withdraw(address asset, uint256 amount, address to)
 # Selector: 0x69328dec
 echo "[7/7] Withdrawing LINK..."
-CALLDATA=$(python3 -c "
-from eth_abi import encode
-calldata = '0x69328dec' + encode(['address', 'uint256', 'address'], ['$LINK', $MAX_UINT, '$WALLET_ADDR']).hex()
-print(calldata)")
+CALLDATA=$(node -e "
+const {ethers}=require('ethers');
+const iface=new ethers.Interface(['function withdraw(address,uint256,address)']);
+console.log(iface.encodeFunctionData('withdraw',['$LINK',ethers.MaxUint256,'$WALLET_ADDR']));
+")
 caw tx call "$WALLET_UUID" \
   --contract "$POOL" \
   --calldata "$CALLDATA" \
@@ -202,10 +207,11 @@ echo "Aave V3 lifecycle complete."
 
 ```bash
 # Supply 10 LINK to Aave V3
-CALLDATA=$(python3 -c "
-from eth_abi import encode
-calldata = '0x617ba037' + encode(['address', 'uint256', 'address', 'uint16'], ['$LINK', 10000000000000000000, '$WALLET_ADDR', 0]).hex()
-print(calldata)")
+CALLDATA=$(node -e "
+const {ethers}=require('ethers');
+const iface=new ethers.Interface(['function supply(address,uint256,address,uint16)']);
+console.log(iface.encodeFunctionData('supply',['$LINK',10000000000000000000n,'$WALLET_ADDR',0]));
+")
 
 caw tx call <wallet_uuid> \
   --contract 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2 \
@@ -218,10 +224,11 @@ caw tx call <wallet_uuid> \
 
 ```bash
 # Borrow 5 USDC (variable rate)
-CALLDATA=$(python3 -c "
-from eth_abi import encode
-calldata = '0xa415bcad' + encode(['address', 'uint256', 'uint256', 'uint16', 'address'], ['0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', 5000000, 2, 0, '$WALLET_ADDR']).hex()
-print(calldata)")
+CALLDATA=$(node -e "
+const {ethers}=require('ethers');
+const iface=new ethers.Interface(['function borrow(address,uint256,uint256,uint16,address)']);
+console.log(iface.encodeFunctionData('borrow',['0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',5000000n,2n,0,'$WALLET_ADDR']));
+")
 
 caw tx call <wallet_uuid> \
   --contract 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2 \
