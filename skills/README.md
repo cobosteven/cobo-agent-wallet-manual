@@ -32,10 +32,8 @@ If none of the above apply, this skill is probably not what you need.
 
 ### 1. Install the skill
 
-In Claude Code or another AI agent that supports skills, say:
-
-```
-Install the cobo-agentic-wallet skill from https://agenticwallet.cobo.com/skills/cobo-agentic-wallet
+```bash
+npx skills install cobosteven/cobo-agent-wallet-manual --skill cobo-agentic-wallet
 ```
 
 ### 2. Restart the gateway
