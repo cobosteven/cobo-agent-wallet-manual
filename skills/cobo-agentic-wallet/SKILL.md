@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.03.25.4"
+  version: "2026.03.25.5"
 description: |
   Use for Cobo Agentic Wallet operations via the `caw` CLI: wallet onboarding, token transfers (USDC, USDT, ETH, SOL, etc.), smart contract calls, balance queries, and policy denial handling.
   Covers DeFi execution on EVM (Base, Ethereum, Arbitrum, Optimism, Polygon) and Solana: Uniswap V3 swaps, Aave V3 lending, Jupiter swaps, DCA, grid trading, Polymarket, and Drift perps.
@@ -32,16 +32,6 @@ Policy-enforced crypto wallet for AI agents. Owners set spending limits; agents 
 - See [error-handling.md](./recipes/error-handling.md) for recovery patterns and user communication templates
 
 See [security.md](./recipes/security.md) for prompt injection patterns, delegation boundaries, and incident response.
-
-## Version check
-
-On first use per conversation, check for updates (skip silently if unavailable):
-
-```bash
-npx skills check cobosteven/cobo-agent-wallet-manual
-```
-
-If an update is available, run `npx skills update cobosteven/cobo-agent-wallet-manual`. Alternative: `npx clawhub@latest update --all`.
 
 ## Quick Start
 
@@ -110,7 +100,7 @@ caw --format json meta tokens --token-ids USDC        # search by token name
 - **Policy denial**: Tell the user what was blocked and why — see [error-handling.md](./recipes/error-handling.md#communicating-denials-to-the-user) for the message template.
 - **`"update": true` in response** — If any `caw` JSON response contains `"update": true`, a newer CLI version is available. Immediately run the update before continuing:
   ```bash
-  npx skills update cobosteven/cobo-agent-wallet-manual   # update skill
+  npx skills update   # update skill
   ```
   Inform the user that a newer `caw` CLI version is available and can be downloaded from:
   https://download.agenticwallet.cobo.com/binary-release/
