@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.03.24.2"
+  version: "2026.03.25.1"
 description: |
   Use for Cobo Agentic Wallet operations via the `caw` CLI: wallet onboarding, token transfers (USDC, USDT, ETH, SOL, etc.), smart contract calls, balance queries, and policy denial handling.
   Covers DeFi execution on EVM (Base, Ethereum, Arbitrum, Optimism, Polygon) and Solana: Uniswap V3 swaps, Aave V3 lending, Jupiter swaps, DCA, grid trading, Polymarket, and Drift perps.
@@ -12,6 +12,10 @@ description: |
 # Cobo Agentic Wallet (Sandbox)
 
 Policy-enforced crypto wallet for AI agents. Owners set spending limits; agents operate within guardrails. The `caw` CLI is the primary interface.
+
+**Workflow**:
+- **Lightweight operations** (balance check, single transfer, status query, transaction history): use `caw` CLI directly.
+- **Complex or multi-step operations** (DeFi strategies, loops, conditional logic, automation): write a Python script using the SDK, then run it. See [sdk-scripting.md](./recipes/sdk-scripting.md).
 
 ## Operating Safely
 
@@ -31,7 +35,13 @@ See [security.md](./recipes/security.md) for prompt injection patterns, delegati
 
 ## Version check
 
-On first use per conversation, run `npx skills check cobosteven/cobo-agent-wallet-manual`. If an update is available, run `npx skills update cobosteven/cobo-agent-wallet-manual`. If the command fails or is unavailable, skip silently.
+On first use per conversation, check for updates (skip silently if unavailable):
+
+```bash
+npx skills check cobosteven/cobo-agent-wallet-manual
+```
+
+If an update is available, run `npx skills update cobosteven/cobo-agent-wallet-manual`. Alternative: `npx clawhub@latest update --all`.
 
 ## Quick Start
 
@@ -100,28 +110,14 @@ Read the file that matches the user's task. Do not load files that aren't releva
 | Policy denial, 403, TRANSFER_LIMIT_EXCEEDED | [error-handling.md](./recipes/error-handling.md) |
 | Policy inspect, dry-run, delegation | [policy-management.md](./recipes/policy-management.md) |
 | Security, prompt injection, credentials | [security.md](./recipes/security.md) |
+| SDK scripting, Python scripts, multi-step operations | [sdk-scripting.md](./recipes/sdk-scripting.md) |
 
-**DeFi recipes (built-in):**
-
-| User asks about… | Read |
-|---|---|
-| Aave, borrow, repay, supply, collateral | [evm-defi-aave.md](./recipes/evm-defi-aave.md) |
-| DEX swap, Uniswap, token exchange (EVM) | [evm-defi-dex-swap.md](./recipes/evm-defi-dex-swap.md) |
-| DCA, recurring buy (EVM) | [evm-defi-dca.md](./recipes/evm-defi-dca.md) |
-| Grid trading (EVM) | [evm-defi-grid-trading.md](./recipes/evm-defi-grid-trading.md) |
-| Polymarket, prediction market (Polygon) | [evm-defi-polymarket.md](./recipes/evm-defi-polymarket.md) |
-| Jupiter swap, SOL/USDC (Solana) | [solana-defi-dex-swap.md](./recipes/solana-defi-dex-swap.md) |
-| Solana DCA | [solana-defi-dca.md](./recipes/solana-defi-dca.md) |
-| Solana grid trading | [solana-defi-grid-trading.md](./recipes/solana-defi-grid-trading.md) |
-| Drift perps, prediction market (Solana) | [solana-defi-prediction-market.md](./recipes/solana-defi-prediction-market.md) |
-
-**No matching built-in recipe?** Search for additional recipes in the skill repo:
-
+**No matching built-in recipe?** Search for additional DeFi skills:
 ```bash
 npx skills find cobosteven/cobo-agent-wallet-manual "<protocol-name> <chain>"
 ```
 
-For example: `npx skills find cobosteven/cobo-agent-wallet-manual "lido staking"` or `npx skills find cobosteven/cobo-agent-wallet-manual "gmx arbitrum"`. If a matching recipe is found, install it and follow its instructions. If no recipe is found, construct the calldata manually using `caw util abi encode` and submit via `caw tx call`.
+For example: `npx skills find cobosteven/cobo-agent-wallet-manual "lido staking"`. Alternative: `npx clawhub@latest search "cobo <protocol>"`. If a matching skill is found, install it and follow its instructions. If nothing is found, construct the calldata manually using `caw util abi encode` and submit via `caw tx call`.
 
 **Supported chains** — common chain IDs for `--chain`:
 
