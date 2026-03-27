@@ -28,9 +28,18 @@ caw --format json onboard --create-wallet --env sandbox --invitation-code <CODE>
 
 **How the interactive loop works:**
 1. Call `caw onboard` — read the returned `phase`, `prompts`, and `next_action`.
-2. Supply answers via `--answers '{"key":"value"}'` (or `--answers-file`). Answers accumulate across calls.
-3. Repeat until `phase` is `wallet_active`.
-4. If input is invalid, the response includes `last_error` with correction guidance — re-submit with the correct value.
+2. If the response includes `onboard_session_id`, keep using that same session on every follow-up call with `--onboard-session <ID>`.
+3. Supply answers via `--answers '{"key":"value"}'` (or `--answers-file`). Answers accumulate across calls for the same session.
+4. Repeat until `phase` is `wallet_active`.
+5. If input is invalid, the response includes `last_error` with correction guidance — re-submit with the correct value.
+
+Example follow-up call:
+
+```bash
+caw --format json onboard --profile <agent_id> --onboard-session <session_id> --answers '{"security_ack":true}'
+```
+
+Use `phase` + `bootstrap_stage` + `wallet_status` to track progress.
 
 **Assistants / LLM agents:** When `needs_input` is true, read `prompts` and present each question to the **human**; only pass `--answers` with keys matching the current prompt `id` values after you have their input. **Do not** pass `{"skip_phase":true}` unless the user explicitly asks to skip that optional step—`skip_phase` completes the pending phase without collecting those answers, which is only for explicit opt-out.
 
