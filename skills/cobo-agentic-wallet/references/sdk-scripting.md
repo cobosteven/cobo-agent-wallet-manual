@@ -1,8 +1,10 @@
 # SDK Scripting
 
-Use the `cobo-agentic-wallet` Python SDK for complex or multi-step operations: DeFi strategies, loops, conditional logic, or any automation that goes beyond a single CLI command.
+Use the Cobo Agentic Wallet SDK for complex or multi-step operations: DeFi strategies, loops, conditional logic, or any automation that goes beyond a single CLI command.
 
-**SDK docs**: https://agent-wallet-doc-preview.cobo.com/llms.txt
+The SDK is available in **Python** and **TypeScript**. Choose whichever fits your project.
+
+**SDK docs**: https://agent-wallet-doc-preview.cobo.com/sdk/client
 
 ## Script Management
 
@@ -14,7 +16,7 @@ Use the `cobo-agentic-wallet` Python SDK for complex or multi-step operations: D
    ```bash
    ls ./scripts/  # list available scripts
    ```
-   Common naming patterns: `swap-*.py`, `transfer-*.py`, `claim-*.py`, `bridge-*.py`, `dca-*.py`, `payroll-*.py`
+   Common naming patterns: `swap-*`, `transfer-*`, `claim-*`, `bridge-*`, `dca-*`, `payroll-*` (`.py` or `.ts`)
 
 2. **Reuse if exists** — if a matching script is found, use it directly with appropriate parameters. Report the script name to the user.
 
@@ -24,14 +26,22 @@ Use the `cobo-agentic-wallet` Python SDK for complex or multi-step operations: D
    - When modifying, ensure backward compatibility — existing invocations should still work
 
 4. **Create new script only when necessary** — if no suitable script exists:
-   - Save to `./scripts/<descriptive-name>.py` (use kebab-case, e.g., `cross-chain-swap.py`)
+   - Save to `./scripts/<descriptive-name>.py` or `./scripts/<descriptive-name>.ts` (use kebab-case, e.g., `cross-chain-swap.py`)
    - Design for reuse: parameterize all inputs via CLI args or env vars
-   - Include docstring explaining usage and parameters
+   - Include docstring/JSDoc explaining usage and parameters
 
 ## Install
 
+**Python:**
+
 ```bash
 pip install cobo-agentic-wallet
+```
+
+**TypeScript / JavaScript:**
+
+```bash
+npm install @cobo/agentic-wallet
 ```
 
 ## Get Credentials
@@ -39,11 +49,13 @@ pip install cobo-agentic-wallet
 After onboarding, retrieve your API key and wallet UUID from the CLI:
 
 ```bash
-caw --format json profile current   # → api_key, api_url
-caw --format json wallet list       # → wallet_uuid
+caw --format json profile current   # -> api_key, api_url
+caw --format json wallet list       # -> wallet_uuid
 ```
 
 ## Script Template
+
+### Python
 
 ```python
 import asyncio
@@ -61,9 +73,36 @@ async def main():
 asyncio.run(main())
 ```
 
-All SDK methods are `async`. Use `async with WalletAPIClient(...) as client:` to ensure the HTTP session is closed cleanly.
+All Python SDK methods are `async`. Use `async with WalletAPIClient(...) as client:` to ensure the HTTP session is closed cleanly.
+
+### TypeScript
+
+```typescript
+import { Configuration, TransactionsApi, BalanceApi, WalletsApi } from "@cobo/agentic-wallet";
+
+const API_URL = "https://api-core.agenticwallet.sandbox.cobo.com";
+const API_KEY = "your-api-key";
+const WALLET_UUID = "your-wallet-uuid";
+
+const config = new Configuration({
+  basePath: API_URL,
+  apiKey: API_KEY,
+});
+
+const txApi = new TransactionsApi(config);
+const balanceApi = new BalanceApi(config);
+const walletsApi = new WalletsApi(config);
+
+// example: list balances
+const resp = await balanceApi.listBalances();
+console.log(resp.data.result);
+```
+
+TypeScript SDK uses auto-generated API classes. Import the specific `*Api` class for each endpoint group.
 
 ## Common Operations
+
+### Python
 
 **Balance:**
 
@@ -93,7 +132,7 @@ Encode calldata with the CLI, then call the contract in your script:
 ```bash
 # Step 1: encode calldata
 caw util abi encode --method "transfer(address,uint256)" --args '["0x...", "1000000"]'
-# → 0xa9059cbb...
+# -> 0xa9059cbb...
 ```
 
 ```python
@@ -120,12 +159,66 @@ pending = await client.get_pending_operation(operation_id)
 wallets = await client.list_wallets()
 ```
 
+### TypeScript
+
+**Balance:**
+
+```typescript
+const balances = await balanceApi.listBalances();
+console.log(balances.data.result);
+```
+
+**Token transfer:**
+
+```typescript
+const result = await txApi.transferTokens(WALLET_UUID, {
+  dst_addr: "0x1234...abcd",
+  token_id: "ETH_USDC",
+  amount: "10",
+  request_id: "pay-001",
+});
+console.log(result.data.result);
+```
+
+**Contract call (EVM):**
+
+```bash
+# Step 1: encode calldata
+caw util abi encode --method "transfer(address,uint256)" --args '["0x...", "1000000"]'
+# -> 0xa9059cbb...
+```
+
+```typescript
+// Step 2: submit in script
+const result = await txApi.contractCall(WALLET_UUID, {
+  chain_id: "ETH",
+  contract_addr: "0x...",
+  calldata: "0xa9059cbb...",
+  request_id: "call-001",
+});
+console.log(result.data.result);
+```
+
+**Transaction history:**
+
+```typescript
+const records = await txApi.listTransactionRecords();
+console.log(records.data.result);
+```
+
+**List wallets:**
+
+```typescript
+const wallets = await walletsApi.listWallets();
+console.log(wallets.data.result);
+```
+
 ## Key Conventions
 
 - **`wallet_uuid`**: pass explicitly to every method; retrieve with `caw --format json wallet list`.
 - **`request_id` idempotency**: always set a unique, deterministic ID per logical transaction. Retrying with the same `request_id` is safe — the server deduplicates.
-- **`sponsor`**: `False` by default (wallet pays own gas). Set `True` for Cobo Gasless (human-principal wallets only).
-- **SDK returns unwrapped data**: methods return the `result` payload directly; no manual `{ success, result }` unwrapping needed.
+- **`sponsor`**: `false` by default (wallet pays own gas). Set `true` for Cobo Gasless (human-principal wallets only).
+- **SDK returns unwrapped data**: Python SDK methods return the `result` payload directly. TypeScript SDK responses are in `response.data.result`.
 - **Exceptions on failure**: SDK raises exceptions on HTTP/API errors — catch and report; do not silently retry.
 
 ## DeFi Operations
@@ -133,7 +226,7 @@ wallets = await client.list_wallets()
 For DeFi protocols (Uniswap V3, Aave V3, Jupiter, DCA, grid trading, Polymarket, Drift perps):
 
 1. Encode calldata using `caw util abi encode`
-2. Submit via `client.contract_call()` in your script
+2. Submit via `client.contract_call()` (Python) or `txApi.contractCall()` (TypeScript) in your script
 
 For Solana: build instruction JSON and pass via the `instructions` param instead of `calldata`.
 
@@ -148,7 +241,7 @@ Alternative: `npx clawhub@latest search "cobo <protocol>"`. If a matching recipe
 
 ## Framework Integrations
 
-Drop the SDK as a toolkit into any agent framework:
+Drop the Python SDK as a toolkit into any agent framework:
 
 | Framework | Install | Import |
 |---|---|---|

@@ -37,6 +37,11 @@ User asked to send $80; suggestion says "Retry with amount <= 60." The reduced a
 User asked to send 0.005 SETH; denied by daily cumulative limit. Do NOT try smaller amounts or additional transactions. Tell the user:
 > "Transfer blocked: daily spending limit exceeded. Please wait until the limit resets, or ask the wallet owner to adjust the policy."
 
+Alternatively, if the transfer is important and the user wants to proceed, switch to the [action authorization flow](../SKILL.md#action-authorization):
+> "The current spending limit has been reached. I can request separate authorization for this transfer from the wallet owner — would you like me to do that?"
+
+If the user agrees, create a pact scoped to the specific transfer (see [Transfer quota exhaustion fallback](../SKILL.md#transfer-quota-exhaustion-fallback)).
+
 **Example — owner action required:**
 Suggestion says "Ask the wallet owner to whitelist contract 0xUniswap..." → tell the user:
 > "Transfer blocked: this contract isn't whitelisted. To proceed, ask the wallet owner to whitelist it."

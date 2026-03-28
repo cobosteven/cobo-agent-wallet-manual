@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.03.27.2"
+  version: "2026.03.28.1"
 description: |
   Use for Cobo Agentic Wallet operations via the `caw` CLI: wallet onboarding, token transfers (USDC, USDT, ETH, SOL, etc.), smart contract calls, balance queries, and policy denial handling.
   Covers DeFi execution on EVM (Base, Ethereum, Arbitrum, Optimism, Polygon) and Solana: Uniswap V3 swaps, Aave V3 lending, Jupiter swaps, DCA, grid trading, Polymarket, and Drift perps.
@@ -14,9 +14,10 @@ description: |
 Policy-enforced crypto wallet for AI agents. Owners set spending limits; agents operate within guardrails. The `caw` CLI is the primary interface.
 
 **Workflow**:
-- **Delegated intent execution (pact flow)**: once the user's intent is fully understood and constraints are clear, submit a pact first via `caw --format json pact submit ...`. Execute follow-up actions only after the pact is approved/active.
-- **Lightweight operations** (balance check, single transfer, status query, transaction history): use `caw` CLI directly.
-- **Complex or multi-step operations** (DeFi strategies, loops, conditional logic, automation): write a Python script using the SDK, then run it. Design scripts to be **reusable** — parameterize inputs (addresses, amounts, tokens) via CLI arguments or environment variables so they can be re-run without modification. See [sdk-scripting.md](./references/sdk-scripting.md).
+- **Token transfers**: use `caw tx transfer` directly (operates under default wallet authorization). If denied due to quota/limit exhaustion, fall back to the [action authorization flow](#action-authorization).
+- **Contract calls & sign messages**: always use the [action authorization flow](#action-authorization) — obtain owner approval before execution.
+- **Lightweight operations** (balance check, status query, transaction history): use `caw` CLI directly.
+- **Complex or multi-step operations** (DeFi strategies, loops, conditional logic, automation): write a script using the SDK, then run it. Design scripts to be **reusable** — parameterize inputs (addresses, amounts, tokens) via CLI arguments or environment variables so they can be re-run without modification. See [sdk-scripting.md](./references/sdk-scripting.md).
 
 
 ## Operating Safely
@@ -30,7 +31,7 @@ Policy-enforced crypto wallet for AI agents. Owners set spending limits; agents 
 - Report the denial and the `suggestion` field to the user
 - If the suggestion offers a parameter adjustment (e.g. "Retry with amount <= 60") that still fulfills the user's intent, you may retry with the adjusted value
 - Never initiate additional transactions that the user did not request
-- Cumulative limit denial (daily/monthly): do not attempt further transactions — inform the user and wait
+- Cumulative limit denial (daily/monthly): do not attempt further transactions — inform the user and offer the [action authorization flow](#action-authorization) as an alternative
 - See [error-handling.md](./references/error-handling.md) for recovery patterns and user communication templates
 
 See [security.md](./references/security.md) for prompt injection patterns, delegation boundaries, and incident response.
@@ -89,18 +90,28 @@ caw meta tokens --chain-ids BASE_ETH         # list tokens on a specific chain
 caw meta tokens --token-ids SETH,SETH_USDC   # get metadata for specific token IDs
 ```
 
+## Action Authorization
+
+Some operations require explicit owner approval before execution. Present this to the user as "requesting approval for this action" — never expose pact internals or terminology.
+
+- **Contract calls & sign messages**: always request authorization first
+- **Token transfers**: try `caw tx transfer` directly; request authorization only if denied due to cumulative quota exhaustion
+
+See [pact-management.md](./references/pact-management.md) for trigger rules, user-facing language, flow, and transfer quota fallback.
+
 ## Pact Management
 
-Use pact for owner-approved delegated execution (automation, recurring strategy, or bounded multi-step tasks).
+Pact is the underlying mechanism for [action authorization](#action-authorization). Use pact to obtain owner-approved delegated execution for contract calls, sign messages, transfers beyond default quota, or bounded multi-step tasks (automation, recurring strategy).
 
 When constructing submit parameters from intent:
 - Map objective and constraints into `--intent` (asset/protocol/chain/cadence/risk limits)
 - Always include target `--wallet-id`; add `--resource-scope` to limit scope
-- Use least privilege in `--permissions` (default `operator`)
-- Parse explicit time windows into `--duration` seconds
+- **Least privilege in `--permissions`**: choose the narrowest permission set for the task (`viewer` for reads, `write:transfer` for transfers only, `write:contract_call` for contract calls only; use `operator` only when both are needed)
+- Parse explicit time windows into `--duration` seconds; prefer finite duration
 - Parse per-transaction budget into `--max-tx` when provided
+- For fine-grained policy control (chain/token/contract scoping, allow+deny pairs, rolling usage limits), use `--spec-file` or `--spec-json` with a full PactSpec policies array
 - Use a concise human-readable `--name` for owner review
-- Derive `--program` from the intent as a markdown execution plan with sections like `# Summary`, `# Contract Operations`, `# Risk Controls`, `# Schedule` — this is shown to the owner during approval review
+- Derive `--program` from the intent as a markdown execution plan with sections like `# Summary`, `# Contract Operations`, `# Risk Controls`, `# Schedule` -- this is shown to the owner during approval review
 
 See [pact-management.md](./references/pact-management.md) for CLI command reference, lifecycle details, and troubleshooting.
 See [pact-knowledge.md](./references/pact-knowledge.md) for PactSpec construction, policy schema, and validation rules.
@@ -154,10 +165,10 @@ Read the file that matches the user's task. Do not load files that aren't releva
 | Onboarding, install, setup, environments, profiles, claiming | [onboarding.md](./references/onboarding.md) |
 | Policy denial, 403, TRANSFER_LIMIT_EXCEEDED | [error-handling.md](./references/error-handling.md) |
 | Policy inspect, dry-run, delegation | [policy-management.md](./references/policy-management.md) |
-| Pact lifecycle, submit/get/events/cancel, intent-to-params mapping | [pact-management.md](./references/pact-management.md) |
+| Action authorization, contract call approval, transfer quota fallback, pact lifecycle, submit/get/events/cancel, intent-to-params mapping | [pact-management.md](./references/pact-management.md) |
 | PactSpec construction, policy schema, permissions, validation rules | [pact-knowledge.md](./references/pact-knowledge.md) |
 | Security, prompt injection, credentials | [security.md](./references/security.md) |
-| SDK scripting, Python scripts, multi-step operations | [sdk-scripting.md](./references/sdk-scripting.md) |
+| SDK scripting, Python/TypeScript scripts, multi-step operations | [sdk-scripting.md](./references/sdk-scripting.md) |
 
 **No matching reference?** Search for a community skill, install it if found, otherwise build calldata manually:
 ```bash

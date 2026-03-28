@@ -1,18 +1,52 @@
 # Pact Management
 
-Use pact when the task needs owner-approved delegated execution before the agent acts.
+Pact is the mechanism for action authorization — owner-approved delegation with scoped policies and a time-bound API key. **When presenting this to the user, frame it as "requesting approval for this action" — do not expose pact internals or terminology.**
+
+**User-facing language:**
+- Do say: "This action requires owner approval. I'm requesting authorization now."
+- Do say: "Authorization approved — proceeding with the operation."
+- Do say: "Authorization was rejected by the owner."
+- Do say: "Waiting for the owner to approve this action."
+- Do not say: "I need to create a pact for this operation."
+- Do not say: "The pact is pending approval."
+- Do not say: "Submitting a pact..."
 
 ## When to use pact
 
-Typical scenarios:
-- recurring strategy execution (DCA, periodic rebalance)
-- multi-step automation with risk bounds
-- temporary delegated access with explicit expiry
+**Always create a pact before:**
+- Any contract call (`caw tx call`)
+- Any sign message (`caw tx sign-message`)
+- Recurring strategy execution (DCA, periodic rebalance)
+- Multi-step automation with risk bounds
+- Temporary delegated access with explicit expiry
+
+**Create a pact when transfer quota is exhausted:**
+- When `caw tx transfer` is denied due to cumulative limit exhaustion (daily/monthly), create a pact scoped to the transfer
 
 **Do NOT use pact for:**
-- one-off transfers (use `caw tx transfer` directly)
-- read-only queries (use `caw wallet balance`, `caw tx list`, etc.)
-- operations where no delegation is needed
+- Token transfers within default quota (use `caw tx transfer` directly — try this first)
+- Read-only queries (use `caw wallet balance`, `caw tx list`, etc.)
+- Per-transaction limit denials (suggest reduced amount or ask user to contact owner instead)
+
+## Action Authorization Flow
+
+1. **Construct** authorization parameters from the user's intent (see [Intent -> Submit Parameter Mapping](#intent---submit-parameter-mapping))
+2. **Submit**: `caw --format json pact submit ...`
+3. **Communicate**: Tell the user "This action requires owner approval. I've submitted an authorization request."
+4. **Poll**: Use `caw --format json pact get <pact_id>` until status changes (or use `--wait`)
+5. **On `active`**: Proceed with execution using the pact-scoped API key
+6. **On `rejected`**: Tell the user "The owner declined this action." Suggest adjustments if applicable.
+
+## Transfer Quota Exhaustion Fallback
+
+When `caw tx transfer` is denied due to cumulative limit exhaustion (daily/monthly spending cap reached — NOT a per-transaction limit), automatically switch to the action authorization flow:
+
+1. Detect denial with cumulative limit reason (e.g., `rolling_24h`, `rolling_30d` in error response)
+2. Inform the user: "The current spending limit has been reached. I'll request authorization for this transfer."
+3. Submit a pact with `--permissions write:transfer,read:wallet`, scoped to this specific transfer
+4. Wait for owner approval, then execute the transfer under the new authorization
+
+> **Do not** trigger this fallback for per-transaction limit denials. For those, follow the standard [error handling flow](./error-handling.md) (suggest reduced amount or ask user to contact owner).
 
 ## Lifecycle
 
@@ -36,18 +70,34 @@ Submit a new pact for owner approval. Creates a `PENDING_APPROVAL` pact and send
 | `--wallet-id <uuid>` | Target wallet UUID |
 | `--intent <text>` | Natural language description of the pact's purpose |
 
-**Optional flags:**
+**Optional flags (inline mode):**
 
 | Flag | Default | Description |
 |---|---|---|
-| `--permissions <list>` | `operator` | Comma-separated permissions granted to the operator. Values: `operator`, `viewer`, `read:wallet`, `write:wallet`, `write:transfer`, `write:contract_call`, `write:manage` |
-| `--duration <seconds>` | `0` (no expiry) | Pact duration in seconds from activation |
-| `--max-tx <usd>` | — | Maximum USD value per transaction. Creates an inline transfer limit policy |
+| `--permissions <list>` | `operator` | Comma-separated permissions granted to the operator. Values: `operator`, `viewer`, `read:wallet`, `write:wallet`, `write:transfer`, `write:contract_call`, `write:manage`. Always choose the **minimum** set needed (see [Least Privilege](#least-privilege-principle)). |
+| `--duration <seconds>` | `0` (no expiry) | Pact duration in seconds from activation. Prefer an explicit finite duration unless the user explicitly requests no expiry. |
+| `--max-tx <usd>` | -- | Maximum USD value per transaction. Creates an inline transfer limit policy. This is a shortcut; for fine-grained policies use `--spec-file` / `--spec-json`. |
 | `--name <text>` | derived from `--intent` | Human-readable pact name for owner review |
-| `--resource-scope <json>` | -- | Resource scope constraints as JSON, e.g. `'{"wallet_id":"<uuid>"}'` |
+| `--resource-scope <json>` | -- | Resource scope constraints as JSON, e.g. `'{"wallet_id":"<uuid>"}'`. Always bind to the target wallet at minimum. |
 | `--program <text>` | -- | Free-form execution plan in markdown format, shown to the owner during approval review. Use sections like `# Summary`, `# Contract Operations`, `# Risk Controls`, `# Schedule` to help the owner understand the concrete actions. See [pact-knowledge.md](./pact-knowledge.md#program-structure) |
 
-**Example:**
+**Full PactSpec mode (for advanced policy control):**
+
+| Flag | Description |
+|---|---|
+| `--spec-file <path>` | Path to a JSON file containing the full PactSpec (permissions, policies, duration, completion conditions, resource scope, program). Mutually exclusive with `--spec-json` and inline flags (`--permissions`, `--duration`, `--max-tx`, `--resource-scope`). |
+| `--spec-json <json>` | Inline JSON string containing the full PactSpec. Mutually exclusive with `--spec-file` and inline flags. |
+
+Use `--spec-file` or `--spec-json` when you need custom policies (allow/deny pairs, chain/token/contract scoping, rolling usage limits). See [pact-knowledge.md](./pact-knowledge.md#policy-construction-patterns) for policy schema and construction patterns.
+
+**Other flags:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--wait` | `false` | Block until the pact leaves `pending_approval` |
+| `--wait-timeout` | `10m` | Timeout for `--wait` |
+
+**Example (inline mode):**
 
 ```bash
 caw --format json pact submit \
@@ -76,6 +126,62 @@ Every Monday, 90 days from activation.
 
 # Exit Conditions
 After 12 swaps OR \$6,000 total spent OR 90 days."
+```
+
+**Example (full PactSpec with policies):**
+
+```bash
+caw --format json pact submit \
+  --wallet-id a1b2c3d4-5678-9abc-def0-123456789abc \
+  --intent "Execute weekly ETH DCA on Base for 3 months" \
+  --name "Base ETH Weekly DCA" \
+  --spec-file ./pact-dca.json
+```
+
+Where `pact-dca.json` contains a full PactSpec with policies:
+
+```json
+{
+  "permissions": ["write:contract_call", "read:wallet"],
+  "policies": [
+    {
+      "name": "dca-uniswap-allow",
+      "type": "contract_call",
+      "rules": {
+        "effect": "allow",
+        "when": {
+          "chain_in": ["BASE"],
+          "target_in": [{ "chain_id": "BASE", "contract_addr": "0x2626664c2603336E57B271c5C0b26F421741e481" }]
+        },
+        "review_if": { "amount_usd_gt": "500" }
+      }
+    },
+    {
+      "name": "dca-uniswap-deny-limits",
+      "type": "contract_call",
+      "rules": {
+        "effect": "deny",
+        "when": {
+          "chain_in": ["BASE"],
+          "target_in": [{ "chain_id": "BASE", "contract_addr": "0x2626664c2603336E57B271c5C0b26F421741e481" }]
+        },
+        "deny_if": {
+          "amount_usd_gt": "550",
+          "usage_limits": {
+            "rolling_24h": { "amount_usd_gt": "600", "tx_count_gt": 5 }
+          }
+        }
+      }
+    }
+  ],
+  "duration_seconds": 7776000,
+  "completion_conditions": [
+    { "type": "tx_count", "threshold": "12" },
+    { "type": "amount_spent_usd", "threshold": "6000" }
+  ],
+  "resource_scope": { "wallet_id": "a1b2c3d4-5678-9abc-def0-123456789abc" },
+  "program": "# Summary\nWeekly DCA: swap ~$500 USDC to ETH via Uniswap V3 on Base.\n\n# Contract Operations\n- Protocol: Uniswap V3 SwapRouter\n- Chain: Base\n- Contract: 0x2626664c2603336E57B271c5C0b26F421741e481\n- Function: exactInputSingle\n\n# Risk Controls\n- Max per swap: $550 USD\n- Max daily: $600 USD\n- Pre-swap balance check: skip if USDC < $500\n\n# Schedule\nEvery Monday, 90 days from activation.\n\n# Exit Conditions\nAfter 12 swaps OR $6,000 total spent OR 90 days."
+}
 ```
 
 ### `caw pact get <pact-id>`
@@ -128,7 +234,37 @@ Prompts for confirmation by default. Use `--yes` to skip.
 caw --format json pact cancel <pact_id>
 ```
 
-## Intent → Submit Parameter Mapping
+## Least Privilege Principle
+
+Every pact MUST request the minimum access needed for the task. Over-scoped pacts increase risk and may be rejected by the owner.
+
+**Permissions**: Choose the narrowest set:
+
+| Task type | Permissions | Rationale |
+|---|---|---|
+| Read-only monitoring (balance alerts, portfolio tracking) | `viewer` (expands to `read:wallet`) | No writes needed |
+| Token transfers only (payroll, invoice payments) | `read:wallet`, `write:transfer` | No contract calls needed |
+| Contract calls only (DeFi swaps, staking) | `read:wallet`, `write:contract_call` | No direct transfers needed |
+| Both transfers and contract calls | `operator` (shorthand) | Only when both are genuinely needed |
+
+**Policies**: Scope as tightly as possible:
+
+- Restrict `chain_in` to only the chains involved (e.g. `["BASE"]`, not all chains)
+- Restrict `token_in` to specific tokens the task uses (e.g. `[{"chain_id":"BASE","token_id":"USDC"}]`)
+- Restrict `target_in` to specific contract addresses (e.g. Uniswap V3 router only)
+- Set `deny_if.amount_usd_gt` to the maximum acceptable per-transaction value
+- Set `deny_if.usage_limits` rolling windows to cap cumulative spend
+- Use `review_if` for amounts that should trigger owner review but not block outright
+
+**Duration and completion**: Always set finite bounds:
+
+- Set `--duration` to the shortest time window that covers the task
+- Set completion conditions (`tx_count`, `amount_spent_usd`) when the total scope is bounded
+- Avoid `0` duration (no expiry) unless the user explicitly requests indefinite access
+
+**Resource scope**: Always bind to the target wallet via `--resource-scope '{"wallet_id":"<uuid>"}'`.
+
+## Intent -> Submit Parameter Mapping
 
 When user intent is fully understood and execution is ready, construct submit arguments:
 
@@ -136,12 +272,21 @@ When user intent is fully understood and execution is ready, construct submit ar
 |---|---|---|
 | Target wallet | `--wallet-id` | Exact wallet UUID |
 | Goal description | `--intent` | Normalized goal including asset/protocol/chain/cadence and key risk constraints |
-| Operation scope | `--permissions` | Least privilege set (default `operator`). Use `viewer` if only reads are needed |
-| Time window | `--duration` | Parse explicit time: `30d` → `2592000`, `3 months` → `7776000` |
-| Per-transaction budget | `--max-tx` | Per-transaction USD cap if user provided budget constraints |
+| Operation scope | `--permissions` | Least privilege set (see [Least Privilege](#least-privilege-principle)). Default `operator` only if both transfers and contract calls are needed |
+| Time window | `--duration` | Parse explicit time: `30d` -> `2592000`, `3 months` -> `7776000`. Prefer finite duration. |
+| Per-transaction budget | `--max-tx` | Per-transaction USD cap if user provided budget constraints (inline policy shortcut) |
+| Custom policies | `--spec-file` / `--spec-json` | Use when the task needs chain/token/contract scoping, allow/deny pairs, or rolling usage limits. See [pact-knowledge.md](./pact-knowledge.md#policy-construction-patterns) for patterns. |
 | Display name | `--name` | Concise title for owner approval review |
-| Resource binding | `--resource-scope` | JSON scope constraints; at minimum bind to wallet |
+| Resource binding | `--resource-scope` | JSON scope constraints; always bind to wallet |
 | Execution plan | `--program` | Free-form markdown with `# Summary`, `# Contract Operations`, `# Risk Controls`, `# Schedule` sections. Helps owner make informed approval decision |
+
+**Choosing inline vs. full PactSpec:**
+
+| Scenario | Approach |
+|---|---|
+| Simple budget cap only (max USD per tx) | Use `--max-tx` inline flag |
+| Needs chain/token/contract restrictions, rolling limits, or allow+deny pairs | Use `--spec-file` or `--spec-json` with full policies array |
+| Complex multi-policy setup with completion conditions | Use `--spec-file` pointing to a JSON file for readability |
 
 **Example mapping:**
 
@@ -151,11 +296,14 @@ When user intent is fully understood and execution is ready, construct submit ar
 caw --format json pact submit \
   --wallet-id <uuid> \
   --intent "DCA $500/week into ETH on Base for 3 months, max $550 per swap" \
-  --permissions operator \
+  --permissions write:contract_call,read:wallet \
   --duration 7776000 \
   --max-tx 550 \
-  --name "Base ETH Weekly DCA"
+  --name "Base ETH Weekly DCA" \
+  --resource-scope '{"wallet_id":"<uuid>"}'
 ```
+
+Note: `--permissions` uses `write:contract_call,read:wallet` instead of the broader `operator` since DCA swaps only need contract calls, not direct transfers.
 
 ## Submission Rules
 
@@ -165,15 +313,19 @@ If delegated execution is required and intent is complete, submit pact immediate
 
 - [ ] Wallet target is explicit (user confirmed or only one wallet available)
 - [ ] Intent is specific and auditable (includes asset, action, chain, constraints)
-- [ ] Permissions are minimally scoped
-- [ ] Duration and budget constraints are explicit (or user-confirmed as unlimited)
+- [ ] Permissions follow [least privilege](#least-privilege-principle) — only what the task requires
+- [ ] Policies scope operations to specific chains, tokens, and/or contracts when applicable
+- [ ] Duration is finite (or user explicitly confirmed unlimited)
+- [ ] Budget constraints are explicit (per-tx via `--max-tx` or policies, cumulative via completion conditions)
+- [ ] `--resource-scope` binds to the target wallet
 - [ ] `--name` is concise and describes the task for owner review
+- [ ] `--program` describes concrete actions for multi-step or non-obvious tasks
 
 **Do NOT submit if:**
 
 - The user's intent is ambiguous — ask for clarification first
 - The wallet target is unknown — query `caw --format json status` or ask the user
-- No delegated execution is needed (one-off transfers use `caw tx transfer` directly)
+- The operation is a token transfer within default quota — try `caw tx transfer` directly first
 
 ## Post-Submission Flow
 

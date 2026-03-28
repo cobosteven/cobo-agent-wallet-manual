@@ -2,7 +2,7 @@
 
 ## 1. Install caw
 
-Run `./scripts/bootstrap-env.sh --env sandbox --caw-only` to install caw. caw → `~/.cobo-agentic-wallet/bin/caw`; add that dir to PATH. TSS Node is downloaded automatically during onboard when needed.
+Run `./scripts/bootstrap-env.sh --env sandbox --only caw` to install caw. caw → `~/.cobo-agentic-wallet/bin/caw`; add that dir to PATH. TSS Node is downloaded automatically during onboard when needed.
 
 **Prerequisites:** `python3` and `node` / `npm` (for DeFi calldata encoding). Install Node.js if absent: https://nodejs.org. Several recipes also require `ethers`: `npm install ethers`.
 
@@ -41,7 +41,7 @@ caw --format json onboard --profile <agent_id> --onboard-session <session_id> --
 
 Use `phase` + `bootstrap_stage` + `wallet_status` to track progress.
 
-**Assistants / LLM agents:** When `needs_input` is true, read `prompts` and present each question to the **human**; only pass `--answers` with keys matching the current prompt `id` values after you have their input. **Do not** pass `{"skip_phase":true}` unless the user explicitly asks to skip that optional step—`skip_phase` completes the pending phase without collecting those answers, which is only for explicit opt-out.
+**Assistants / LLM agents:** When `needs_input` is true, read `prompts` and present each question to the **user**; only pass `--answers` with keys matching the current prompt `id` values after you have their input. **Do not** pass `{"skip_phase":true}` unless the user explicitly asks to skip that optional step—`skip_phase` completes the pending phase without collecting those answers, which is only for explicit opt-out.
 
 Without `--profile`, starts a new onboarding; with `--profile <agent_id>`, resumes an existing one.
 
@@ -70,9 +70,9 @@ caw profile claim                   # generate a claim link
 caw profile claim-info              # check claim status
 ```
 
-`claim` returns a `claim_link` URL. Share this link with your owner — they open it in the Web Console to complete the ownership transfer. Once claimed, the wallet becomes human-owned with full functionality (Cobo Gasless sponsorship becomes available via `--gasless`).
+`claim` returns a `claim_link` URL. Share this link with the user — they open it in the Web Console to complete the ownership transfer. Once claimed, the wallet becomes human-owned with full functionality (Cobo Gasless sponsorship becomes available via `--gasless`).
 
-Use `claim-info` to check the current state: `not_found` (no claim initiated), `valid` (pending, waiting for human), `expired`, or `claimed` (transfer complete).
+Use `claim-info` to check the current state: `not_found` (no claim initiated), `valid` (pending, waiting for the user), `expired`, or `claimed` (transfer complete).
 
 ## Profile Management
 
