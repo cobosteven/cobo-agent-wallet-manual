@@ -333,6 +333,16 @@ If delegated execution is required and intent is complete, submit an authorizati
 
 ## Post-Submission Flow
 
+### Status Tracking
+
+`caw pact submit` supports `--context` for automatic notification tracking. Pass `--context '{"channel":"<channel>", "target":"<target>"}'` when submitting, then run `caw track --watch` in the background. Notifies via `openclaw message send` on intermediate status changes; uses `openclaw agent --deliver` when the pact reaches a terminal state (active/rejected/completed/expired/revoked).
+
+```bash
+caw --format json pact submit --wallet-id <uuid> --intent "..." \
+  --context '{"channel":"discord", "target":"1483060020718473359"}' \
+  && caw track --watch &
+```
+
 ### Polling for Approval
 
 After submit, the request enters `pending_approval`. Poll with `caw pact get <pact_id>` until the status changes:

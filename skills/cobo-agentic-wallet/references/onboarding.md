@@ -78,6 +78,8 @@ caw profile claim-info              # check claim status
 
 Use `claim-info` to check the current state: `not_found` (no claim initiated), `valid` (pending, waiting for the user), `expired`, or `claimed` (transfer complete).
 
+**Claim status tracking**: `caw profile claim` supports `--context` for notification tracking. Pass `--context '{"channel":"<channel>", "target":"<target>"}'` when initiating, then run `caw track --watch` in the background. Notifies via `openclaw message send` when the claim token status reaches terminal (claimed/expired).
+
 ## Profile Management
 
 Each `caw onboard` creates a separate **profile** — an isolated identity with its own credentials, wallet, and TSS Node files. Multiple profiles can coexist on one machine, which is useful when an agent serves different purposes (e.g. one profile for DeFi execution, another for payroll disbursements).
