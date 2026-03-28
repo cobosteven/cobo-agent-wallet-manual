@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.03.28.4"
+  version: "2026.03.28.5"
 description: |
   Use for Cobo Agentic Wallet operations via the `caw` CLI: wallet onboarding, token transfers (USDC, USDT, ETH, SOL, etc.), smart contract calls, balance queries, and policy denial handling.
   Covers DeFi execution on EVM (Base, Ethereum, Arbitrum, Optimism, Polygon) and Solana: Uniswap V3 swaps, Aave V3 lending, Jupiter swaps, DCA, grid trading, Polymarket, and Drift perps.
@@ -131,10 +131,8 @@ See [authorization-spec.md](./references/authorization-spec.md) for authorizatio
 - **`--pre-check` (default: true)**: `caw tx transfer` and `caw tx call` automatically run a policy + fee pre-check before submitting. If policy denies the transaction, the command exits with an error and the transaction is NOT submitted. Use `--pre-check=false` to skip and submit directly.
 - **`--request-id` idempotency**: Always set a unique, deterministic request ID per logical transaction (e.g. `invoice-001`, `swap-20240318-1`). Retrying with the same `--request-id` is safe — the server deduplicates.
 - **`--gasless`**: `false` by default — wallet pays own gas. Set `true` for Cobo Gasless (human-principal wallets only; agent-principal wallets will be rejected).
-
-**Transaction status tracking**
-- After submitting a transaction (`caw tx transfer`, `caw tx call`, `caw tx sign-message`), launch a background sub-agent to poll the transaction status every 10 seconds using `caw tx get <tx_id>`. Once the status reaches `PendingConfirmation`, `Confirming` or `Completed`, notify the user.
-- If launching a sub-agent fails, inform the user: "Transaction submitted (tx_id: xxx). Check status with: `caw tx get <tx_id>`"
+- **`--context`**: Pass openclaw notification context as JSON when submitting transactions. At execution time, obtain the current openclaw channel and target from the environment (e.g. from inbound metadata or equivalent), then include them: `--context '{"channel":"<channel>", "target":"<target>"}'`. This allows `caw track` to send status notifications via openclaw.
+- After submitting a transaction (`caw tx transfer`, `caw tx call`, `caw tx sign-message`), run `caw track --watch` in the background to monitor status. It will automatically notify via openclaw when status changes (using the channel/target from the context JSON). Example: `caw track --watch &`
 
 **Responses & errors**
 - **StandardResponse format** — API responses are wrapped as `{ success: true, result: <data> }`. Extract from `result` first.
