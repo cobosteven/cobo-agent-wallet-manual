@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.03.30.3"
+  version: "2026.03.30.6"
 description: |
   Use for Cobo Agentic Wallet operations via the `caw` CLI: wallet onboarding, token transfers (USDC, USDT, ETH, SOL, etc.), smart contract calls, balance queries, and policy denial handling.
   Covers DeFi execution on EVM (Base, Ethereum, Arbitrum, Optimism, Polygon) and Solana: Uniswap V3 swaps, Aave V3 lending, Jupiter swaps, DCA, grid trading, Polymarket, and Drift perps.
@@ -129,6 +129,7 @@ See [authorization-spec.md](./references/authorization-spec.md) for authorizatio
 - **Long-running commands** (`caw onboard --create-wallet`, **`caw ap2 purchase`**, `caw pact submit --wait`): run in background or wait until completion; for `ap2 purchase`, report stderr progress (x402 → approval → merchant)
 - **TSS Node auto-start**: `caw tx transfer`, `caw tx call`, and **`caw ap2 purchase`** automatically check TSS Node status and start it if offline
 - **Show the command**: When reporting `caw` results to the user, always include the full CLI command that was executed
+- **`caw track --watch` lock**: only one instance runs at a time. If it fails to acquire the lock, exit normally — the running instance will pick up any new entries automatically. Do not retry or wait for the lock.
 
 **Transactions**
 - **`--pre-check` (default: true)**: `caw tx transfer` and `caw tx call` automatically run a policy + fee pre-check before submitting. If policy denies the transaction, the command exits with an error and the transaction is NOT submitted. Use `--pre-check=false` to skip and submit directly.
