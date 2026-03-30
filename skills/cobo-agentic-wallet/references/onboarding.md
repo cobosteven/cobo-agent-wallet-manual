@@ -33,6 +33,7 @@ caw --format json onboard --create-wallet --env sandbox --invitation-code <CODE>
 2. On each follow-up, pass `--session-id` with the **latest** `session_id` from the previous response, and keep the same `--create-wallet` and `--env` as the initial call. If the response says the session was not found and a new one was created, use that **new** `session_id`.
 3. When `needs_input` is true, pass `--answers` as JSON whose keys match `prompts[].id` (e.g. `onboard_mode`: `option_a` or `option_b`; later `invitation_code`, `agent_name`, etc., depending on phase).
 4. Repeat until onboarding finishes — typically `wallet_status` is `active` and/or `phase` is `wallet_active`. If input is invalid, use `last_error` and resubmit with corrected `--answers`.
+5. If the background bootstrap worker fails or stops (`phase` is `error`, or `next_action` mentions `--retry-bootstrap`), follow that `next_action` exactly. Typically you re-run onboard with **`--retry-bootstrap`**, the **same `--session-id`**, and the same **`--create-wallet` / `--env`** (and `--api-url` if you used it).
 
 Example follow-up call:
 
@@ -44,7 +45,7 @@ Use `phase` + `bootstrap_stage` + `wallet_status` to track progress.
 
 **Assistants / LLM agents:** When `needs_input` is true, read `prompts` and present each question to the **user**; only pass `--answers` with keys matching the current prompt `id` values after you have their input. **Do not** pass `{"skip_phase":true}` unless the user explicitly asks to skip that optional step—`skip_phase` completes the pending phase without collecting those answers, which is only for explicit opt-out.
 
-When `needs_input` is false, **immediately show the `message` to the user** and follow `next_action` (typically poll again after a short wait). Do not analyze or deliberate on the response — just relay the message and execute the next action.
+When `needs_input` is false, **immediately show the `message` to the user** and follow `next_action` (for wallet activation, the CLI usually suggests polling about every 10 seconds — use the exact interval in `next_action` if it differs). Do not analyze or deliberate on the response — just relay the message and execute the next action.
 
 Without `--session-id`, starts a new onboarding. With `--session-id <SESSION_ID>`, resumes that session.
 If the provided `--session-id` does not exist, the CLI creates a new session automatically.

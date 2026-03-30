@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.03.30.1"
+  version: "2026.03.30.2"
 description: |
   Use for Cobo Agentic Wallet operations via the `caw` CLI: wallet onboarding, token transfers (USDC, USDT, ETH, SOL, etc.), smart contract calls, balance queries, and policy denial handling.
   Covers DeFi execution on EVM (Base, Ethereum, Arbitrum, Optimism, Polygon) and Solana: Uniswap V3 swaps, Aave V3 lending, Jupiter swaps, DCA, grid trading, Polymarket, and Drift perps.
@@ -114,6 +114,7 @@ When constructing authorization request parameters from intent:
   - See [authorization-spec.md](./references/authorization-spec.md) for full policy schema and patterns
 - Use a concise human-readable `--name` for owner review
 - Derive `--execution-plan` from the intent as a markdown execution plan with sections like `# Summary`, `# Contract Operations`, `# Risk Controls`, `# Schedule` -- this is shown to the owner during approval review
+- Pass `--original-intent` with the user's raw input. Single-turn: the triggering message verbatim. Multi-turn: concatenate all messages relevant to this operation in order as `"User: <msg1>\nUser: <msg2>"`. Omit unrelated messages.
 
 See [execution-authorization.md](./references/execution-authorization.md) for CLI command reference, lifecycle details, and troubleshooting.
 See [authorization-spec.md](./references/authorization-spec.md) for authorization spec construction, policy schema, and validation rules.

@@ -84,7 +84,7 @@ Submit a new authorization request for owner approval. Creates a `PENDING_APPROV
 | `--name <text>` | derived from `--intent` | Human-readable name for owner review |
 | `--resource-scope <json>` | -- | Resource scope constraints as JSON, e.g. `'{"wallet_id":"<uuid>"}'`. Always bind to the target wallet at minimum. |
 | `--execution-plan <text>` | -- | Free-form execution plan in markdown format, shown to the owner during approval review. Use sections like `# Summary`, `# Contract Operations`, `# Risk Controls`, `# Schedule` to help the owner understand the concrete actions. See [authorization-spec.md](./authorization-spec.md#execution-plan-structure) |
-| `--original-intent <text>` | -- | Raw user input that originated this request. For multi-turn conversations, concatenate all user messages. Stored alongside the pact for audit/traceability. |
+| `--original-intent <text>` | -- | Raw user input that triggered this request. For single-turn: pass the user message verbatim. For multi-turn: concatenate all user messages directly related to this operation in order, formatted as `"User: <msg1>\nUser: <msg2>"`. Omit unrelated messages |
 
 **Full spec mode (for advanced policy control):**
 
@@ -284,6 +284,7 @@ When user intent is fully understood and execution is ready, construct submit ar
 | Display name | `--name` | Concise title for owner approval review |
 | Resource binding | `--resource-scope` | JSON scope constraints; always bind to wallet |
 | Execution plan | `--execution-plan` | Free-form markdown with `# Summary`, `# Contract Operations`, `# Risk Controls`, `# Schedule` sections. Helps owner make informed approval decision |
+| Raw user input | `--original-intent` | Pass user's original message(s) verbatim. Single-turn: the triggering message. Multi-turn: concatenate all messages relevant to this operation in order as `"User: <msg1>\nUser: <msg2>"`. Skip unrelated turns |
 
 **Choosing inline vs. full spec:**
 
@@ -325,6 +326,7 @@ If delegated execution is required and intent is complete, submit an authorizati
 - [ ] `--resource-scope` binds to the target wallet
 - [ ] `--name` is concise and describes the task for owner review
 - [ ] `--execution-plan` describes concrete actions for multi-step or non-obvious tasks
+- [ ] `--original-intent` captures the user's raw input (single message or multi-turn concatenation)
 
 **Do NOT submit if:**
 
