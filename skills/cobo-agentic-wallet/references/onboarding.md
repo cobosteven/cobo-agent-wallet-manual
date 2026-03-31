@@ -79,7 +79,7 @@ caw profile claim-info              # check claim status
 
 Use `claim-info` to check the current state: `not_found` (no claim initiated), `valid` (pending, waiting for the user), `expired`, or `claimed` (transfer complete).
 
-**Claim status tracking (profile claim only)**: `caw profile claim` supports `--context` for notification tracking. Include `prompt` in `--context` when initiating, then run `caw track --watch &` in the background. The prompt is read from the saved context — **this prompt applies to `caw profile claim` only.** When the terminal notification is delivered (claimed/expired), continue any established next steps from the conversation context. If there is no relevant context, no follow-up is needed. Use: `--context '{"channel":"<channel>", "target":"<target>", "session_id":<session_id>, "prompt":"include the status update and a next-step execution plan based on the conversation context. Prefix the response with [Notification] to distinguish it from normal conversation replies"}'`
+**Claim status tracking (profile claim only)**: `--context` is **required** for `caw profile claim`. When openclaw notification context is available, pass `channel`, `target`, `session_id`, and `prompt`. When the terminal notification is delivered (claimed/expired), continue any established next steps from the conversation context. Use: `--context '{"channel":"<channel>", "target":"<target>", "session_id":<session_id>, "prompt":"include the status update and a next-step execution plan based on the conversation context. Prefix the response with [Notification] to distinguish it from normal conversation replies"}'` — **this prompt applies to `caw profile claim` only.** 
 
 ## Profile Management
 

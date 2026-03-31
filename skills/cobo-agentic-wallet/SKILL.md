@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.03.30.6"
+  version: "2026.03.31.1"
 description: |
   Use for Cobo Agentic Wallet operations via the `caw` CLI: wallet onboarding, token transfers (USDC, USDT, ETH, SOL, etc.), smart contract calls, balance queries, and policy denial handling.
   Covers DeFi execution on EVM (Base, Ethereum, Arbitrum, Optimism, Polygon) and Solana: Uniswap V3 swaps, Aave V3 lending, Jupiter swaps, DCA, grid trading, Polymarket, and Drift perps.
@@ -135,8 +135,8 @@ See [authorization-spec.md](./references/authorization-spec.md) for authorizatio
 - **`--pre-check` (default: true)**: `caw tx transfer` and `caw tx call` automatically run a policy + fee pre-check before submitting. If policy denies the transaction, the command exits with an error and the transaction is NOT submitted. Use `--pre-check=false` to skip and submit directly.
 - **`--request-id` idempotency**: Always set a unique, deterministic request ID per logical transaction (e.g. `invoice-001`, `swap-20240318-1`). Retrying with the same `--request-id` is safe — the server deduplicates.
 - **`--gasless`**: `false` by default — wallet pays own gas. Set `true` for Cobo Gasless (human-principal wallets only; agent-principal wallets will be rejected).
-- **`--context`**: Pass openclaw notification context as JSON when submitting transactions. Include `channel`, `target`, `session_id` (numeric), and `prompt` so that `caw track` can deliver terminal results back to the conversation. For `caw tx transfer` / `caw tx call`, use: `--context '{"channel":"<channel>", "target":"<target>", "session_id":<session_id>, "prompt":"include the transaction status update (tx ID, status, amount/token, and original intent if available). Prefix the response with [Notification] to distinguish it from normal conversation replies"}'` — **this prompt is for tx operations only**; `caw pact submit` and `caw profile claim` use their own prompts defined in their respective reference docs.
-- After submitting a transaction (`caw tx transfer` / `caw tx call`) with `--context`, reply with a brief summary (tx ID, status, amount/token, and original intent if applicable), then run `caw track --watch &` in the background.
+- **`--context` (required)**: `--context` is a **required flag** for `caw tx transfer`, `caw tx call`, `caw tx sign-message`. When openclaw notification context is available, pass `channel`, `target`, `session_id` (numeric), and `prompt` so that `caw track` can deliver terminal results back to the conversation. For `caw tx transfer` / `caw tx call` / `caw tx sign-message`, use: `--context '{"channel":"<channel>", "target":"<target>", "session_id":<session_id>, "prompt":"include the transaction status update (tx ID, status, amount/token, and original intent if available). Prefix the response with [Notification] to distinguish it from normal conversation replies"}'` — **this prompt is for tx operations only**.
+- After submitting a transaction (`caw tx transfer` / `caw tx call` / `caw tx sign-message`), reply with a brief summary (tx ID, status, amount/token, and original intent if applicable), then run `caw track --watch &` in the background.
 
 **Responses & errors**
 - **StandardResponse format** — API responses are wrapped as `{ success: true, result: <data> }`. Extract from `result` first.
