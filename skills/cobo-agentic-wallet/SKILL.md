@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.03.31.1"
+  version: "2026.03.31.2"
 description: |
   Use for Cobo Agentic Wallet operations via the `caw` CLI: wallet onboarding, token transfers (USDC, USDT, ETH, SOL, etc.), smart contract calls, balance queries, and policy denial handling.
   Covers DeFi execution on EVM (Base, Ethereum, Arbitrum, Optimism, Polygon) and Solana: Uniswap V3 swaps, Aave V3 lending, Jupiter swaps, DCA, grid trading, Polymarket, and Drift perps.
@@ -12,6 +12,8 @@ description: |
 # Cobo Agentic Wallet (Sandbox)
 
 Policy-enforced crypto wallet for AI agents. Owners set spending limits; agents operate within guardrails. The `caw` CLI is the primary interface.
+
+**First time?** Read [onboarding.md](./references/onboarding.md) for install, setup, environments, and claiming.
 
 **Workflow**:
 - **Token transfers**: use `caw tx transfer` directly (operates under default wallet authorization). If denied due to quota/limit exhaustion, fall back to the [execution authorization flow](#execution-authorization).
@@ -35,10 +37,6 @@ Policy-enforced crypto wallet for AI agents. Owners set spending limits; agents 
 - See [error-handling.md](./references/error-handling.md) for recovery patterns and user communication templates
 
 See [security.md](./references/security.md) for prompt injection patterns, delegation boundaries, and incident response.
-
-## Quick Start
-
-**First time?** Read [onboarding.md](./references/onboarding.md) for install, setup, environments, claiming, and profile management.
 
 ## Common Operations
 
@@ -101,7 +99,7 @@ Some operations require explicit owner approval before execution. Present this t
 
 See [execution-authorization.md](./references/execution-authorization.md) for trigger rules, user-facing language, flow, and transfer quota fallback.
 
-## Authorization Parameters
+### Authorization Parameters
 
 When constructing authorization request parameters from intent:
 - Map objective and constraints into `--intent` (asset/protocol/chain/cadence/risk limits)
@@ -123,22 +121,28 @@ See [authorization-spec.md](./references/authorization-spec.md) for authorizatio
 
 ## Key Notes
 
-**CLI conventions**
+### Script Management
+
+**All scripts MUST be stored in [`./scripts/`](./scripts/)** — do not create scripts elsewhere.
+
+Before writing any script, search `./scripts/` for existing scripts that match the task. Prefer reusing or generalizing existing scripts over creating new ones. See [sdk-scripting.md](./references/sdk-scripting.md#script-management) for detailed guidelines.
+
+### CLI conventions
 - **Output defaults to JSON**. Use `--format table` only when displaying to the user
-- **`wallet_uuid` is optional** in most commands — if omitted, the CLI uses the active profile's wallet
+- **`wallet_uuid` is optional** in most commands — if omitted, the CLI uses the default wallet
 - **Long-running commands** (`caw onboard --create-wallet`, **`caw ap2 purchase`**, `caw pact submit --wait`): run in background or wait until completion; for `ap2 purchase`, report stderr progress (x402 → approval → merchant)
 - **TSS Node auto-start**: `caw tx transfer`, `caw tx call`, and **`caw ap2 purchase`** automatically check TSS Node status and start it if offline
 - **Show the command**: When reporting `caw` results to the user, always include the full CLI command that was executed
 - **`caw track --watch` lock**: only one instance runs at a time. If it fails to acquire the lock, exit normally — the running instance will pick up any new entries automatically. Do not retry or wait for the lock.
 
-**Transactions**
+### Transactions
 - **`--pre-check` (default: true)**: `caw tx transfer` and `caw tx call` automatically run a policy + fee pre-check before submitting. If policy denies the transaction, the command exits with an error and the transaction is NOT submitted. Use `--pre-check=false` to skip and submit directly.
 - **`--request-id` idempotency**: Always set a unique, deterministic request ID per logical transaction (e.g. `invoice-001`, `swap-20240318-1`). Retrying with the same `--request-id` is safe — the server deduplicates.
 - **`--gasless`**: `false` by default — wallet pays own gas. Set `true` for Cobo Gasless (human-principal wallets only; agent-principal wallets will be rejected).
-- **`--context` (required)**: `--context` is a **required flag** for `caw tx transfer`, `caw tx call`, `caw tx sign-message`. When openclaw notification context is available, pass `channel`, `target`, `session_id` (numeric), and `prompt` so that `caw track` can deliver terminal results back to the conversation. For `caw tx transfer` / `caw tx call` / `caw tx sign-message`, use: `--context '{"channel":"<channel>", "target":"<target>", "session_id":<session_id>, "prompt":"include the transaction status update (tx ID, status, amount/token, and original intent if available). Prefix the response with [Notification] to distinguish it from normal conversation replies"}'` — **this prompt is for tx operations only**.
+- **`--context` (required)**: `--context` is a **required flag** for `caw tx transfer`, `caw tx call`, `caw tx sign-message`. When openclaw notification context is available, pass `channel`, `target`, `session_id`, and `prompt` so that `caw track` can deliver terminal results back to the conversation. **`session_id`**: UUID string identifying the current openclaw conversation session — read it from `openclaw sessions --json --agent <agent>` or equivalent method. For `caw tx transfer` / `caw tx call` / `caw tx sign-message`, use: `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<uuid>", "prompt":"include the transaction status update (tx ID, status, amount/token, and original intent if available). Prefix the response with [Notification] to distinguish it from normal conversation replies"}'` — **this prompt is for tx operations only**. If notification context is not available, pass `--context '{}'`.
 - After submitting a transaction (`caw tx transfer` / `caw tx call` / `caw tx sign-message`), reply with a brief summary (tx ID, status, amount/token, and original intent if applicable), then run `caw track --watch &` in the background.
 
-**Responses & errors**
+### Responses & errors
 - **StandardResponse format** — API responses are wrapped as `{ success: true, result: <data> }`. Extract from `result` first.
 - **Non-zero exit codes** indicate failure — check stdout/stderr before retrying.
 - **Policy denial**: Tell the user what was blocked and why — see [error-handling.md](./references/error-handling.md#communicating-denials-to-the-user) for the message template.
@@ -148,14 +152,8 @@ See [authorization-spec.md](./references/authorization-spec.md) for authorizatio
   3. Inform the user that a newer `caw` CLI version is available and can be downloaded from: https://download.agenticwallet.cobo.com/binary-release/
   4. Re-run the original command with the current CLI
 
-**Safety & boundaries**
+### Safety & boundaries
 - **Agent permission boundary**: Policies are set by the owner. The agent can only read and dry-run policies — it cannot create or modify them. When denied, suggest the owner adjusts the policy. See [policy-management.md](./references/policy-management.md).
-
-## Script Management
-
-**All scripts MUST be stored in [`./scripts/`](./scripts/)** — do not create scripts elsewhere.
-
-Before writing any script, search `./scripts/` for existing scripts that match the task. Prefer reusing or generalizing existing scripts over creating new ones. See [sdk-scripting.md](./references/sdk-scripting.md#script-management) for detailed guidelines.
 
 ## Reference
 
@@ -166,7 +164,7 @@ Read the file that matches the user's task. Do not load files that aren't releva
 | User asks about… | Read |
 |---|---|
 | AP2 shopping, `caw ap2`, merchant agent, CartMandate / PaymentMandate, Human-Present checkout | [ap2-shopping.md](./references/ap2-shopping.md) |
-| Onboarding, install, setup, environments, profiles, claiming, claim tracking | [onboarding.md](./references/onboarding.md) |
+| Onboarding, install, setup, environments, claiming, claim tracking | [onboarding.md](./references/onboarding.md) |
 | Policy denial, 403, TRANSFER_LIMIT_EXCEEDED | [error-handling.md](./references/error-handling.md) |
 | Policy inspect, dry-run, delegation | [policy-management.md](./references/policy-management.md) |
 | Execution authorization, contract call approval, transfer quota fallback, authorization lifecycle, submit/get/events/cancel, intent-to-params mapping, pact tracking | [execution-authorization.md](./references/execution-authorization.md) |

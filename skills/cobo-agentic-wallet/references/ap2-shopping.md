@@ -11,7 +11,7 @@ CAW exposes **AP2** (Agent Payments Protocol) Human-Present shopping via `caw ap
 
 | Requirement | Why | Check |
 |---|---|---|
-| `caw` installed, profile active | CLI entry point | `caw profile current` |
+| `caw` installed and configured | CLI entry point | `caw profile current` |
 | **Wallet claimed by owner** | `POST /approvals` requires `owner_principal_id`; without claim → 403 | `caw profile claim-info` |
 | **TSS Node reachable** | x402 signing needs MPC co-sign | auto-checked by `caw ap2 purchase` |
 | **Sufficient balance** | x402 on-chain payment | `caw wallet balance` |
@@ -106,7 +106,7 @@ caw ap2 purchase "<session_id>" \
 |---|---|---|---|
 | `<session_id>` | **yes** (positional) | — | From Step 2 output |
 | `--cart-id` | **yes** | — | `cart_id` the user confirmed |
-| `--wallet` / `-w` | no | active profile wallet | Explicit wallet UUID; omit to use profile default |
+| `--wallet` / `-w` | no | default wallet | Explicit wallet UUID; omit to use the default wallet |
 | `--simulate-user-auth` | no | `false` | Skip CAW App, use local ECDSA simulation (dev only) |
 
 **This command blocks** (typically 30 s – 2 min) while it:

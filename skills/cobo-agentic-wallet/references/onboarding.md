@@ -79,21 +79,21 @@ caw profile claim-info              # check claim status
 
 Use `claim-info` to check the current state: `not_found` (no claim initiated), `valid` (pending, waiting for the user), `expired`, or `claimed` (transfer complete).
 
-**Claim status tracking (profile claim only)**: `--context` is **required** for `caw profile claim`. When openclaw notification context is available, pass `channel`, `target`, `session_id`, and `prompt`. When the terminal notification is delivered (claimed/expired), continue any established next steps from the conversation context. Use: `--context '{"channel":"<channel>", "target":"<target>", "session_id":<session_id>, "prompt":"include the status update and a next-step execution plan based on the conversation context. Prefix the response with [Notification] to distinguish it from normal conversation replies"}'` — **this prompt applies to `caw profile claim` only.** 
+**Claim status tracking (profile claim only)**: `--context` is **required** for `caw profile claim`. When openclaw notification context is available, pass `channel`, `target`, `session_id`, and `prompt`. **`session_id`**: UUID string identifying the current openclaw conversation session — read it from `openclaw sessions --json --agent <agent>` or equivalent method. If notification context is not available, pass `--context '{}'`. When the terminal notification is delivered (claimed/expired), continue any established next steps from the conversation context. Use: `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<uuid>", "prompt":"include the status update and a next-step execution plan based on the conversation context. Prefix the response with [Notification] to distinguish it from normal conversation replies"}'` — **this prompt applies to `caw profile claim` only.** 
 
-## Profile Management
+## Multi-wallet Setup
 
-Each `caw onboard` creates a separate **profile** — an isolated identity with its own credentials, wallet, and TSS Node files. Multiple profiles can coexist on one machine, which is useful when an agent serves different purposes (e.g. one profile for DeFi execution, another for payroll disbursements).
+Each `caw onboard` creates a separate wallet with its own credentials and TSS Node files. Multiple wallets can coexist on one machine, which is useful when an agent serves different purposes (e.g. one for DeFi execution, another for payroll disbursements).
 
-- **Default profile**: Most commands automatically use the active profile. Switch it with `caw profile use <agent_id>`.
-- **`--profile` flag**: Any command accepts `--profile <agent_id>` to target a specific profile without switching the default. Use this when running multiple agents concurrently.
-- **After onboarding**: Record the `agent_id` in AGENTS.md (or equivalent project instructions file) so future sessions know which profile to use.
+- **Default wallet**: Most commands automatically use the active wallet. Switch it with `caw profile use <agent_id>`.
+- **`--profile` flag**: Any command accepts `--profile <agent_id>` to target a specific wallet without changing the default. Use this when running multiple agents concurrently.
+- **After onboarding**: Record the `agent_id` in AGENTS.md (or equivalent project instructions file) so future sessions know which wallet to use.
 
 ```bash
-# Example: transfer using a non-default profile
+# Example: transfer using a non-default wallet
 caw --profile caw_agent_abc123 tx transfer --to 0x... --token SOLDEV_SOL_USDC --amount 0.0001
 ```
 
-See `caw profile --help` for all profile subcommands (`list`, `current`, `use`, `env`, `archive`, `restore`).
+See `caw profile --help` for all subcommands (`list`, `current`, `use`, `env`, `archive`, `restore`).
 
-> **ONLY use archive when a previous onboarding has failed and you need to retry.** Do NOT archive before a fresh onboarding — the `onboard` command creates a new profile automatically.
+> **ONLY use archive when a previous onboarding has failed and you need to retry.** Do NOT archive before a fresh onboarding — the `onboard` command creates a new wallet automatically.
