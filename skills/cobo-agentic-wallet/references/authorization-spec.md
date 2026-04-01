@@ -2,6 +2,21 @@
 
 This document covers the core concepts and construction patterns for the authorization spec — the structured agreement that defines what an operator agent is authorized to do.
 
+## Table of Contents
+
+| Section | What it covers |
+|---|---|
+| [Authorization Spec Schema](#authorization-spec-schema) | Top-level fields, types, required vs optional |
+| [Execution Plan Structure](#execution-plan-structure) | `execution_plan` markdown format and sections |
+| [Permissions](#permissions) | Permission strings and least-privilege selection |
+| [Policies](#policies) | Policy object schema (allow / deny) |
+| [Policy Construction Patterns](#policy-construction-patterns) | Common patterns: transfer cap, contract scope, rolling limits |
+| [Completion Conditions](#completion-conditions) | Auto-completion triggers |
+| [Intent-to-Spec Construction Guide](#intent-to-spec-construction-guide) | Mapping user intent → spec fields |
+| [Validation Rules](#validation-rules) | Rules enforced at submission time |
+| [Lifecycle States](#lifecycle-states) | Pact status transitions |
+| [Security Considerations](#security-considerations) | Least privilege, scope binding |
+
 ## Authorization Spec Schema
 
 The authorization spec is the core data structure submitted with `caw pact submit`. It has five top-level fields:

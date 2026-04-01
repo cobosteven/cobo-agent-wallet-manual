@@ -220,6 +220,45 @@ console.log(wallets.data.result);
 - **`sponsor`**: `false` by default (wallet pays own gas). Set `true` for Cobo Gasless (human-principal wallets only).
 - **SDK returns unwrapped data**: Python SDK methods return the `result` payload directly. TypeScript SDK responses are in `response.data.result`.
 - **Exceptions on failure**: SDK raises exceptions on HTTP/API errors — catch and report; do not silently retry.
+- **Sequential nonce ordering**: On EVM chains, each transaction from the same address must use an incrementing nonce. Submitting a new transaction before the previous one is on-chain causes nonce conflicts and failures. **Poll and wait for at least `Confirming` status (tx is on-chain, nonce consumed) before submitting the next transaction.** Waiting for `Completed` (all block confirmations) is unnecessary and slow — once a tx reaches `Confirming`, its nonce is consumed and the next tx can safely use nonce+1.
+
+```python
+import asyncio
+from cobo_agentic_wallet.client import WalletAPIClient
+
+# Status lifecycle: Submitted → PendingScreening → Broadcasting → Confirming → Success/Completed
+# For nonce ordering, "Confirming" is sufficient — the tx is on-chain, nonce consumed.
+ONCHAIN_STATUSES = {"Confirming", "Success", "Completed"}
+TERMINAL_FAILURE_STATUSES = {"Failed", "Rejected"}
+
+async def wait_for_onchain(client: WalletAPIClient, wallet_uuid: str, request_id: str, timeout: int = 120) -> dict:
+    """Poll transaction status until it is on-chain (Confirming) or terminal."""
+    elapsed = 0
+    interval = 1.5
+    while elapsed < timeout:
+        record = await client.get_transaction_by_request_id(wallet_uuid, request_id)
+        status = record.get("status", "")
+        if status in ONCHAIN_STATUSES:
+            return record
+        if status in TERMINAL_FAILURE_STATUSES:
+            raise RuntimeError(f"Transaction {request_id} failed: {record}")
+        await asyncio.sleep(interval)
+        elapsed += interval
+    raise TimeoutError(f"Transaction {request_id} not on-chain within {timeout}s")
+
+# Correct: wait for each tx to be on-chain before sending the next
+tx1 = await client.transfer_tokens(WALLET_UUID, dst_addr="0xA...", token_id="ETH_USDC", amount="10", request_id="batch-001")
+await wait_for_onchain(client, WALLET_UUID, "batch-001")
+
+tx2 = await client.transfer_tokens(WALLET_UUID, dst_addr="0xB...", token_id="ETH_USDC", amount="20", request_id="batch-002")
+await wait_for_onchain(client, WALLET_UUID, "batch-002")
+
+# Wrong: fire-and-forget causes nonce conflicts
+# tx1 = await client.transfer_tokens(...)  # nonce=5
+# tx2 = await client.transfer_tokens(...)  # also nonce=5 — conflict!
+```
+
+The same rule applies to CLI scripts — poll with `caw --format json tx get <wallet_uuid> <request_id>` and wait for `status` to be `Confirming` or `Completed` before firing the next `caw tx transfer` or `caw tx call`.
 
 ## DeFi Operations
 

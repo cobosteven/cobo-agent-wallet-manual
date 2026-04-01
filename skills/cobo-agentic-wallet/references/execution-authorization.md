@@ -1,6 +1,22 @@
 # Pact Management
 
-Execution authorization is implemented via the `caw pact` CLI commands. **When presenting this to the user, frame it as "requesting approval for this action" — do not expose internal terminology.**
+Execution authorization is implemented via the `caw pact` CLI commands.
+
+## Table of Contents
+
+| Section | What it covers |
+|---|---|
+| [When to use execution authorization](#when-to-use-execution-authorization) | Decision rules: when to request vs. execute directly |
+| [Execution Authorization Flow](#execution-authorization-flow) | End-to-end flow overview |
+| [Transfer Quota Exhaustion Fallback](#transfer-quota-exhaustion-fallback) | Handling cumulative limit denials |
+| [Lifecycle](#lifecycle) | Pact status transitions |
+| [CLI Command Reference](#cli-command-reference) | `caw pact submit/get/events/cancel` + profile claim |
+| [Least Privilege Principle](#least-privilege-principle) | Choosing narrowest permissions and scope |
+| [Intent → Submit Parameter Mapping](#intent---submit-parameter-mapping) | Mapping user intent to CLI flags |
+| [Submission Rules](#submission-rules) | Rules and constraints at submission |
+| [Post-Submission Flow](#post-submission-flow) | Tracking, background execution rule, and delivering results after submit |
+| [Handling Outcomes](#handling-outcomes) | Approved / rejected / expired responses |
+| [Troubleshooting](#troubleshooting) | Common errors and fixes | **When presenting this to the user, frame it as "requesting approval for this action" — do not expose internal terminology.**
 
 **User-facing language:**
 - Do say: "This action requires owner approval. I'm requesting authorization now."
@@ -38,7 +54,7 @@ Execution authorization is implemented via the `caw pact` CLI commands. **When p
    >
    > 🔗 **[Review & Approve in CAW App](https://agenticwallet.sandbox.cobo.com/dashboard?approval=<approval_id>)**
 5. **Track**: Run `caw track --watch &` in the background to receive terminal state notifications (`active`/`rejected`/`completed`/`expired`/`revoked`) delivered via `openclaw agent --deliver`. The `prompt` stored in `--context` controls what the receiving agent does.
-6. **On `active`** *(delivered via [Notification])*: Notify the user that the authorization has been approved, then proceed with execution in the background using the authorization-scoped API key
+6. **On `active`** *(delivered via [Notification])*: Immediately reply to the user that the authorization has been approved. Then trigger execution as a **separate background task** via `exec background:true` — never block the notification turn waiting for tx results. See [Background Execution Rule](#background-execution-rule).
 7. **On `rejected`** *(delivered via [Notification])*: Tell the user "The owner declined this action." Suggest adjustments if applicable.
 
 ## Transfer Quota Exhaustion Fallback
@@ -344,6 +360,20 @@ If delegated execution is required and intent is complete, submit an authorizati
 - The operation is a token transfer within default quota — try `caw tx transfer` directly first
 
 ## Post-Submission Flow
+
+### Background Execution Rule
+
+**Any execution triggered by a notification — pact `active`, or any other [Notification] turn — MUST use `exec background:true`. Never synchronously wait for tx results inside the notification turn.**
+
+Why: a notification turn has a short reply window. Blocking it on-chain tx confirmation (which can take minutes) causes timeouts and leaves the conversation unresponsive. The correct pattern is:
+
+1. **Reply immediately** in the notification turn: "Authorization approved — starting execution now."
+2. **Trigger execution** via `exec background:true` as a separate task. The background task configures the authorization-scoped API key and runs the operations.
+3. **Report results** when the background task completes, via a follow-up message or `caw track` notification.
+
+This rule applies to:
+- Pact `active` notifications
+- Any `[Notification]` turn that needs to perform on-chain writes
 
 ### Tracking Approval
 
