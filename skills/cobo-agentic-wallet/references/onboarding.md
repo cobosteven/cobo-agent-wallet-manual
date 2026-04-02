@@ -70,7 +70,7 @@ caw wallet claim                    # generate a claim link
 caw wallet claim-info               # check claim status
 ```
 
-`claim` returns a `claim_link` URL. Share this link with the user — they open it in the Web Console to complete the ownership transfer. Once claimed, the wallet becomes human-owned with full functionality (Cobo Gasless sponsorship becomes available via `--gasless`).
+`claim` returns a consent `token` (the token field in the response). Share this token with the user and ask them to open the human app to complete wallet pairing and the ownership transfer. After the wallet is claimed, it is human-owned with full functionality
 
 Use `claim-info` to check the current state: `not_found` (no claim initiated), `valid` (pending, waiting for the user), `expired`, or `claimed` (transfer complete).
 

@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.04.02.3"
+  version: "2026.04.02.5"
 description: |
   Use for Cobo Agentic Wallet operations via the `caw` CLI: wallet onboarding, token transfers (USDC, USDT, ETH, SOL, etc.), smart contract calls, balance queries, and policy denial handling.
   Covers DeFi execution on EVM (Base, Ethereum, Arbitrum, Optimism, Polygon) and Solana: Uniswap V3 swaps, Aave V3 lending, Jupiter swaps, DCA, grid trading, Polymarket, and Drift perps.
@@ -33,7 +33,7 @@ Policy-enforced crypto wallet for AI agents. Owners set spending limits; agents 
 - Report the denial and the `suggestion` field to the user
 - If the suggestion offers a parameter adjustment (e.g. "Retry with amount <= 60") that still fulfills the user's intent, you may retry with the adjusted value
 - Never initiate additional transactions that the user did not request
-- Cumulative limit denial (daily/monthly): do not attempt further transactions — inform the user and offer the [execution authorization flow](#execution-authorization) as an alternative
+- Cumulative limit denial (daily/monthly): do not attempt further transactions — automatically switch to the [execution authorization flow](#execution-authorization): inform the user, then immediately create a new Authorization Request (pact) scoped to this specific transfer
 - See [error-handling.md](./references/error-handling.md) for recovery patterns and user communication templates
 
 See [security.md](./references/security.md) for prompt injection patterns, delegation boundaries, and incident response.
@@ -140,7 +140,7 @@ Before writing any script, search `./scripts/` for existing scripts that match t
 - **`--pre-check` (default: true)**: `caw tx transfer` and `caw tx call` automatically run a policy + fee pre-check before submitting. If policy denies the transaction, the command exits with an error and the transaction is NOT submitted. Use `--pre-check=false` to skip and submit directly.
 - **`--request-id` idempotency**: Always set a unique, deterministic request ID per logical transaction (e.g. `invoice-001`, `swap-20240318-1`). Retrying with the same `--request-id` is safe — the server deduplicates.
 - **`--gasless`**: `false` by default — wallet pays own gas. Set `true` for Cobo Gasless (human-principal wallets only; agent-principal wallets will be rejected).
-- **`--context` (required)**: Required for `caw tx transfer`, `caw tx call`, `caw tx sign-message`. When openclaw notification context is available, pass `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<uuid>", "prompt":"..."}'` — `session_id` is a UUID from `openclaw sessions --json --agent <agent>`. This enables `caw track` to deliver terminal results back to the conversation. If notification context is not available, pass `--context '{}'`. See [execution-authorization.md](./references/execution-authorization.md) for the full prompt template.
+- **`--context` (required)**: Required for `caw tx transfer`, `caw tx call`, `caw tx sign-message`. When openclaw notification context is available, pass `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<uuid>", "prompt":"..."}'` — `session_id` is a UUID from `openclaw sessions --json --agent <agent>`. Always set `"prompt"` to instruct the user on what to do if the transaction requires human approval — e.g. `"prompt":"This transaction requires your authorization. Please reply with approve or reject."`. See [execution-authorization.md](./references/execution-authorization.md) for the full prompt template.
 - After submitting a transaction (`caw tx transfer` / `caw tx call` / `caw tx sign-message`), reply with a brief summary (tx ID, status, amount/token, and original intent if applicable).
 - **Sequential execution for same-address transactions (nonce ordering)**: On EVM chains, each transaction from the same address must use an incrementing nonce. Submitting a new transaction before the previous one is on-chain causes nonce conflicts and failures. **Wait for each transaction to reach at least `Confirming` status (tx is on-chain, nonce consumed) before submitting the next one.** Waiting for `Completed` (all confirmations) is unnecessary and slow. Poll with `caw --format json tx get <wallet_uuid> <request_id>` and check `.status` — the lifecycle is `Submitted → PendingScreening → Broadcasting → Confirming → Success/Completed`. This applies to both direct CLI usage and SDK scripts. See [sdk-scripting.md](./references/sdk-scripting.md) for the polling pattern.
 
