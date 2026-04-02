@@ -9,7 +9,7 @@ Execution authorization is implemented via the `caw pact` CLI commands.
 | [When to use execution authorization](#when-to-use-execution-authorization) | Decision rules: when to request vs. execute directly |
 | [Execution Authorization Flow](#execution-authorization-flow) | End-to-end flow overview |
 | [Transfer Quota Exhaustion Fallback](#transfer-quota-exhaustion-fallback) | Handling cumulative limit denials |
-| [Lifecycle](#lifecycle) | Pact status transitions |
+| [Lifecycle](#lifecycle) | Pact status transitions — see [authorization-spec.md](./authorization-spec.md#lifecycle-states) |
 | [CLI Command Reference](#cli-command-reference) | `caw pact submit/get/events/cancel` + wallet claim |
 | [Least Privilege Principle](#least-privilege-principle) | Choosing narrowest permissions and scope |
 | [Intent → Submit Parameter Mapping](#intent---submit-parameter-mapping) | Mapping user intent to CLI flags |
@@ -29,6 +29,8 @@ Execution authorization is implemented via the `caw pact` CLI commands.
 
 ## When to use execution authorization
 
+> **Note**: Always check `owner_linked` from `caw --format json status` first. When `owner_linked = false`, submitted pacts **auto-activate** (no human approval required) — see [Execution Authorization Flow](#execution-authorization-flow) Step 1 for the required confirmation step before submission.
+
 **Decision principle**: Evaluate the full end-to-end complexity of the user's intent. If completing the task involves on-chain writes (contract calls, message signing), spans time (recurring, scheduled, multi-phase), requires coordinated multi-step execution, or carries financial risk beyond a simple one-shot transfer — request authorization. When in doubt, request authorization. Never suggest the user manually configure controls in WebConsole as a substitute for this flow.
 
 **Authorization required:**
@@ -45,17 +47,37 @@ Execution authorization is implemented via the `caw pact` CLI commands.
 
 ## Execution Authorization Flow
 
-1. **Dedup check**: `caw --format json pact list --status pending_approval --wallet-id <id>`. If a pending request exists with the same intent, do NOT submit — inform the user and share the existing review link. If the user changed their intent, revoke the old one first (`caw --format json pact revoke <old_pact_id>`), then proceed.
-2. **Construct** authorization parameters from the user's intent (see [Intent -> Submit Parameter Mapping](#intent---submit-parameter-mapping))
-3. **Submit**: `caw --format json pact submit ...`
-4. **Communicate**: Extract `approval_id` from the submit response, construct the review URL `https://agenticwallet.sandbox.cobo.com/dashboard?approval=<approval_id>`, and present it as a formatted link. Tell the user:
+1. **Owner-linked check**: Run `caw --format json status` and read `owner_linked`.
+
+   **If `owner_linked = false`** — no owner is linked; execution authorization requests **auto-activate** without any human approval step. Because there is no human oversight gate, present the authorization details to the user for explicit confirmation **before** submitting:
+
+     > 📋 **Pending your confirmation**
+     >
+     > This wallet has no linked owner. The following authorization will activate automatically — no human review will occur.
+     >
+     > - **Intent**: [goal description]
+     > - **Permissions**: [e.g. write:contract_call, read:wallet]
+     > - **Duration**: [e.g. 90 days / no expiry]
+     > - **Spend limits**: [e.g. max $550/tx, $600/day]
+     > - **Completion conditions**: [e.g. 12 transactions or $6,000 total]
+     >
+     > Confirm submission?
+
+   Only proceed with submission after explicit user confirmation. If the user declines: stop. Do not submit.
+
+   **If `owner_linked = true`** — an owner exists; the execution authorization request requires human approval via CAW App before activating. Proceed to step 2.
+
+2. **Dedup check**: `caw --format json pact list --status pending_approval --wallet-id <id>`. If a pending request exists with the same intent, do NOT submit — inform the user and share the existing review link. If the user changed their intent, revoke the old one first (`caw --format json pact revoke <old_pact_id>`), then proceed.
+3. **Construct** authorization parameters from the user's intent (see [Intent -> Submit Parameter Mapping](#intent---submit-parameter-mapping))
+4. **Submit**: `caw --format json pact submit ...`
+5. **Communicate**: Extract `approval_id` from the submit response, construct the review URL `https://agenticwallet.sandbox.cobo.com/dashboard?approval=<approval_id>`, and present it as a formatted link. Tell the user:
 
    > ✅ Authorization request submitted. The owner needs to approve it before I can proceed.
    >
    > 🔗 **[Review & Approve in CAW App](https://agenticwallet.sandbox.cobo.com/dashboard?approval=<approval_id>)**
-5. **Track**: Run `caw track --watch &` in the background to receive terminal state notifications (`active`/`rejected`/`completed`/`expired`/`revoked`) delivered via `openclaw agent --deliver`. The `prompt` stored in `--context` controls what the receiving agent does.
-6. **On `active`** *(delivered via [Notification])*: Immediately reply to the user that the authorization has been approved. Then trigger execution as a **separate background task** via `exec background:true` — never block the notification turn waiting for tx results. See [Background Execution Rule](#background-execution-rule).
-7. **On `rejected`** *(delivered via [Notification])*: Tell the user "The owner declined this action." Suggest adjustments if applicable.
+6. **Track**: Run `caw track --watch &` in the background to receive terminal state notifications (`active`/`rejected`/`completed`/`expired`/`revoked`) delivered via `openclaw agent --deliver`. The `prompt` stored in `--context` controls what the receiving agent does.
+7. **On `active`** *(delivered via [Notification])*: Immediately reply to the user that the authorization has been approved. Then trigger execution as a **separate background task** via `exec background:true` — never block the notification turn waiting for tx results. See [Background Execution Rule](#background-execution-rule).
+8. **On `rejected`** *(delivered via [Notification])*: Tell the user "The owner declined this action." Suggest adjustments if applicable.
 
 ## Transfer Quota Exhaustion Fallback
 
@@ -70,10 +92,12 @@ When `caw tx transfer` is denied due to cumulative limit exhaustion (daily/month
 
 ## Lifecycle
 
-Common lifecycle states:
-- `pending_approval`: submitted and waiting for owner decision; request enters `pending_approval` immediately after submit
-- `active`: approved and activated; delegated execution can proceed
-- terminal states: `rejected`, `completed`, `expired`, `cancelled`
+See [authorization-spec.md — Lifecycle States](./authorization-spec.md#lifecycle-states) for the full state diagram and terminal state descriptions.
+
+Common states:
+- `pending_approval`: submitted, awaiting owner decision
+- `active`: approved, delegated execution can proceed
+- terminal: `rejected`, `completed`, `expired`, `cancelled`
 
 Use `caw --format json pact get <pact_id>` to observe state transitions and current details.
 
@@ -274,14 +298,7 @@ Every authorization request MUST use the minimum access needed for the task. Ove
 | Contract calls only (DeFi swaps, staking) | `read:wallet`, `write:contract_call` | No direct transfers needed |
 | Both transfers and contract calls | `operator` (shorthand) | Only when both are genuinely needed |
 
-**Policies**: Scope as tightly as possible:
-
-- Restrict `chain_in` to only the chains involved (e.g. `["BASE"]`, not all chains)
-- Restrict `token_in` to specific tokens the task uses (e.g. `[{"chain_id":"BASE","token_id":"USDC"}]`)
-- Restrict `target_in` to specific contract addresses (e.g. Uniswap V3 router only)
-- Set `deny_if.amount_usd_gt` to the maximum acceptable per-transaction value
-- Set `deny_if.usage_limits` rolling windows to cap cumulative spend
-- Use `review_if` for amounts that should trigger owner review but not block outright
+**Policies**: Scope as tightly as possible — restrict `chain_in`, `token_in`, `target_in` to only what the task needs, set `deny_if.amount_usd_gt` and rolling usage limits, use `review_if` for soft thresholds. See [authorization-spec.md — Policy Construction Patterns](./authorization-spec.md#policy-construction-patterns) for full schema and examples.
 
 **Duration and completion**: Always set finite bounds:
 
@@ -355,6 +372,7 @@ If delegated execution is required and intent is complete, submit an authorizati
 
 **Do NOT submit if:**
 
+- `owner_linked` is `false` and the user has not yet confirmed (see [flow step 1](#execution-authorization-flow))
 - The user's intent is ambiguous — ask for clarification first
 - The wallet target is unknown — query `caw --format json status` or ask the user
 - The operation is a token transfer within default quota — try `caw tx transfer` directly first
@@ -363,7 +381,7 @@ If delegated execution is required and intent is complete, submit an authorizati
 
 ### Background Execution Rule
 
-**Any execution triggered by a notification — pact `active`, or any other [Notification] turn — MUST use `exec background:true`. Never synchronously wait for tx results inside the notification turn.**
+**Any execution triggered by a notification — authorization status `active`, or any other [Notification] turn — MUST use `exec background:true`. Never synchronously wait for tx results inside the notification turn.**
 
 Why: a notification turn has a short reply window. Blocking it on-chain tx confirmation (which can take minutes) causes timeouts and leaves the conversation unresponsive. The correct pattern is:
 

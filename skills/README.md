@@ -185,8 +185,7 @@ skills/
 │   ├── SKILL.md                         # Main instructions (loaded on trigger)
 │   ├── references/                      # Operational reference docs
 │   └── scripts/
-│       ├── bootstrap-env.sh             # Install caw and TSS Node
-│       └── convert_jupiter.sh           # Jupiter API → caw CLI format converter
+│       └── bootstrap-env.sh             # Install caw and TSS Node
 ├── evm-defi-dex-swap/                   # Standalone DeFi skill (depends on cobo-agentic-wallet)
 │   └── SKILL.md                         # Uniswap V3 DEX swap instructions
 ```

@@ -15,23 +15,20 @@ export PATH="$HOME/.cobo-agentic-wallet/bin:$PATH"
 caw --format json onboard --create-wallet --env sandbox
 ```
 
-If the user already has a token or invitation code **before starting**, pass it directly on the **first call** to skip mode selection and credential prompts:
+If the user already has a invitation code **before starting**, pass it directly on the **first call** to skip mode selection and credential prompts:
 
 ```bash
-# Token from the Web Console — human-owned wallet, full functionality from the start
-caw --format json onboard --create-wallet --env sandbox --token <TOKEN>
-
 # Invitation code from Cobo — you own the wallet initially, with limited functionality.
 # Your owner can claim the wallet later to unlock full functionality (see Claiming below).
 caw --format json onboard --create-wallet --env sandbox --invitation-code <CODE>
 ```
 
-> **CRITICAL:** The shortcut commands above are for the **first call only**. Once you have called `caw onboard` and received a `session_id`, you **MUST** include `--session-id <SESSION_ID>` on **every** subsequent call — even when adding `--invitation-code` or `--token`. Omitting `--session-id` starts a brand-new session, discarding prior progress and TSS prewarm work.
+> **CRITICAL:** The shortcut commands above are for the **first call only**. Once you have called `caw onboard` and received a `session_id`, you **MUST** include `--session-id <SESSION_ID>` on **every** subsequent call — even when adding `--invitation-code`. Omitting `--session-id` starts a brand-new session, discarding prior progress and TSS prewarm work.
 
 **How the interactive loop works:**
 1. Call `caw onboard` — read `phase`, `prompts`, `needs_input`, `next_action`, and `session_id`.
 2. On each follow-up, pass `--session-id` with the **latest** `session_id` from the previous response, and keep the same `--create-wallet` and `--env` as the initial call. If the response says the session was not found and a new one was created, use that **new** `session_id`.
-3. When `needs_input` is true, pass `--answers` as JSON whose keys match `prompts[].id` (e.g. `onboard_mode`: `option_a` or `option_b`; later `invitation_code`, `agent_name`, etc., depending on phase).
+3. When `needs_input` is true, pass `--answers` as JSON whose keys match `prompts[].id` (etc., depending on phase).
 4. Repeat until onboarding finishes — typically `wallet_status` is `active` and/or `phase` is `wallet_active`. If input is invalid, use `last_error` and resubmit with corrected `--answers`.
 5. If the background bootstrap worker fails or stops (`phase` is `error`, or `next_action` mentions `--retry-bootstrap`), follow that `next_action` exactly. Typically you re-run onboard with **`--retry-bootstrap`**, the **same `--session-id`**, and the same **`--create-wallet` / `--env`** (and `--api-url` if you used it).
 
@@ -49,8 +46,6 @@ When `needs_input` is false, **immediately show the `message` to the user** and 
 
 Without `--session-id`, starts a new onboarding. With `--session-id <SESSION_ID>`, resumes that session.
 If the provided `--session-id` does not exist, the CLI creates a new session automatically.
-
-**Non-interactive mode:** For scripted / CI usage, add `--non-interactive` to get the legacy synchronous behavior (requires `--token` and/or `--create-wallet`).
 
 See [Error Handling](./error-handling.md#onboarding-errors) for common onboarding errors.
 
