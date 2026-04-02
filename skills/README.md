@@ -106,7 +106,7 @@ After completing wallet setup, the agent should save the following to its memory
 
 | Field | Source | Purpose |
 |-------|--------|---------|
-| `wallet_uuid` | `caw profile current` | Identify the wallet |
+| `wallet_uuid` | `caw wallet current` | Identify the wallet |
 | `api_key` | onboard output | Authenticate API calls |
 | `addresses` | `caw address list` | Per-chain addresses |
 | `env` | setup parameter | sandbox/dev/prod |

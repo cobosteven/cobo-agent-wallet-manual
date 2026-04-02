@@ -49,8 +49,8 @@ npm install @cobo/agentic-wallet
 After onboarding, retrieve your API key and wallet UUID from the CLI:
 
 ```bash
-caw --format json profile current   # -> api_key, api_url
-caw --format json wallet list       # -> wallet_uuid
+caw --format json wallet current    # -> api_key, api_url, wallet_uuid
+caw --format json wallet list       # -> list all local wallet profiles (includes wallet_uuid per entry)
 ```
 
 ## Script Template
@@ -215,7 +215,7 @@ console.log(wallets.data.result);
 
 ## Key Conventions
 
-- **`wallet_uuid`**: pass explicitly to every method; retrieve with `caw --format json wallet list`.
+- **`wallet_uuid`**: pass explicitly to every method; retrieve with `caw --format json wallet current` (active profile) or `caw --format json wallet list` (all local profiles).
 - **`request_id` idempotency**: always set a unique, deterministic ID per logical transaction. Retrying with the same `request_id` is safe — the server deduplicates.
 - **`sponsor`**: `false` by default (wallet pays own gas). Set `true` for Cobo Gasless (human-principal wallets only).
 - **SDK returns unwrapped data**: Python SDK methods return the `result` payload directly. TypeScript SDK responses are in `response.data.result`.

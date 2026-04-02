@@ -11,8 +11,8 @@ CAW exposes **AP2** (Agent Payments Protocol) Human-Present shopping via `caw ap
 
 | Requirement | Why | Check |
 |---|---|---|
-| `caw` installed and configured | CLI entry point | `caw profile current` |
-| **Wallet claimed by owner** | `POST /approvals` requires `owner_principal_id`; without claim → 403 | `caw profile claim-info` |
+| `caw` installed and configured | CLI entry point | `caw wallet current` |
+| **Wallet claimed by owner** | `POST /approvals` requires `owner_principal_id`; without claim → 403 | `caw wallet claim-info` |
 | **TSS Node reachable** | x402 signing needs MPC co-sign | auto-checked by `caw ap2 purchase` |
 | **Sufficient balance** | x402 on-chain payment | `caw wallet balance` |
 | **Shipping profile** (if physical goods) | Merchant needs delivery address | `caw ap2 shipping list` |
@@ -190,7 +190,7 @@ Session statuses: `carts_received` → `purchasing` → `completed` | `failed` |
 
 | Symptom | Cause | Action |
 |---|---|---|
-| 403 on `caw ap2 purchase` (approval creation) | Wallet not claimed by owner | Run `caw profile claim` to generate a claim link, then have the owner complete `caw profile claim-confirm` |
+| 403 on `caw ap2 purchase` (approval creation) | Wallet not claimed by owner | Run `caw wallet claim` to generate a claim link, then share the `claim_link` URL with the owner to complete transfer in the Web Console |
 | "Waiting for approval..." never completes | User hasn't opened CAW App, or approval expired | Remind user to open CAW App; if expired, re-run `caw ap2 purchase` (same session + cart-id is OK) |
 | Approval **rejected** by user | User declined in App | Inform user the payment was cancelled; do not retry unless user asks |
 | Approval **expired** | Timed out (no action in App) | Re-run `caw ap2 purchase` to create a new approval |

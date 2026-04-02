@@ -10,7 +10,7 @@ Execution authorization is implemented via the `caw pact` CLI commands.
 | [Execution Authorization Flow](#execution-authorization-flow) | End-to-end flow overview |
 | [Transfer Quota Exhaustion Fallback](#transfer-quota-exhaustion-fallback) | Handling cumulative limit denials |
 | [Lifecycle](#lifecycle) | Pact status transitions |
-| [CLI Command Reference](#cli-command-reference) | `caw pact submit/get/events/cancel` + profile claim |
+| [CLI Command Reference](#cli-command-reference) | `caw pact submit/get/events/cancel` + wallet claim |
 | [Least Privilege Principle](#least-privilege-principle) | Choosing narrowest permissions and scope |
 | [Intent → Submit Parameter Mapping](#intent---submit-parameter-mapping) | Mapping user intent to CLI flags |
 | [Submission Rules](#submission-rules) | Rules and constraints at submission |
@@ -388,8 +388,10 @@ caw --format json pact get <pact_id>
 When the request becomes `active`, the response includes an `api_key`. The operator uses this key for all subsequent operations under the authorization:
 
 ```bash
-# Configure the authorization API key
-caw profile set --api-key caw_sk_pact_abc123...
+# Pass the authorization API key via flag or env var
+export AGENT_WALLET_API_KEY=caw_sk_pact_abc123...
+# or pass inline per command:
+# caw --api-key caw_sk_pact_abc123... --format json tx call ...
 
 # Execute operations within authorization scope
 caw --format json tx call --chain BASE --contract 0x... --calldata 0x...

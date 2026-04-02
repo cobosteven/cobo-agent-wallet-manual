@@ -71,29 +71,12 @@ export AGENT_WALLET_API_URL=https://api-core.agenticwallet.sandbox.cobo.com
 When the user wants to claim a wallet (e.g., "我要 claim 这个钱包", "claim the wallet"), use these commands:
 
 ```bash
-caw profile claim                   # generate a claim link
-caw profile claim-info              # check claim status
+caw wallet claim                    # generate a claim link
+caw wallet claim-info               # check claim status
 ```
 
 `claim` returns a `claim_link` URL. Share this link with the user — they open it in the Web Console to complete the ownership transfer. Once claimed, the wallet becomes human-owned with full functionality (Cobo Gasless sponsorship becomes available via `--gasless`).
 
 Use `claim-info` to check the current state: `not_found` (no claim initiated), `valid` (pending, waiting for the user), `expired`, or `claimed` (transfer complete).
 
-**Claim status tracking (profile claim only)**: `--context` is **required** for `caw profile claim`. When openclaw notification context is available, pass `channel`, `target`, `session_id`, and `prompt`. **`session_id`**: UUID string identifying the current openclaw conversation session — read it from `openclaw sessions --json --agent <agent>` or equivalent method. If notification context is not available, pass `--context '{}'`. When the terminal notification is delivered (claimed/expired), continue any established next steps from the conversation context. Use: `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<uuid>", "prompt":"include the status update and a next-step execution plan based on the conversation context. Prefix the response with [Notification] to distinguish it from normal conversation replies"}'` — **this prompt applies to `caw profile claim` only.** 
-
-## Multi-wallet Setup
-
-Each `caw onboard` creates a separate wallet with its own credentials and TSS Node files. Multiple wallets can coexist on one machine, which is useful when an agent serves different purposes (e.g. one for DeFi execution, another for payroll disbursements).
-
-- **Default wallet**: Most commands automatically use the active wallet. Switch it with `caw profile use <agent_id>`.
-- **`--profile` flag**: Any command accepts `--profile <agent_id>` to target a specific wallet without changing the default. Use this when running multiple agents concurrently.
-- **After onboarding**: Record the `agent_id` in AGENTS.md (or equivalent project instructions file) so future sessions know which wallet to use.
-
-```bash
-# Example: transfer using a non-default wallet
-caw --profile caw_agent_abc123 tx transfer --to 0x... --token SOLDEV_SOL_USDC --amount 0.0001
-```
-
-See `caw profile --help` for all subcommands (`list`, `current`, `use`, `env`, `archive`, `restore`).
-
-> **ONLY use archive when a previous onboarding has failed and you need to retry.** Do NOT archive before a fresh onboarding — the `onboard` command creates a new wallet automatically.
+**Claim status tracking (wallet claim only)**: `--context` is **required** for `caw wallet claim`. When openclaw notification context is available, pass `channel`, `target`, `session_id`, and `prompt`. **`session_id`**: UUID string identifying the current openclaw conversation session — read it from `openclaw sessions --json --agent <agent>` or equivalent method. If notification context is not available, pass `--context '{}'`. When the terminal notification is delivered (claimed/expired), continue any established next steps from the conversation context. Use: `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<uuid>", "prompt":"include the status update and a next-step execution plan based on the conversation context. Prefix the response with [Notification] to distinguish it from normal conversation replies"}'` — **this prompt applies to `caw wallet claim` only.** 
