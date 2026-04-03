@@ -96,6 +96,16 @@ Permissions define categories of allowed operations.
 
 Default: `operator`. Always apply **least privilege** — if the task only reads balances, use `viewer`.
 
+### Bound API Key Enforcement
+
+When an API key is bound to a delegation (for example, default pact bootstrap or pact activation), authorization must evaluate permissions from that bound delegation before any owner/controller fallback path.
+
+Implementation requirement:
+
+- If `api_keys.delegation_id` is updated after a key has already been authenticated, evict the in-memory API key verification cache entry for that key immediately.
+- Rationale: stale cached key objects may still carry `delegation_id = null`, which can bypass bound-delegation evaluation and incorrectly hit owner/controller allow logic.
+- Operational expectation: the very next request with that key must observe the latest `delegation_id` and be evaluated against delegation permissions.
+
 ## Policies
 
 Policies constrain operations within granted permissions. Each policy targets a specific operation type (`transfer` or `contract_call`) and uses an `allow` or `deny` effect.

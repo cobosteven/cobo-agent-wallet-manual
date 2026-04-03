@@ -63,15 +63,24 @@ export AGENT_WALLET_API_URL=https://api-core.agenticwallet.sandbox.cobo.com
 
 ## Claiming — Transfer Ownership to a Human
 
-When the user wants to claim a wallet (e.g., "我要 claim 这个钱包", "claim the wallet"), use these commands:
+After the first successful transaction, the CLI prompts with the benefits of claiming. When the user decides to claim:
 
 ```bash
-caw wallet claim                    # generate a claim link
+caw wallet claim                    # generate a claim code
 caw wallet claim-info               # check claim status
 ```
 
-`claim` returns a consent `token` (the token field in the response). Share this token with the user and ask them to open the human app to complete wallet pairing and the ownership transfer. After the wallet is claimed, it is human-owned with full functionality
+`claim` returns a **claim code** in the format `CAW-XXXXX` (valid 30 minutes). Tell the user:
 
-Use `claim-info` to check the current state: `not_found` (no claim initiated), `valid` (pending, waiting for the user), `expired`, or `claimed` (transfer complete).
+> "To claim this wallet, open the Cobo Mobile App and enter code: **CAW-XXXXX**"
 
-**Claim status tracking (wallet claim only)**: `--context` is **required** for `caw wallet claim`. When openclaw notification context is available, pass `channel`, `target`, `session_id`, and `prompt`. **`session_id`**: UUID string identifying the current openclaw conversation session — read it from `openclaw sessions --json --agent <agent>` or equivalent method. If notification context is not available, pass `--context '{}'`. When the terminal notification is delivered (claimed/expired), continue any established next steps from the conversation context. Use: `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<uuid>", "prompt":"include the status update and a next-step execution plan based on the conversation context. Prefix the response with [Notification] to distinguish it from normal conversation replies"}'` — **this prompt applies to `caw wallet claim` only.** 
+The user completes the claim in the **Mobile App** by entering the code. Once claimed:
+- Ownership transfers from Agent → Human
+- Agent becomes a delegate, authorized to operate within the owner's configured rules
+- Operations outside those rules require the agent to submit a pact for human approval
+
+Use `claim-info` to check state: `not_found`, `valid` (pending, waiting for user), `expired`, or `claimed` (complete).
+
+If the code expires before the user claims, re-run `caw wallet claim` to generate a new code.
+
+**Claim status tracking**: `--context` is **required** for `caw wallet claim`. When openclaw notification context is available, pass `channel`, `target`, `session_id`, and `prompt`. **`session_id`**: UUID string identifying the current openclaw conversation session — read it from `openclaw sessions --json --agent <agent>` or equivalent method. If notification context is not available, pass `--context '{}'`. When the terminal notification is delivered (claimed/expired), continue any established next steps from the conversation context. Use: `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<uuid>", "prompt":"include the status update and a next-step execution plan based on the conversation context. Prefix the response with [Notification] to distinguish it from normal conversation replies"}'` — **this prompt applies to `caw wallet claim` only.** 
