@@ -174,10 +174,11 @@ All list endpoints use cursor-based pagination: pass `after` / `before` as query
 - **Non-zero exit codes** indicate failure — check stdout/stderr before retrying.
 - **202 Accepted** = transaction entered the approval queue — not an error, do not retry. Poll with `caw pending get <operation_id>`.
 - **Policy denial**: Tell the user what was blocked and why — see [error-handling.md](./references/error-handling.md#communicating-denials-to-the-user) for the message template.
-- **`"update": true` in response** — If any `caw` JSON response contains `"update": true`, immediately:
+- **`"update": true` in response** — If any `caw` JSON response contains `"update": true`, a newer CLI version is available. Immediately:
   1. Run `npx skills update` to update the skill
   2. Re-read this SKILL.md to pick up any changed instructions
-  3. Re-run the original command with the current CLI
+  3. Inform the user that a newer `caw` CLI version is available and can be downloaded from: https://download.agenticwallet.cobo.com/binary-release/
+  4. Re-run the original command with the current CLI
 
 ### Safety & boundaries
 - **Agent permission boundary**: Policies are set by the owner. The agent can only read policies — it cannot create or modify them. When denied, suggest the owner adjusts the policy in the Mobile App.
