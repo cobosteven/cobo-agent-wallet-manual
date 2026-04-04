@@ -34,8 +34,8 @@ User asked to send $80; suggestion says "Retry with amount <= 60." The reduced a
 > "Transfer blocked: the per-transaction limit is $60. I can retry with $60 — would you like that, or do you want to ask the wallet owner to raise the limit?"
 
 **Example — daily cumulative limit (do NOT retry):**
-User asked to send 0.005 SETH; denied by daily cumulative limit. Do NOT try smaller amounts or additional transactions. Automatically create a [pact](../SKILL.md#pacts) — inform the user, then immediately create a new Authorization Request (pact) scoped to this specific transfer (see [Transfer quota exhaustion fallback](../SKILL.md#transfer-quota-exhaustion-fallback)):
-> "The current spending limit has been reached. I'm requesting separate authorization for this transfer from the wallet owner."
+User asked to send 0.005 SETH; denied by daily cumulative limit. Do NOT try smaller amounts or additional transactions. Automatically create a [pact](../SKILL.md#pacts) — inform the user, then immediately submit a new pact scoped to this specific transfer (see [Transfer quota exhaustion fallback](../SKILL.md#transfer-quota-exhaustion-fallback)):
+> "The current spending limit has been reached. I'm submitting a pact for this transfer to the wallet owner."
 
 **Example — owner action required:**
 Suggestion says "Ask the wallet owner to whitelist contract 0xUniswap..." → tell the user:

@@ -1,12 +1,12 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.04.04.1"
+  version: "2026.04.04.2"
 description: |
   Use for Cobo Agentic Wallet operations via the `caw` CLI: wallet onboarding, token transfers (USDC, USDT, ETH, SOL, etc.), smart contract calls, balance queries, and policy denial handling.
   Covers DeFi execution on EVM (Base, Ethereum, Arbitrum, Optimism, Polygon) and Solana: Uniswap V3 swaps, Aave V3 lending, Jupiter swaps, DCA, grid trading, Polymarket, and Drift perps.
   Use when: user mentions caw, cobo-agentic-wallet, MPC wallet, TSS node, Cobo Portal, agent wallet, or needs any crypto wallet operation — even without explicit "Cobo" mention.
-  Also use when: user asks to request owner approval for a transaction, submit/check/cancel an authorization request (pact), claim a wallet, or track claim status.
+  Also use when: user asks to request owner approval for a transaction, submit/check/cancel a pact, pair a wallet, or track pair status.
   NOT for: fiat payments, bank transfers, or crypto-to-fiat off-ramp.
 ---
 
@@ -14,7 +14,7 @@ description: |
 
 Crypto wallet for AI agents, built on pacts. The `caw` CLI is the primary interface.
 
-**First time?** Read [onboarding.md](./references/onboarding.md) for install, setup, environments, and claiming.
+**First time?** Read [onboarding.md](./references/onboarding.md) for install, setup, environments, and pairing.
 
 ## How You Operate: Pacts
 
@@ -56,7 +56,7 @@ No pact for what the user wants? Propose one — let the owner decide scope and 
 See [security.md](./references/security.md) for full security guide, delegation boundaries, and incident response.
 
 **Workflow**:
-- **Token transfers**: use `caw tx transfer` directly (operates under default wallet authorization). If denied due to quota/limit exhaustion, create a [pact](#pacts).
+- **Token transfers**: use `caw tx transfer` directly (operates under default wallet pact). If denied due to quota/limit exhaustion, create a [pact](#pacts).
 - **Contract calls & sign messages**: always create a [pact](#pacts) first — obtain owner approval before execution.
 - **Lightweight operations** (balance check, status query, transaction history): use `caw` CLI directly.
 - **Complex or multi-step operations** (DeFi strategies, loops, conditional logic, automation): write a script using the SDK, then run it. Design scripts to be **reusable** — parameterize inputs (addresses, amounts, tokens) via CLI arguments or environment variables so they can be re-run without modification. **For multiple transactions from the same address, always wait for each transaction to confirm on-chain before submitting the next one** to avoid nonce conflicts. See [sdk-scripting.md](./references/sdk-scripting.md).
@@ -121,38 +121,14 @@ caw meta tokens --token-ids SETH,SETH_USDC   # get metadata for specific token I
 
 ## Pacts
 
-Some operations require explicit owner approval before execution.
+Some operations require explicit owner approval before execution. See [pact-management.md](./references/pact-management.md) for when to use pacts, decision rules, submission flow, and transfer quota fallback.
 
-**Decision principle**: Evaluate the full end-to-end complexity of the user's intent — if it involves on-chain writes, spans time, requires multiple steps, or carries financial risk beyond a simple one-shot transfer, propose a pact. When in doubt, propose a pact (err on the side of caution). Never suggest the user manually configure controls in WebConsole as a substitute.
+⚠️ **Check `owner_linked` before submitting**: `caw --format json status`. If `owner_linked = false`, pacts auto-activate without owner review — get explicit user confirmation first. See [Flow Step 1](./references/pact-management.md#pact-submission-flow).
 
-- **Direct execution** (no pact needed): single token transfer within quota, read-only queries
-- **Pact required**: everything else — contract calls, multi-step workflows, time-spanning strategies, quota-exceeded transfers
+**When `active` notification arrives**: Reply immediately, then trigger execution via `exec background:true` — never block the notification turn waiting for tx results. See [Background Execution Rule](./references/pact-management.md#background-execution-rule).
 
-See [execution-authorization.md](./references/execution-authorization.md) for trigger rules, user-facing language, flow, and transfer quota fallback.
-
-⚠️ **Check `owner_linked` before submitting**: `caw --format json status`. If `owner_linked = false`, pacts auto-activate without owner review — get explicit user confirmation first. See [Flow Step 1](./references/execution-authorization.md#execution-authorization-flow).
-
-**When `active` notification arrives**: Reply immediately, then trigger execution via `exec background:true` — never block the notification turn waiting for tx results. See [Background Execution Rule](./references/execution-authorization.md#background-execution-rule).
-
-### Pact Parameters
-
-When constructing authorization request parameters from intent:
-- Map objective and constraints into `--intent` (asset/protocol/chain/cadence/risk limits)
-- Always include target `--wallet-id`; add `--resource-scope` to limit scope
-- **Least privilege in `--permissions`**: choose the narrowest permission set for the task (`viewer` for reads, `write:transfer` for transfers only, `write:contract_call` for contract calls only; use `operator` only when both are needed)
-- Parse explicit time windows into `--duration` seconds; prefer finite duration
-- Parse per-transaction budget into `--max-tx` when provided
-- **Policies** — pick the right approach:
-  - `--max-tx <usd>`: simple per-transaction USD cap only (no scoping)
-  - `--spec-file` / `--spec-json`: required whenever you need chain/token/contract scoping, rolling usage limits, or `review_if` soft thresholds
-  - Policy anatomy: pair an **allow** policy (`when` conditions + optional `review_if`) with a **deny** policy (same `when` + `deny_if` limits). Key `when` conditions: `chain_in`, `token_in`, `destination_address_in` for transfers; `chain_in`, `target_in` (contract + selector) for EVM calls; `chain_in`, `program_in` for Solana calls. Key `deny_if` fields: `amount_usd_gt` (per-tx cap), `usage_limits.rolling_24h/7d/30d` (cumulative caps)
-  - See [authorization-spec.md](./references/authorization-spec.md) for full policy schema and patterns
-- Use a concise human-readable `--name` for owner review
-- Derive `--execution-plan` from the intent as a markdown execution plan with sections like `# Summary`, `# Contract Operations`, `# Risk Controls`, `# Schedule` -- this is shown to the owner during approval review
-- Pass `--original-intent` with the user's raw input. Single-turn: the triggering message verbatim. Multi-turn: concatenate all messages relevant to this operation in order as `"User: <msg1>\nUser: <msg2>"`. Omit unrelated messages.
-
-See [execution-authorization.md](./references/execution-authorization.md) for CLI command reference, lifecycle details, and troubleshooting.
-See [authorization-spec.md](./references/authorization-spec.md) for authorization spec construction, policy schema, and validation rules.
+See [pact-management.md](./references/pact-management.md) for CLI command reference, lifecycle details, and troubleshooting.
+See [pact-knowledge.md](./references/pact-knowledge.md) for pact spec construction, policy schema, parameter construction guide, and validation rules.
 
 ## Key Notes
 
@@ -174,7 +150,7 @@ Before writing any script, search `./scripts/` for existing scripts that match t
 - **`--pre-check` (default: true)**: `caw tx transfer` and `caw tx call` automatically run a policy + fee pre-check before submitting. If policy denies the transaction, the command exits with an error and the transaction is NOT submitted. Use `--pre-check=false` to skip and submit directly.
 - **`--request-id` idempotency**: Always set a unique, deterministic request ID per logical transaction (e.g. `invoice-001`, `swap-20240318-1`). Retrying with the same `--request-id` is safe — the server deduplicates.
 - **`--gasless`**: `false` by default — wallet pays own gas. Set `true` for Cobo Gasless (human-principal wallets only; agent-principal wallets will be rejected).
-- **`--context` (required)**: Required for `caw tx transfer`, `caw tx call`, `caw tx sign-message`. When openclaw notification context is available, pass `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<uuid>", "prompt":"..."}'` — `session_id` is a UUID from `openclaw sessions --json --agent <agent>`. This enables `caw track` to deliver terminal results back to the conversation. See [execution-authorization.md](./references/execution-authorization.md) for the full prompt template.
+- **`--context` (required)**: Required for `caw tx transfer`, `caw tx call`, `caw tx sign-message`. When openclaw notification context is available, pass `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<uuid>", "prompt":"..."}'` — `session_id` is a UUID from `openclaw sessions --json --agent <agent>`. This enables `caw track` to deliver terminal results back to the conversation. See [pact-management.md](./references/pact-management.md) for the full prompt template.
 - After submitting a transaction (`caw tx transfer` / `caw tx call` / `caw tx sign-message`), reply with a brief summary (tx ID, status, amount/token, and original intent if applicable).
 - **Completion rules — never claim success without evidence**:
   - **Transfer / Contract call**: only report complete when the transaction reaches `Completed` status. Poll with `caw --format json tx get <wallet_uuid> <request_id>` and check `.status`.
@@ -186,7 +162,7 @@ Before writing any script, search `./scripts/` for existing scripts that match t
   - Nonce conflict: Fetch correct nonce and retry once.
   - Underpriced gas: Re-estimate gas price and retry once.
   - Unknown error: Do not retry. Surface raw error data and wait for user instructions.
-- **`status=pending_approval`**: The transaction requires human authorization before it executes. Check `owner_linked` from `caw --format json status` and follow [pending-authorization.md](./references/pending-authorization.md) — if `false`, ask the user to approve in this conversation; if `true`, direct the user to the Human App.
+- **`status=pending_approval`**: The transaction requires human approval before it executes. Check `owner_linked` from `caw --format json status` and follow [pending-approval.md](./references/pending-approval.md) — if `false`, ask the user to approve in this conversation; if `true`, direct the user to the Human App.
 - **Sequential execution for same-address transactions (nonce ordering)**: On EVM chains, each transaction from the same address must use an incrementing nonce. Submitting a new transaction before the previous one is on-chain causes nonce conflicts and failures. **Wait for each transaction to reach at least `Confirming` status (tx is on-chain, nonce consumed) before submitting the next one.** Waiting for `Completed` (all confirmations) is unnecessary and slow. Poll with `caw --format json tx get <wallet_uuid> <request_id>` and check `.status` — the lifecycle is `Submitted → PendingScreening → Broadcasting → Confirming → Success/Completed`. This applies to both direct CLI usage and SDK scripts. See [sdk-scripting.md](./references/sdk-scripting.md) for the polling pattern.
 
 ### List pagination (cursor)
@@ -197,11 +173,10 @@ All list endpoints use cursor-based pagination: pass `after` / `before` as query
 - **Non-zero exit codes** indicate failure — check stdout/stderr before retrying.
 - **202 Accepted** = transaction entered the approval queue — not an error, do not retry. Poll with `caw pending get <operation_id>`.
 - **Policy denial**: Tell the user what was blocked and why — see [error-handling.md](./references/error-handling.md#communicating-denials-to-the-user) for the message template.
-- **`"update": true` in response** — If any `caw` JSON response contains `"update": true`, a newer CLI version is available. Immediately:
+- **`"update": true` in response** — If any `caw` JSON response contains `"update": true`, immediately:
   1. Run `npx skills update` to update the skill
   2. Re-read this SKILL.md to pick up any changed instructions
-  3. Inform the user that a newer `caw` CLI version is available and can be downloaded from: https://download.agenticwallet.cobo.com/binary-release/
-  4. Re-run the original command with the current CLI
+  3. Re-run the original command with the current CLI
 
 ### Safety & boundaries
 - **Agent permission boundary**: Policies are set by the owner. The agent can only read policies — it cannot create or modify them. When denied, suggest the owner adjusts the policy in the Mobile App.
@@ -216,9 +191,9 @@ If the user's phrasing doesn't match CLI terminology, map it:
 | User says | Maps to |
 |---|---|
 | "set up / initialize / configure wallet" | `caw onboard` |
-| "take over / claim / get control of a wallet" | `caw wallet claim` — see [onboarding.md](./references/onboarding.md) |
-| "request approval / ask owner to approve" | Execution Authorization flow |
-| "pact / delegation / time-limited access" | `caw pending` + [execution-authorization.md](./references/execution-authorization.md) |
+| "take over / pair / get control of a wallet" | `caw wallet claim` — see [onboarding.md](./references/onboarding.md) |
+| "request approval / ask owner to approve" | Pact Submission flow |
+| "pact / delegation / time-limited access" | `caw pending` + [pact-management.md](./references/pact-management.md) |
 | "current agent / active identity / which profile" | `caw profile current` |
 
 ## Reference
@@ -230,11 +205,11 @@ Read the file that matches the user's task. Do not load files that aren't releva
 | User asks about… | Read |
 |---|---|
 | AP2 shopping, `caw ap2`, merchant agent, CartMandate / PaymentMandate, Human-Present checkout | [ap2-shopping.md](./references/ap2-shopping.md) |
-| Onboarding, install, setup, environments, claiming, claim tracking | [onboarding.md](./references/onboarding.md) |
+| Onboarding, install, setup, environments, pairing, pair tracking | [onboarding.md](./references/onboarding.md) |
 | Policy denial, 403, TRANSFER_LIMIT_EXCEEDED | [error-handling.md](./references/error-handling.md) |
-| Pending authorization, `pending_approval`, approve/reject, owner_linked | [pending-authorization.md](./references/pending-authorization.md) |
-| Execution authorization, contract call approval, transfer quota fallback, authorization lifecycle, submit/get/events/cancel, intent-to-params mapping, pact tracking | [execution-authorization.md](./references/execution-authorization.md) |
-| Authorization spec construction, policy schema, permissions, validation rules | [authorization-spec.md](./references/authorization-spec.md) |
+| Pending approval, `pending_approval`, approve/reject, owner_linked | [pending-approval.md](./references/pending-approval.md) |
+| Pact submission, contract call approval, transfer quota fallback, pact lifecycle, submit/get/events/cancel, intent-to-params mapping, pact tracking | [pact-management.md](./references/pact-management.md) |
+| Pact concepts, lifecycle, spec construction, policy schema | [pact-knowledge.md](./references/pact-knowledge.md) |
 | Security, prompt injection, credentials | **[security.md](./references/security.md) ⚠️ READ FIRST** |
 | SDK scripting, Python/TypeScript scripts, multi-step operations | [sdk-scripting.md](./references/sdk-scripting.md) |
 

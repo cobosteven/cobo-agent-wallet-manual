@@ -1,34 +1,171 @@
-# Pact Knowledge — Authorization Spec Construction
-
-This document covers the core concepts and construction patterns for the authorization spec — the structured agreement that defines what an operator agent is authorized to do.
+# Pact Knowledge
 
 ## Table of Contents
 
-| Section | What it covers |
+- [What is a Pact](#what-is-a-pact)
+- [Pact Lifecycle](#pact-lifecycle)
+  - [owner\_linked = false — Pact auto-activates (no pair yet)](#owner_linked--false--pact-auto-activates-no-pair-yet)
+  - [owner\_linked = true — Pact requires human approval](#owner_linked--true--pact-requires-human-approval)
+  - [State Reference](#state-reference)
+- [Pact Spec Schema](#pact-spec-schema)
+- [Parameter Construction Guide](#parameter-construction-guide)
+  - [Duration Conversion](#duration-conversion)
+  - [Policy Approach Decision](#policy-approach-decision)
+- [Execution Plan Structure](#execution-plan-structure)
+- [Permissions](#permissions)
+  - [Bound API Key Enforcement](#bound-api-key-enforcement)
+- [Policies](#policies)
+  - [Policy Structure](#policy-structure)
+  - [Rules by Effect](#rules-by-effect)
+  - [Match Conditions (`when`)](#match-conditions-when)
+  - [Deny Conditions (`deny_if`)](#deny-conditions-deny_if)
+  - [Review Conditions (`review_if`)](#review-conditions-review_if)
+- [Policy Construction Patterns](#policy-construction-patterns)
+  - [Pattern: Allow + Deny Pair](#pattern-allow--deny-pair)
+  - [Pattern: Transfer-Only Policy](#pattern-transfer-only-policy)
+  - [Pattern: Always-Review (No Auto-Approval)](#pattern-always-review-no-auto-approval)
+- [Completion Conditions](#completion-conditions)
+- [Validation Rules](#validation-rules)
+- [Security Considerations](#security-considerations)
+
+## What is a Pact
+
+A **pact** is a time-limited, policy-bound delegation that authorizes an operator agent to act on behalf of a wallet within defined constraints. It is the mechanism by which an owner grants a scoped, auditable set of permissions to an autonomous agent.
+
+A pact defines:
+
+| Aspect | Field | Description |
+|---|---|---|
+| What the agent can do | `permissions` | Categories of allowed operations (transfer, contract call, etc.) |
+| Under what constraints | `policies` | Allow/deny rules that limit scope, amounts, and targets |
+| For how long | `duration_seconds` | Time window from activation; null = no expiry |
+| Under what conditions | `completion_conditions` | Auto-termination triggers (tx count, spend cap, time elapsed) |
+| To which wallet | `resource_scope` | Wallet binding |
+| What the agent plans to do | `execution_plan` | Shown to the owner at review time |
+
+Once active, the operator uses a **pact-scoped API key** (returned at activation) for all operations under the pact. The key is automatically invalidated when the pact expires, is completed, or is revoked.
+
+## Pact Lifecycle
+
+The lifecycle differs depending on whether the wallet has been paired with an owner (`owner_linked`).
+
+### owner_linked = false — Pact auto-activates (no pair yet)
+
+`owner_linked = false` means the wallet has not yet been claimed by an owner in the CAW App. There is no human approver, so submitted pacts **activate immediately** without any review step.
+
+**Because activation is immediate and irreversible, the agent MUST get explicit operator confirmation before submitting.**
+
+Flow:
+
+```
+1. Check:  caw status → owner_linked = false
+2. Show:   Pre-submit preview to operator (intent, permissions, policies, duration, execution_plan)
+3. Confirm: Wait for operator to explicitly confirm ("yes" / "proceed" / etc.)
+4. Submit: caw pact submit ... → pact enters ACTIVE immediately
+5. Execute: use the returned pact-scoped API key
+```
+
+State path:
+
+```
+POST /pacts/submit ──► ACTIVE (immediate, no approval step)
+                          |
+              ┌───────────┼───────────┐
+              v           v           v
+         COMPLETED     EXPIRED     REVOKED
+```
+
+### owner_linked = true — Pact requires human approval
+
+`owner_linked = true` means the wallet has been paired with an owner via the CAW App. The owner must review and approve the pact before it becomes active.
+
+Flow:
+
+```
+1. Check:  caw status → owner_linked = true
+2. Submit: caw pact submit ... → pact enters PENDING_APPROVAL
+3. Notify: Tell the user the owner must approve in the CAW App
+4. Wait:   Poll or wait for notification: approved → ACTIVE / rejected → REJECTED
+5. Execute: use the returned pact-scoped API key (on ACTIVE notification)
+```
+
+State path:
+
+```
+POST /pacts/submit ──► PENDING_APPROVAL
+                              |
+                        ┌─────┴─────┐
+                 approved|           |rejected
+                        v            v
+                     ACTIVE       REJECTED
+                        |
+            ┌───────────┼───────────┐
+            v           v           v
+       COMPLETED     EXPIRED     REVOKED
+```
+
+### State Reference
+
+| State | Description |
 |---|---|
-| [Authorization Spec Schema](#authorization-spec-schema) | Top-level fields, types, required vs optional |
-| [Execution Plan Structure](#execution-plan-structure) | `execution_plan` markdown format and sections |
-| [Permissions](#permissions) | Permission strings and least-privilege selection |
-| [Policies](#policies) | Policy object schema (allow / deny) |
-| [Policy Construction Patterns](#policy-construction-patterns) | Common patterns: transfer cap, contract scope, rolling limits |
-| [Completion Conditions](#completion-conditions) | Auto-completion triggers |
-| [Intent-to-Spec Construction Guide](#intent-to-spec-construction-guide) | Mapping user intent → spec fields |
-| [Validation Rules](#validation-rules) | Rules enforced at submission time |
-| [Lifecycle States](#lifecycle-states) | Pact status transitions |
-| [Security Considerations](#security-considerations) | Least privilege, scope binding |
+| `PENDING_APPROVAL` | Submitted, awaiting owner approval in CAW App (`owner_linked=true` only) |
+| `ACTIVE` | Delegation + policies in effect; pact-scoped API key is usable |
+| `REJECTED` | Owner rejected; pact-scoped key is invalid |
+| `COMPLETED` | Completion condition met; pact-scoped key invalidated |
+| `EXPIRED` | Duration elapsed; pact-scoped key invalidated |
+| `REVOKED` | Owner manually revoked; pact-scoped key invalidated |
 
-## Authorization Spec Schema
+## Pact Spec Schema
 
-The authorization spec is the core data structure submitted with `caw pact submit`. It has five top-level fields:
+The pact spec is the core data structure submitted with `caw pact submit`. It has five top-level fields:
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `permissions` | string[] | Yes | Operations the operator is allowed to perform |
 | `policies` | Policy[] | No | Rules that constrain permitted operations |
-| `duration_seconds` | integer | No | How long the authorization remains active (null = no time limit) |
+| `duration_seconds` | integer | No | How long the pact remains active (null = no time limit) |
 | `completion_conditions` | CompletionCondition[] | No | Auto-completion triggers |
 | `resource_scope` | object | No | Resource binding (e.g., `{ "wallet_id": "..." }`) |
 | `execution_plan` | string | No | Free-form execution plan derived from intent, in markdown format. Presented to the owner during approval review so they understand exactly what the operator will do. See [Execution Plan Structure](#execution-plan-structure) for suggested sections. |
+
+## Parameter Construction Guide
+
+When constructing pact parameters from user intent, map each intent component to the appropriate field or CLI flag:
+
+| Intent component | Field / Flag | Guidance |
+|---|---|---|
+| Goal description | `--intent` | One sentence covering: asset, action, chain, cadence, and key risk constraints (e.g. "DCA $500/week into ETH on Base for 3 months") |
+| Target wallet | `--wallet-id` | Exact wallet UUID — always required |
+| Required operations | `--permissions` | Minimum permission set for the task. See [Permissions](#permissions). |
+| Time window | `--duration` / `duration_seconds` | Parse explicit time (see conversion table below). Prefer finite duration. |
+| Per-transaction cap | `--max-tx` or `deny_if.amount_usd_gt` | Use `--max-tx` for a simple USD cap; use full policy spec when chain/token/contract scoping or rolling limits are needed. See [Policy approach decision](#policy-approach-decision) below. |
+| Resource binding | `--resource-scope` / `resource_scope` | Always bind to the target wallet: `{"wallet_id":"<uuid>"}`. Narrows blast radius if the pact-scoped key is misused. |
+| Display name | `--name` | Concise human-readable title for owner review (e.g. "Base ETH Weekly DCA") |
+| Execution description | `--execution-plan` / `execution_plan` | Markdown execution plan shown to owner during approval. See [Execution Plan Structure](#execution-plan-structure). Write in plain language — avoid raw addresses or hex calldata in the summary. |
+| Raw user input | `--original-intent` | User's verbatim message(s). Single-turn: the triggering message. Multi-turn: concatenate all messages relevant to this operation as `"User: <msg1>\nUser: <msg2>"`. Omit unrelated messages. |
+| Total budget / tx count cap | `completion_conditions` | Set when the full task scope is bounded. See [Completion Conditions](#completion-conditions). |
+
+### Duration Conversion
+
+| Human expression | Seconds |
+|---|---|
+| 7 days | `604800` |
+| 30 days | `2592000` |
+| 3 months | `7776000` |
+| 6 months | `15552000` |
+| 1 year | `31536000` |
+
+Prefer finite duration. Use `0` (no expiry) only when the user explicitly requests indefinite access.
+
+### Policy Approach Decision
+
+| Scenario | Approach |
+|---|---|
+| Simple per-transaction USD cap, no other constraints | `--max-tx <usd>` inline flag |
+| Chain / token / contract scoping, rolling limits, or `review_if` thresholds | `--spec-json` or `--spec-file` with full policies array |
+| Complex multi-policy setup or completion conditions | `--spec-file` for readability |
+
+See [Policy Construction Patterns](#policy-construction-patterns) for full schema and examples.
 
 ## Execution Plan Structure
 
@@ -302,7 +439,7 @@ When the owner wants to manually approve every operation:
 
 ## Completion Conditions
 
-Conditions that auto-terminate the authorization and revoke authorization when met. Multiple conditions use **any-of** semantics (first match triggers completion).
+Conditions that auto-terminate the pact and revoke it when met. Multiple conditions use **any-of** semantics (first match triggers completion).
 
 | Type | Threshold | Description |
 |---|---|---|
@@ -322,40 +459,9 @@ Example:
 }
 ```
 
-## Intent-to-Spec Construction Guide
-
-When the user's intent is fully understood, the agent constructs an authorization spec by mapping intent components:
-
-| Intent component | Spec field | Example |
-|---|---|---|
-| Goal / task description | `intent` (on submit request) | "Execute weekly ETH DCA on Base" |
-| Required operation types | `permissions` | `["write:contract_call", "read:wallet"]` |
-| Target chain / contract / token | `policies[].rules.when` | `chain_in`, `target_in`, `token_in` |
-| Per-transaction budget | `policies[].rules.deny_if.amount_usd_gt` | `"550"` |
-| Daily/rolling budget | `policies[].rules.deny_if.usage_limits` | `rolling_24h.amount_usd_gt` |
-| Review threshold | `policies[].rules.review_if.amount_usd_gt` | `"500"` |
-| Time window | `duration_seconds` | `7776000` (90 days) |
-| Transaction count cap | `completion_conditions` | `{ "type": "tx_count", "threshold": "12" }` |
-| Total spend cap | `completion_conditions` | `{ "type": "amount_spent_usd", "threshold": "6000" }` |
-| Wallet binding | `resource_scope` | `{ "wallet_id": "<uuid>" }` |
-| Step-by-step execution plan | `execution_plan` | Markdown with `# Summary`, `# Contract Operations`, `# Risk Controls`, `# Schedule`, `# Exit Conditions` — see [Execution Plan Structure](#execution-plan-structure) |
-
-### Construction Checklist
-
-Before submitting an authorization request, verify:
-
-- [ ] `permissions` use least privilege — only what's needed for the task
-- [ ] At least one `allow` policy with `when` conditions scoping the exact operations
-- [ ] A matching `deny` policy with `deny_if` limits if budget constraints exist
-- [ ] `duration_seconds` is set if the user specified a time window
-- [ ] `completion_conditions` are set if the user specified tx count or budget caps
-- [ ] `resource_scope` includes `wallet_id` to bind to the target wallet
-- [ ] `execution_plan` describes the concrete execution steps when the task is multi-step or non-obvious
-- [ ] `review_if` is used for soft thresholds that need owner attention but shouldn't block
-
 ## Validation Rules
 
-The authorization service validates the spec at submission time (before creating the approval). Invalid specs return `422`:
+The pact service validates the spec at submission time (before creating the approval). Invalid specs return `422`:
 
 - **`allow` policies**: must have non-empty `when` (unless `always_review=true`); cannot include `deny_if`
 - **`deny` policies**: must have `deny_if` with at least one limit; cannot include `review_if` or `always_review`
@@ -363,36 +469,9 @@ The authorization service validates the spec at submission time (before creating
 - **`completion_conditions`**: must use valid types (`time_elapsed`, `tx_count`, `amount_spent_usd`, `manual`)
 - **`permissions`**: must be valid values from the permission set
 
-## Lifecycle States
-
-```
-POST /pacts/submit ──► PENDING_APPROVAL
-                            |
-                       ┌────┴────┐
-                approved|        |rejected
-                       v        v
-                    ACTIVE   REJECTED
-                   ┌──┬──┐
-                   |  |  |
-conditions met <───┘  |  └──> owner revokes ──> REVOKED
-    v                 v
-COMPLETED          EXPIRED
-```
-
-| State | Description |
-|---|---|
-| `PENDING_APPROVAL` | Submitted, awaiting owner approval in CAW App |
-| `REJECTED` | Owner rejected the request |
-| `ACTIVE` | Delegation + policies created, operator can act |
-| `COMPLETED` | Completion condition met, authorization revoked |
-| `EXPIRED` | Duration elapsed, authorization revoked |
-| `REVOKED` | Owner manually revoked, authorization revoked |
-
 ## Security Considerations
 
-- The owner has absolute authority — no authorization activates without explicit approval
-- The authorization-scoped API key is only visible to the submitting operator
-- The API key is bound to a specific delegation — cannot be used outside authorization scope
-- The API key is invalidated when the authorization reaches any terminal state
+- The pact-scoped API key is only visible to the submitting operator
+- The API key is bound to a specific delegation — cannot be used outside pact scope
+- The API key is invalidated when the pact reaches any terminal state
 - Operators should construct the most restrictive spec that fulfills the task
-

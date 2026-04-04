@@ -1,4 +1,4 @@
-# Pending Authorization
+# Pending Approval
 
 How to handle transactions that return `status=pending_approval` — the required approval flow depends on whether the wallet has an owner linked.
 
@@ -16,7 +16,7 @@ Or read it from the response of any `caw --format json status` call earlier in t
 
 The wallet has no linked owner yet. The agent itself acts as the approver. Ask the user to reply with their decision directly in the chat:
 
-> "This transaction requires your authorization before it can proceed.
+> "This transaction requires your approval before it can proceed.
 > Transaction ID: `<request_id>`
 > Amount: `<amount>` `<token>` → `<recipient>`
 >
