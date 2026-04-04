@@ -75,9 +75,6 @@ Execution authorization is implemented via the `caw pact` CLI commands.
    > ✅ Authorization request submitted. The owner needs to approve it before I can proceed.
    >
    > 🔗 **[Review & Approve in CAW App](https://agenticwallet.sandbox.cobo.com/dashboard?approval=<approval_id>)**
-6. **Track**: Run `caw track --watch &` in the background to receive terminal state notifications (`active`/`rejected`/`completed`/`expired`/`revoked`) delivered via `openclaw agent --deliver`. The `prompt` stored in `--context` controls what the receiving agent does.
-7. **On `active`** *(delivered via [Notification])*: Immediately reply to the user that the authorization has been approved. Then trigger execution as a **separate background task** via `exec background:true` — never block the notification turn waiting for tx results. See [Background Execution Rule](#background-execution-rule).
-8. **On `rejected`** *(delivered via [Notification])*: Tell the user "The owner declined this action." Suggest adjustments if applicable.
 
 ## Transfer Quota Exhaustion Fallback
 
@@ -135,14 +132,7 @@ Submit a new authorization request for owner approval. Creates a `PENDING_APPROV
 
 Use `--spec-file` or `--spec-json` when you need custom policies (allow/deny pairs, chain/token/contract scoping, rolling usage limits). See [authorization-spec.md](./authorization-spec.md#policy-construction-patterns) for policy schema and construction patterns.
 
-**Other flags:**
-
-| Flag | Default | Description |
-|---|---|---|
-| `--wait` | `false` | Block until the authorization leaves `pending_approval` |
-| `--wait-timeout` | `10m` | Timeout for `--wait` |
-
-**Status tracking (pact submit only):** `--context` is **required** for `caw pact submit`. When openclaw notification context is available, pass `channel`, `target`, `session_id`, and `prompt`. **`session_id`**: UUID string identifying the current openclaw conversation session — read it from `openclaw sessions --json --agent <agent>` or equivalent method. If notification context is not available, pass `--context '{}'`. Use: `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<uuid>", "prompt":"notify the user of the status update. On active: immediately reply to the user that the authorization has been approved and execution will start shortly — do NOT wait for execution to complete before replying. After sending the reply, trigger execution as a separate background task using the authorization-scoped API key. On rejected: tell the user the owner declined this action and suggest adjustments if applicable. On completed: tell the user the authorization has been fulfilled and all conditions were met. On expired: tell the user the authorization expired before it could be used and offer to resubmit if still needed. On revoked: tell the user the owner revoked the authorization and ask whether to resubmit. Prefix the response with [Notification] to distinguish it from normal conversation replies"}'` — **this prompt applies to `caw pact submit` only.**
+**Status tracking (pact submit only):** `--context` is **required** for `caw pact submit`. When openclaw notification context is available, pass `channel`, `target`, and `session_id`. **`session_id`**: UUID string identifying the current openclaw conversation session — read it from `openclaw sessions --json --agent <agent>` or equivalent method. If notification context is not available, pass `--context '{}'`. Use: `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<uuid>"}'`
 
 **Example (inline mode):**
 
@@ -173,8 +163,7 @@ Every Monday, 90 days from activation.
 
 # Exit Conditions
 After 12 swaps OR \$6,000 total spent OR 90 days." \
-  --context '{"channel":"discord", "target":"1483060020718473359", "session_id":12345, "prompt":"notify the user of the status update. On active: immediately reply to the user that the authorization has been approved and execution will start shortly — do NOT wait for execution to complete before replying. After sending the reply, trigger execution as a separate background task using the authorization-scoped API key. On rejected: tell the user the owner declined this action and suggest adjustments if applicable. On completed: tell the user the authorization has been fulfilled and all conditions were met. On expired: tell the user the authorization expired before it could be used and offer to resubmit if still needed. On revoked: tell the user the owner revoked the authorization and ask whether to resubmit. Prefix the response with [Notification] to distinguish it from normal conversation replies"}' \
-  && caw track --watch &
+  --context '{"channel":"discord", "target":"1483060020718473359", "session_id":12345}' \
 ```
 
 **Example (full authorization spec with policies):**
@@ -185,8 +174,7 @@ caw --format json pact submit \
   --intent "Execute weekly ETH DCA on Base for 3 months" \
   --name "Base ETH Weekly DCA" \
   --spec-file ./pact-dca.json \
-  --context '{"channel":"discord", "target":"1483060020718473359", "session_id":12345, "prompt":"notify the user of the status update. On active: immediately reply to the user that the authorization has been approved and execution will start shortly — do NOT wait for execution to complete before replying. After sending the reply, trigger execution as a separate background task using the authorization-scoped API key. On rejected: tell the user the owner declined this action and suggest adjustments if applicable. On completed: tell the user the authorization has been fulfilled and all conditions were met. On expired: tell the user the authorization expired before it could be used and offer to resubmit if still needed. On revoked: tell the user the owner revoked the authorization and ask whether to resubmit. Prefix the response with [Notification] to distinguish it from normal conversation replies"}' \
-  && caw track --watch &
+  --context '{"channel":"discord", "target":"1483060020718473359", "session_id":12345}' \
 ```
 
 Where `pact-dca.json` contains a full authorization spec with policies:
@@ -346,8 +334,7 @@ caw --format json pact submit \
   --max-tx 550 \
   --name "Base ETH Weekly DCA" \
   --resource-scope '{"wallet_id":"<uuid>"}' \
-  --context '{"channel":"<channel>", "target":"<target>", "session_id":12345, "prompt":"notify the user of the status update. On active: immediately reply to the user that the authorization has been approved and execution will start shortly — do NOT wait for execution to complete before replying. After sending the reply, trigger execution as a separate background task using the authorization-scoped API key. On rejected: tell the user the owner declined this action and suggest adjustments if applicable. On completed: tell the user the authorization has been fulfilled and all conditions were met. On expired: tell the user the authorization expired before it could be used and offer to resubmit if still needed. On revoked: tell the user the owner revoked the authorization and ask whether to resubmit. Prefix the response with [Notification] to distinguish it from normal conversation replies"}' \
-  && caw track --watch &
+  --context '{"channel":"<channel>", "target":"<target>", "session_id":12345}' \
 ```
 
 Note: `--permissions` uses `write:contract_call,read:wallet` instead of the broader `operator` since DCA swaps only need contract calls, not direct transfers.
@@ -395,7 +382,7 @@ This rule applies to:
 
 ### Tracking Approval
 
-After submit, the request enters `pending_approval`. Status changes are delivered automatically via `caw track --watch` running in the background. To manually check status:
+After submit, the request enters `pending_approval`. To manually check status:
 
 ```bash
 caw --format json pact get <pact_id>

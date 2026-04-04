@@ -207,4 +207,4 @@ Session statuses: `carts_received` → `purchasing` → `completed` | `failed` |
 
 ## Further reading
 
-In the **cobo-agent-wallet** repo: `docs/ap2/ap2-via-caw-overview.md`, `docs/ap2/ap2-quickstart.md`.
+In the **cobo-agent-wallet** repo: `docs/payments/ap2/ap2-via-caw-overview.md`, `docs/payments/ap2/ap2-quickstart.md`.

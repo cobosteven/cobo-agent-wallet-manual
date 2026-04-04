@@ -105,6 +105,7 @@ Implementation requirement:
 - If `api_keys.delegation_id` is updated after a key has already been authenticated, evict the in-memory API key verification cache entry for that key immediately.
 - Rationale: stale cached key objects may still carry `delegation_id = null`, which can bypass bound-delegation evaluation and incorrectly hit owner/controller allow logic.
 - Operational expectation: the very next request with that key must observe the latest `delegation_id` and be evaluated against delegation permissions.
+- Wallet claim confirmation must not clear existing API key `delegation_id` / `pact_id` bindings; preserving bound keys keeps pre-claim active pact keys valid after ownership transfer.
 
 ## Policies
 

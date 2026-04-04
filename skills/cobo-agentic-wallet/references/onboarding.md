@@ -51,9 +51,9 @@ See [Error Handling](./error-handling.md#onboarding-errors) for common onboardin
 
 ## Environment
 
-| Environment | `--env` value | API URL                                          | Web Console |
-|-------------|---------------|--------------------------------------------------|-------------|
-| Sandbox | `sandbox` | `https://api-core.agenticwallet.sandbox.cobo.com` | https://agenticwallet.sandbox.cobo.com/ |
+| Environment | `--env` value | API URL                                          |
+|-------------|---------------|--------------------------------------------------|
+| Sandbox | `sandbox` | `https://api-core.agenticwallet.sandbox.cobo.com` |
 
 Set the API URL before any command:
 
