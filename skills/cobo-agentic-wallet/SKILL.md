@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.04.04.3"
+  version: "2026.04.04.4"
 description: |
   Use for Cobo Agentic Wallet operations via the `caw` CLI: wallet onboarding, token transfers (USDC, USDT, ETH, SOL, etc.), smart contract calls, balance queries, and policy denial handling.
   Covers DeFi execution on EVM (Base, Ethereum, Arbitrum, Optimism, Polygon) and Solana: Uniswap V3 swaps, Aave V3 lending, Jupiter swaps, DCA, grid trading, Polymarket, and Drift perps.
@@ -150,12 +150,9 @@ Before writing any script, search `./scripts/` for existing scripts that match t
 - **`--pre-check` (default: true)**: `caw tx transfer` and `caw tx call` automatically run a policy + fee pre-check before submitting. If policy denies the transaction, the command exits with an error and the transaction is NOT submitted. Use `--pre-check=false` to skip and submit directly.
 - **`--request-id` idempotency**: Always set a unique, deterministic request ID per logical transaction (e.g. `invoice-001`, `swap-20240318-1`). Retrying with the same `--request-id` is safe — the server deduplicates.
 - **`--gasless`**: `false` by default — wallet pays own gas. Set `true` for Cobo Gasless (human-principal wallets only; agent-principal wallets will be rejected).
-- **`--context` (required)**: Required for `caw tx transfer`, `caw tx call`, `caw tx sign-message`. When openclaw notification context is available, pass `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<uuid>", "prompt":"..."}'` — `session_id` is a UUID from `openclaw sessions --json --agent <agent>`. This enables `caw track` to deliver terminal results back to the conversation. See [pact-management.md](./references/pact-management.md) for the full prompt template.
+- **`--context` (required)**: Required for `caw tx transfer`, `caw tx call`, `caw tx sign-message`. When openclaw notification context is available, pass `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<uuid>"}'` — `session_id` is a UUID from `openclaw sessions --json --agent <agent>`.
 - After submitting a transaction (`caw tx transfer` / `caw tx call` / `caw tx sign-message`), reply with a brief summary (tx ID, status, amount/token, and original intent if applicable).
 - If `owner_linked` is false (from `caw status`), mention once after a successful transaction: right now the agent has unlimited access to this wallet; the user can download the Cobo Agentic Wallet app from App Store or Google Play Store and pair the wallet to approve pacts and transactions from their phone. Run `caw wallet pair` to generate a pairing code. Pairing is optional. See [Pairing](./references/onboarding.md#pairing--transfer-ownership-to-a-human).
-- **Completion rules — never claim success without evidence**:
-  - **Transfer / Contract call**: only report complete when the transaction reaches `Completed` status. Poll with `caw --format json tx get <wallet_uuid> <request_id>` and check `.status`.
-  - **Pact submit flow**: only report execution complete when `caw pact get <id>` returns `status: active` AND the original transaction has been re-submitted and confirmed.
 - **On contract call failure**:
   - Revert: Stop. Surface the revert reason as-is. Wait for user instructions.
   - Out of gas: Retry once with a higher gas limit. If still fails, stop and report.

@@ -10,10 +10,11 @@ Pact management is implemented via the `caw pact` CLI commands.
 - [Lifecycle](#lifecycle)
 - [CLI Command Reference](#cli-command-reference)
   - [`caw pact submit`](#caw-pact-submit)
-  - [`caw pact get <pact-id>`](#caw-pact-get-pact-id)
+  - [`caw pact show <pact-id>`](#caw-pact-show-pact-id)
   - [`caw pact list`](#caw-pact-list)
   - [`caw pact events <pact-id>`](#caw-pact-events-pact-id)
-  - [`caw pact cancel <pact-id>`](#caw-pact-cancel-pact-id)
+  - [`caw pact revoke <pact-id>`](#caw-pact-revoke-pact-id)
+  - [`caw pact withdraw <pact-id>`](#caw-pact-withdraw-pact-id)
 - [Least Privilege Principle](#least-privilege-principle)
 - [Intent -> Submit Parameter Mapping](#intent---submit-parameter-mapping)
 - [Submission Rules](#submission-rules)
@@ -126,7 +127,7 @@ Pact management is implemented via the `caw pact` CLI commands.
    > If the owner hasn't installed the app yet, they can download it here:
    > **[Download CAW App](<APP_DOWNLOAD_URL>)**
 
-7. **Track**: Run `caw track --watch &` in the background to receive terminal state notifications (`active`/`rejected`/`completed`/`expired`/`revoked`) delivered via `openclaw agent --deliver`. The `prompt` stored in `--context` controls what the receiving agent does.
+7. **Track**: `caw track --watch` starts automatically in the background after each submission — do **not** trigger it manually. It monitors tracked entries and delivers terminal state notifications (`active`/`rejected`/`completed`/`expired`/`revoked`) via `openclaw agent --deliver`.
 
 8. **On `active`** *(delivered via [Notification])*: Immediately reply to the user that the pact has been approved. Then trigger execution as a **separate background task** via `exec background:true` — never block the notification turn waiting for tx results. See [Background Execution Rule](#background-execution-rule).
 
@@ -149,9 +150,9 @@ See [pact-knowledge.md — Pact Lifecycle](./pact-knowledge.md#pact-lifecycle) f
 Common states:
 - `pending_approval`: submitted, awaiting owner decision
 - `active`: approved, delegated execution can proceed
-- terminal: `rejected`, `completed`, `expired`, `cancelled`
+- terminal: `rejected`, `completed`, `expired`, `revoked`
 
-Use `caw --format json pact get <pact_id>` to observe state transitions and current details.
+Use `caw --format json pact show <pact_id>` to observe state transitions and current details.
 
 ## CLI Command Reference
 
@@ -187,7 +188,7 @@ Submit a new pact for owner approval. Creates a `PENDING_APPROVAL` request and s
 
 Use `--spec-file` or `--spec-json` when you need custom policies (allow/deny pairs, chain/token/contract scoping, rolling usage limits). See [pact-knowledge.md](./pact-knowledge.md#policy-construction-patterns) for policy schema and construction patterns.
 
-**Status tracking (pact submit only):** `--context` is **required** for `caw pact submit`. When openclaw notification context is available, pass `channel`, `target`, and `session_id`. **`session_id`**: UUID string identifying the current openclaw conversation session — read it from `openclaw sessions --json --agent <agent>` or equivalent method. If notification context is not available, pass `--context '{}'`. Use: `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<uuid>"}'`
+**Status tracking (pact submit only):** `--context` is **required** for `caw pact submit`. When openclaw notification context is available, pass `channel`, `target`, and `session_id`. **`session_id`**: UUID string identifying the current openclaw conversation session — read it from `openclaw sessions --json --agent <agent>` or equivalent method. Use: `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<uuid>"}'`
 **Example (inline mode):**
 
 ```bash
@@ -275,17 +276,19 @@ Where `pact-dca.json` contains a full pact spec with policies:
 }
 ```
 
-### `caw pact get <pact-id>`
+### `caw pact show <pact-id>`
 
-Get details of a specific pact request. When the request is `pending_approval` and the linked approval has been resolved, this endpoint triggers lazy activation or rejection.
+Show full details of a specific pact. When the request is `pending_approval` and the linked approval has been resolved, this endpoint triggers lazy activation or rejection.
 
 - If approved → returns `status: active` with `api_key`, `delegation_id`, `expires_at`
 - If rejected → returns `status: rejected`
 
 The `api_key` field is only visible to the operator principal that submitted the request.
 
+Use `caw pact status <pact-id>` as a lighter alternative that also triggers lazy activation.
+
 ```bash
-caw --format json pact get <pact_id>
+caw --format json pact show <pact_id>
 ```
 
 ### `caw pact list`
@@ -294,7 +297,7 @@ List pacts accessible to the authenticated principal.
 
 | Flag | Default | Description |
 |---|---|---|
-| `--status <status>` | — | Filter by lifecycle state: `pending_approval`, `active`, `rejected`, `completed`, `expired`, `cancelled` |
+| `--status <status>` | — | Filter by lifecycle state: `pending_approval`, `active`, `rejected`, `completed`, `expired`, `revoked` |
 | `--wallet-id <uuid>` | — | Filter by wallet UUID |
 | `--limit <n>` | `50` | Maximum results (1–200) |
 | `--offset <n>` | `0` | Number of results to skip |
@@ -315,14 +318,24 @@ Get the lifecycle event history for a pact. Useful for tracking state transition
 caw --format json pact events <pact_id>
 ```
 
-### `caw pact cancel <pact-id>`
+### `caw pact revoke <pact-id>`
 
-Cancel an active pact. **Owner only.** Cancelling revokes the associated delegation, invalidates the pact-scoped API key, and records a `cancelled` event. This action cannot be undone.
+Revoke an active pact. **Wallet owner only.** Revoking removes the associated delegation, invalidates the pact-scoped API key, and records a `revoked` event. This action cannot be undone.
 
 Prompts for confirmation by default. Use `--yes` to skip.
 
 ```bash
-caw --format json pact cancel <pact_id>
+caw --format json pact revoke <pact_id>
+```
+
+### `caw pact withdraw <pact-id>`
+
+Withdraw a pact that is still **pending approval**. **Operator only.** Withdrawing cancels the linked approval request and records a `revoked` event. This action cannot be undone.
+
+Prompts for confirmation by default. Use `--yes` to skip.
+
+```bash
+caw --format json pact withdraw <pact_id>
 ```
 
 ## Least Privilege Principle
@@ -436,7 +449,7 @@ This rule applies to:
 After submit, the request enters `pending_approval`. To manually check status:
 
 ```bash
-caw --format json pact get <pact_id>
+caw --format json pact show <pact_id>
 ```
 
 ### Using the Pact-Scoped API Key
@@ -462,7 +475,7 @@ All operations are checked against the delegation-scoped policies.
 | `pending_approval` | Notify user that owner approval is required via the **CAW App**. Ask the user to forward the request to the owner. If the owner doesn't have the app, share the download link: **[Download CAW App](<APP_DOWNLOAD_URL>)** |
 | `active` | Proceed with execution within pact scope |
 | `rejected` | Surface rejection to user; ask whether to adjust constraints and submit a new pact |
-| `cancelled` / `expired` / `completed` | Stop execution; inform user; submit a new pact if continued action is needed |
+| `revoked` / `expired` / `completed` | Stop execution; inform user; submit a new pact if continued action is needed |
 
 ## Troubleshooting
 
