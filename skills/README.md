@@ -70,8 +70,8 @@ Environment:
 - CLI tool: caw
 
 Core capabilities:
-- Transfer tokens: caw tx transfer <wallet_uuid> --to <addr> --token <id> --amount <n>
-- Contract call: caw tx call <wallet_uuid> --contract <addr> --calldata <hex> --chain <id>
+- Transfer tokens: caw tx transfer <wallet_uuid> --to <addr> --token-id <id> --amount <n>
+- Contract call: caw tx call <wallet_uuid> --contract <addr> --calldata <hex> --chain-id <id>
 - Check balance: caw wallet balance <wallet_uuid>
 - List transactions: caw tx list <wallet_uuid>
 
@@ -128,7 +128,7 @@ Also see: [Policy Management](./cobo-agentic-wallet/references/policy-management
 
 ## Supported Chains
 
-Common chain IDs for `--chain` and `--chain-id` flags:
+Common chain IDs for `--chain-id` flag:
 
 | Chain | Chain ID | Type |
 |---|---|---|
@@ -145,7 +145,7 @@ For the full list of supported chains and tokens, run:
 
 ```bash
 caw --format json chain list
-caw --format json token list --chain <CHAIN>
+caw --format json token list --chain-id <CHAIN>
 ```
 
 ## Evals

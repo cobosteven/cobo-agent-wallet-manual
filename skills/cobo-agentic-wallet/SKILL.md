@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.04.04.4"
+  version: "2026.04.04.5"
 description: |
   Use for Cobo Agentic Wallet operations via the `caw` CLI: wallet onboarding, token transfers (USDC, USDT, ETH, SOL, etc.), smart contract calls, balance queries, and policy denial handling.
   Covers DeFi execution on EVM (Base, Ethereum, Arbitrum, Optimism, Polygon) and Solana: Uniswap V3 swaps, Aave V3 lending, Jupiter swaps, DCA, grid trading, Polymarket, and Drift perps.
@@ -94,9 +94,9 @@ caw tx estimate-transfer-fee --to 0x... --token-id ETH_USDC --amount 10
 #    Protocol addresses: source from the protocol's official documentation or from the user's input.
 #    If the source is unclear, ask the user to provide or confirm the address before submitting.
 # EVM:
-caw tx call --contract 0x... --calldata 0x... --chain ETH
+caw tx call --contract 0x... --calldata 0x... --chain-id ETH
 # Solana (use --instructions instead of --contract):
-caw tx call --instructions '[{"program_id":"<Base58_addr>","data":"...","accounts":[...]}]' --chain SOL
+caw tx call --instructions '[{"program_id":"<Base58_addr>","data":"...","accounts":[...]}]' --chain-id SOL
 
 # Encode a function signature + arguments into hex calldata for use with `caw tx call`.
 caw util abi encode --method "transfer(address,uint256)" --args '["0x...", "1000000"]'
@@ -109,7 +109,7 @@ caw util abi decode --method "transfer(address,uint256)" --calldata 0xa9059cbb..
 caw pending get <operation_id>
 
 # Request testnet tokens for an address (testnet/dev only). Run `faucet tokens` to find token IDs.
-caw faucet deposit --address <address> --token <token-id>
+caw faucet deposit --address <address> --token-id <token-id>
 caw faucet tokens   # list available testnet tokens
 
 # Look up chain IDs and token IDs. Filter by chain to list available tokens,
@@ -171,11 +171,10 @@ All list endpoints use cursor-based pagination: pass `after` / `before` as query
 - **Non-zero exit codes** indicate failure — check stdout/stderr before retrying.
 - **202 Accepted** = transaction entered the approval queue — not an error, do not retry. Poll with `caw pending get <operation_id>`.
 - **Policy denial**: Tell the user what was blocked and why — see [error-handling.md](./references/error-handling.md#communicating-denials-to-the-user) for the message template.
-- **`"update": true` in response** — If any `caw` JSON response contains `"update": true`, a newer CLI version is available. Immediately:
+- **`"update": true` in response** — If any `caw` JSON response contains `"update": true`, immediately:
   1. Run `npx skills update` to update the skill
   2. Re-read this SKILL.md to pick up any changed instructions
-  3. Inform the user that a newer `caw` CLI version is available and can be downloaded from: https://download.agenticwallet.cobo.com/binary-release/
-  4. Re-run the original command with the current CLI
+  3. Re-run the original command with the current CLI
 
 ### Safety & boundaries
 - **Agent permission boundary**: Policies are set by the owner. The agent can only read policies — it cannot create or modify them. When denied, suggest the owner adjusts the policy in the Mobile App.
@@ -193,7 +192,7 @@ If the user's phrasing doesn't match CLI terminology, map it:
 | "take over / pair / get control of a wallet" | `caw wallet pair` — see [onboarding.md](./references/onboarding.md) |
 | "request approval / ask owner to approve" | Pact Submission flow |
 | "pact / delegation / time-limited access" | `caw pending` + [pact-management.md](./references/pact-management.md) |
-| "current agent / active identity / which profile" | `caw profile current` |
+| "current agent / active identity / which profile" | `caw wallet current` |
 
 ## Reference
 
@@ -219,7 +218,7 @@ npx skills find cobosteven/cobo-agent-wallet-manual "<keyword>"        # or sear
 # If nothing found → use `caw util abi encode` + `caw tx call`
 ```
 
-**Supported chains** — common chain IDs for `--chain`:
+**Supported chains** — common chain IDs for `--chain-id`:
 
 **Mainnets**
 

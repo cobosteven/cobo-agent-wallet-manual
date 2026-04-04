@@ -97,7 +97,7 @@ The provided code is invalid or has already been consumed.
 
 TSS Node connected to the wrong environment. Check `--env` parameter matches the setup token's environment (sandbox/dev).
 
-**Recovery:** Stop TSS Node, clean up state (see SKILL.md Reset/Cleanup), re-run `onboard --token <TOKEN> --create-wallet` with the correct `--env`.
+**Recovery:** Stop TSS Node, clean up state (see SKILL.md Reset/Cleanup), re-run `onboard --invitation-code <TOKEN> --create-wallet` with the correct `--env`.
 
 ### `Timed out waiting for wallet activation`
 
