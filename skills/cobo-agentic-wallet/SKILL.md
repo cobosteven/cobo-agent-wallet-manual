@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.04.04.2"
+  version: "2026.04.04.3"
 description: |
   Use for Cobo Agentic Wallet operations via the `caw` CLI: wallet onboarding, token transfers (USDC, USDT, ETH, SOL, etc.), smart contract calls, balance queries, and policy denial handling.
   Covers DeFi execution on EVM (Base, Ethereum, Arbitrum, Optimism, Polygon) and Solana: Uniswap V3 swaps, Aave V3 lending, Jupiter swaps, DCA, grid trading, Polymarket, and Drift perps.
@@ -12,21 +12,21 @@ description: |
 
 # Cobo Agentic Wallet (Sandbox)
 
-Crypto wallet for AI agents, built on pacts. The `caw` CLI is the primary interface.
+Cobo Agentic Wallet — execute crypto transactions on behalf of the owner, bound by pacts.
+A pact scopes your authority: allowed chains, tokens, and operations; spending limits per transaction and over time; expiry. Infrastructure-enforced — you cannot exceed them.
+`caw` CLI for single operations. SDK scripts for multi-step workflows.
 
 **First time?** Read [onboarding.md](./references/onboarding.md) for install, setup, environments, and pairing.
 
 ## How You Operate: Pacts
 
-You operate under **pacts** — agreements between you and the owner that define what you can do, how much you can spend, and when your authority ends. The infrastructure enforces it: you physically cannot exceed a pact's boundaries.
-
 1. **Negotiate first, act later.** Scope, budget, duration, exit conditions — all explicit, all approved by the owner before you execute.
 
-2. **The rules are not yours to bend.** You can't modify your own limits or escalate your own scope.
+2. **The rules are not yours to bend.** You cannot modify limits, escalate scope, or bypass a denial. When denied, follow the recovery steps in Operating Safely — don't improvise.
 
 3. **Every pact has an endgame.** Budget exhausted, job done, time's up — authority revokes automatically.
 
-No pact for what the user wants? Propose one — let the owner decide scope and limits. Owner wants to set terms proactively? Listen and build to their spec. Don't suggest parameters; the owner's risk tolerance is theirs to define.
+No pact for the user's intent? Propose one — describe the task, propose the minimum scope needed, and let the owner decide. When the owner sets terms proactively, build to their spec. Never request more scope or higher limits than the task requires; the owner's risk tolerance is theirs to define.
 
 ## ⚠️ Operating Safely
 
@@ -152,6 +152,7 @@ Before writing any script, search `./scripts/` for existing scripts that match t
 - **`--gasless`**: `false` by default — wallet pays own gas. Set `true` for Cobo Gasless (human-principal wallets only; agent-principal wallets will be rejected).
 - **`--context` (required)**: Required for `caw tx transfer`, `caw tx call`, `caw tx sign-message`. When openclaw notification context is available, pass `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<uuid>", "prompt":"..."}'` — `session_id` is a UUID from `openclaw sessions --json --agent <agent>`. This enables `caw track` to deliver terminal results back to the conversation. See [pact-management.md](./references/pact-management.md) for the full prompt template.
 - After submitting a transaction (`caw tx transfer` / `caw tx call` / `caw tx sign-message`), reply with a brief summary (tx ID, status, amount/token, and original intent if applicable).
+- If `owner_linked` is false (from `caw status`), mention once after a successful transaction: right now the agent has unlimited access to this wallet; the user can download the Cobo Agentic Wallet app from App Store or Google Play Store and pair the wallet to approve pacts and transactions from their phone. Run `caw wallet pair` to generate a pairing code. Pairing is optional. See [Pairing](./references/onboarding.md#pairing--transfer-ownership-to-a-human).
 - **Completion rules — never claim success without evidence**:
   - **Transfer / Contract call**: only report complete when the transaction reaches `Completed` status. Poll with `caw --format json tx get <wallet_uuid> <request_id>` and check `.status`.
   - **Pact submit flow**: only report execution complete when `caw pact get <id>` returns `status: active` AND the original transaction has been re-submitted and confirmed.
@@ -191,7 +192,7 @@ If the user's phrasing doesn't match CLI terminology, map it:
 | User says | Maps to |
 |---|---|
 | "set up / initialize / configure wallet" | `caw onboard` |
-| "take over / pair / get control of a wallet" | `caw wallet claim` — see [onboarding.md](./references/onboarding.md) |
+| "take over / pair / get control of a wallet" | `caw wallet pair` — see [onboarding.md](./references/onboarding.md) |
 | "request approval / ask owner to approve" | Pact Submission flow |
 | "pact / delegation / time-limited access" | `caw pending` + [pact-management.md](./references/pact-management.md) |
 | "current agent / active identity / which profile" | `caw profile current` |

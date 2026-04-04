@@ -50,30 +50,41 @@ Pact management is implemented via the `caw pact` CLI commands.
 
 3. **Construct** pact parameters from the user's intent (see [Intent -> Submit Parameter Mapping](#intent---submit-parameter-mapping))
 
-4. **Pre-submit preview** — always present a human-readable summary before submitting. Render durations as calendar units, permissions as plain-English labels, and policy limits as natural language (no raw JSON):
+4. **Pre-submit preview** — always present a human-readable summary of the **5 core confirmation items** before submitting, then wait for explicit user confirmation. Never submit a pact without user sign-off. Render durations as calendar units, permissions as plain-English labels, and policy limits as natural language (no raw JSON):
+
+   **The 5 core items are mandatory — every pact preview must include all five (aligned with [official pact definition](https://www.cobo.com/products/agentic-wallet/manual/learn/agentic-wallets/what-is-a-pact#five-elements-of-a-pact)):**
+
+   | # | Item | What to show |
+   |---|------|-------------|
+   | 1 | 🎯 **Intent** | One-sentence goal: what asset, what action, which chain, what cadence |
+   | 2 | 📝 **Execution Plan** | 2–4 bullet summary of what will happen, in what order, and how it stops |
+   | 3 | 🔐 **Permissions** | Plain-English list of capabilities granted (use label map below) |
+   | 4 | 📜 **Policies** | Per-tx cap, daily cap, scope/chain/token/contract restrictions — or "No additional policies" |
+   | 5 | 🏁 **Completion Conditions** | What triggers automatic revocation: time limit, total spend cap, tx count, or other criteria — or "Manual revocation only" |
 
    ```
-   📋 Authorization Request
+   📋 Pact Request
 
    🎯 Intent:      [one-sentence goal: what asset, what action, which chain, what cadence]
+
+   📝 Execution Plan:
+      [what will happen, in what order, how it stops — 2–4 bullet points; no technical jargon]
 
    🔐 Permissions:
       • write:contract_call — execute smart contract transactions
       • read:wallet         — read balances and transaction history
       (list only the permissions actually requested; map to plain-English labels below)
 
-   📜 Policy & Limits:
+   📜 Policies:
       • Max per transaction: $550
       • Daily cap (rolling 24h): $600
       • Scope: Base chain · ETH only
-      (omit lines that don't apply; if no policy, write "No additional spend limits")
+      (omit lines that don't apply; if no policy, write "No additional policies")
 
-   ⏳ Valid for:   90 days  (until 2026-07-01)
-      (if no expiry: "No expiry — active until manually revoked")
-
-   📝 Execution Plan:
-      [inline summary drawn from --execution-plan: what will happen, in what order,
-       how it stops — 2–4 bullet points; no technical jargon]
+   🏁 Completion Conditions:
+      • Expires in: 90 days (until 2026-07-01)
+      • Auto-revokes after: $3,000 total spent
+      (list all completion conditions; if none: "Manual revocation only")
    ```
 
    **Permission label map** (for display only):
@@ -86,21 +97,23 @@ Pact management is implemented via the `caw pact` CLI commands.
    | `operator` | Execute transfers and contract transactions |
    | `viewer` | Read-only access |
 
-   **After the preview block**, add the appropriate call-to-action:
+   **After the preview block**, always ask for explicit user confirmation — regardless of `owner_linked` status:
 
    - **If `owner_linked = false`** — the request will **auto-activate** without human review. Append a warning and require explicit confirmation before proceeding:
 
      > ⚠️ **This wallet has no linked owner.** The pact above will activate immediately — no human approval will occur.
      >
-     > Confirm submission?
+     > Please confirm all 5 items above and approve submission.
 
      Only proceed after explicit user confirmation. If the user declines: stop, do not submit.
 
-   - **If `owner_linked = true`** — the request requires owner approval before anything executes. Append:
+   - **If `owner_linked = true`** — the request requires owner approval before anything executes. Still require user confirmation before submitting:
 
-     > The owner will review this request before it activates. Submitting now…
+     > The owner will review this request before it activates.
+     >
+     > Please confirm all 5 items above and approve submission.
 
-     Then proceed to submit without waiting for additional user confirmation.
+     Only proceed after explicit user confirmation. If the user declines: stop, do not submit.
 
 5. **Submit**: `caw --format json pact submit ...`
 
@@ -455,7 +468,7 @@ All operations are checked against the delegation-scoped policies.
 
 | Symptom | Cause | Resolution |
 |---|---|---|
-| `403` on submit | Agent not claimed by an owner, or not an AGENT principal | Run `caw onboard` and ensure the owner has claimed the agent |
+| `403` on submit | Wallet not paired with an owner, or not an AGENT principal | Run `caw onboard` and ensure the owner has paired the wallet via the Human App |
 | `404` on submit | Wallet not found or not owned by the agent's owner | Verify wallet UUID with `caw --format json status` |
 | `422` on submit | Invalid pact spec (policy rules, permissions, or completion conditions malformed) | Check [pact-knowledge.md](./pact-knowledge.md) for schema rules and validation constraints |
 | Pact stuck in `pending_approval` | Owner hasn't reviewed in CAW App | Inform user that owner approval is pending |

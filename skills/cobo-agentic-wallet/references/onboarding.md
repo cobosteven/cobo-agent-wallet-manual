@@ -8,18 +8,18 @@ Run `./scripts/bootstrap-env.sh --env sandbox --only caw` to install caw. caw �
 
 ## 2. Onboard
 
-`caw onboard` is interactive by default — it walks through mode selection, credential input, waitlist, and wallet creation step by step via JSON prompts. Each call returns a `next_action` telling you the exact next step; follow it until `wallet_status` becomes `active`.
+`caw onboard` is interactive by default — it walks through credential input, waitlist, and wallet creation step by step via JSON prompts. Each call returns a `next_action` telling you the exact next step; follow it until `wallet_status` becomes `active`.
 
 ```bash
 export PATH="$HOME/.cobo-agentic-wallet/bin:$PATH"
 caw --format json onboard --create-wallet --env sandbox
 ```
 
-If the user already has a invitation code **before starting**, pass it directly on the **first call** to skip mode selection and credential prompts:
+If the user already has an invitation code **before starting**, pass it directly on the **first call** to skip the waitlist and credential prompts:
 
 ```bash
 # Invitation code from Cobo — you own the wallet initially, with limited functionality.
-# Your owner can claim the wallet later to unlock full functionality (see Claiming below).
+# Your owner can pair the wallet later to unlock full functionality (see Pairing below).
 caw --format json onboard --create-wallet --env sandbox --invitation-code <CODE>
 ```
 
@@ -61,26 +61,26 @@ Set the API URL before any command:
 export AGENT_WALLET_API_URL=https://api-core.agenticwallet.sandbox.cobo.com
 ```
 
-## Claiming — Transfer Ownership to a Human
+## Pairing — Transfer Ownership to a Human
 
-After the first successful transaction, the CLI prompts with the benefits of claiming. When the user decides to claim:
+Pairing is initiated manually. When the user decides to transfer wallet ownership:
 
 ```bash
-caw wallet claim                    # generate a claim code
-caw wallet claim-info               # check claim status
+caw wallet pair                     # generate a pairing code
+caw wallet pair-status              # check pairing status
 ```
 
-`claim` returns a **claim code** in the format `CAW-XXXXX` (valid 30 minutes). Tell the user:
+`pair` returns an **8-digit numeric code** (e.g. `12345678`, valid 30 minutes). Tell the user:
 
-> "To claim this wallet, open the Cobo Mobile App and enter code: **CAW-XXXXX**"
+> "To pair this wallet, open the Human App and enter code: **12345678**"
 
-The user completes the claim in the **Mobile App** by entering the code. Once claimed:
+The user completes the pairing in the **Human App** by entering the code. Once paired:
 - Ownership transfers from Agent → Human
 - Agent becomes a delegate, authorized to operate within the owner's configured rules
 - Operations outside those rules require the agent to submit a pact for human approval
 
-Use `claim-info` to check state: `not_found`, `valid` (pending, waiting for user), `expired`, or `claimed` (complete).
+Use `pair-status` to check state: `not_found`, `valid` (pending, waiting for user), `expired`, or `claimed` (complete).
 
-If the code expires before the user claims, re-run `caw wallet claim` to generate a new code.
+If the code expires before the user pairs, re-run `caw wallet pair` to generate a new code.
 
-**Claim status tracking**: `--context` is **required** for `caw wallet claim`. When openclaw notification context is available, pass `channel`, `target`, `session_id`, and `prompt`. **`session_id`**: UUID string identifying the current openclaw conversation session — read it from `openclaw sessions --json --agent <agent>` or equivalent method. If notification context is not available, pass `--context '{}'`. When the terminal notification is delivered (claimed/expired), continue any established next steps from the conversation context. Use: `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<uuid>", "prompt":"include the status update and a next-step execution plan based on the conversation context. Prefix the response with [Notification] to distinguish it from normal conversation replies"}'` — **this prompt applies to `caw wallet claim` only.** 
+**Pair status tracking**: `--context` is **required** for `caw wallet pair`. When openclaw notification context is available, pass `channel`, `target`, `session_id`, and `prompt`. **`session_id`**: UUID string identifying the current openclaw conversation session — read it from `openclaw sessions --json --agent <agent>` or equivalent method. If notification context is not available, pass `--context '{}'`. When the terminal notification is delivered (claimed/expired), continue any established next steps from the conversation context. Use: `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<uuid>", "prompt":"include the status update and a next-step execution plan based on the conversation context. Prefix the response with [Notification] to distinguish it from normal conversation replies"}'` — **this prompt applies to `caw wallet pair` only.**
