@@ -280,8 +280,8 @@ Policies constrain operations within granted permissions. Each policy targets a 
 
 | Field | Type | Description |
 |---|---|---|
-| `chain_in` | string[] | Restrict to specific chains using chain identifiers (e.g. `["BASE_ETH", "ETH"]`) — same identifiers as `--chain-id` in the CLI (e.g. `ETH`, `BASE_ETH`, `ARBITRUM_ETH`, `SOL`) |
-| `token_in` | ChainTokenRef[] | Restrict to specific tokens, e.g. `[{"chain_id":"BASE_ETH","token_id":"BASE_USDC"}]` — use token IDs as returned by `caw meta tokens` |
+| `chain_in` | string[] | Restrict to specific chains (e.g. `["BASE", "ETH"]`) |
+| `token_in` | ChainTokenRef[] | Restrict to specific tokens, e.g. `[{"chain_id":"BASE","token_id":"USDC"}]` |
 | `destination_address_in` | ChainAddressRef[] | Restrict to specific destination addresses |
 
 **For `contract_call` policies (EVM):**
@@ -348,9 +348,9 @@ A common pattern is pairing an `allow` policy with a `deny` policy for the same 
     "rules": {
       "effect": "allow",
       "when": {
-        "chain_in": ["BASE_ETH"],
+        "chain_in": ["BASE"],
         "target_in": [{
-          "chain_id": "BASE_ETH",
+          "chain_id": "BASE",
           "contract_addr": "0x2626664c2603336E57B271c5C0b26F421741e481"
         }]
       },
@@ -365,9 +365,9 @@ A common pattern is pairing an `allow` policy with a `deny` policy for the same 
     "rules": {
       "effect": "deny",
       "when": {
-        "chain_in": ["BASE_ETH"],
+        "chain_in": ["BASE"],
         "target_in": [{
-          "chain_id": "BASE_ETH",
+          "chain_id": "BASE",
           "contract_addr": "0x2626664c2603336E57B271c5C0b26F421741e481"
         }]
       },
@@ -394,10 +394,10 @@ A common pattern is pairing an `allow` policy with a `deny` policy for the same 
     "rules": {
       "effect": "allow",
       "when": {
-        "chain_in": ["BASE_ETH"],
-        "token_in": [{ "chain_id": "BASE_ETH", "token_id": "BASE_USDC" }],
+        "chain_in": ["BASE"],
+        "token_in": [{ "chain_id": "BASE", "token_id": "USDC" }],
         "destination_address_in": [{
-          "chain_id": "BASE_ETH",
+          "chain_id": "BASE",
           "address": "0xRecipientAddress..."
         }]
       }
@@ -409,8 +409,8 @@ A common pattern is pairing an `allow` policy with a `deny` policy for the same 
     "rules": {
       "effect": "deny",
       "when": {
-        "chain_in": ["BASE_ETH"],
-        "token_in": [{ "chain_id": "BASE_ETH", "token_id": "BASE_USDC" }]
+        "chain_in": ["BASE"],
+        "token_in": [{ "chain_id": "BASE", "token_id": "USDC" }]
       },
       "deny_if": {
         "amount_usd_gt": "1000",

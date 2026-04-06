@@ -27,7 +27,7 @@ Pact management is implemented via the `caw pact` CLI commands.
 
 ## When to use pact
 
-> **Note**: Always check `owner_linked` from `caw --format json status` first. When `owner_linked = false`, submitted pacts **auto-activate** (no human approval required) — see [Pact Submission Flow](#pact-submission-flow) Step 1 for the required confirmation step before submission.
+> **Note**: Always check `owner_linked` from `caw status` first. When `owner_linked = false`, submitted pacts **auto-activate** (no human approval required) — see [Pact Submission Flow](#pact-submission-flow) Step 1 for the required confirmation step before submission.
 
 **Decision principle**: Evaluate the full end-to-end complexity of the user's intent. If completing the task involves on-chain writes (contract calls, message signing), spans time (recurring, scheduled, multi-phase), requires coordinated multi-step execution, or carries financial risk beyond a simple one-shot transfer — request a pact. When in doubt, request a pact. Never suggest the user manually configure controls in WebConsole as a substitute for this flow.
 
@@ -45,9 +45,9 @@ Pact management is implemented via the `caw pact` CLI commands.
 
 ## Pact Submission Flow
 
-1. **Owner-linked check**: Run `caw --format json status` and read `owner_linked`. Note the value — it determines the urgency of the pre-submit warning in step 4 (auto-activation when `false` vs. human review required when `true`). Explicit user confirmation is required in **both** cases.
+1. **Owner-linked check**: Run `caw status` and read `owner_linked`. Note the value — it determines whether step 4 requires explicit confirmation.
 
-2. **Dedup check**: `caw --format json pact list --status pending_approval --wallet-id <id>`. If a pending request exists with the same intent, do NOT submit — inform the user and share the existing review link. If the user changed their intent, revoke the old one first (`caw --format json pact revoke <old_pact_id>`), then proceed.
+2. **Dedup check**: `caw pact list --status pending_approval --wallet-id <id>`. If a pending request exists with the same intent, do NOT submit — inform the user and share the existing review link. If the user changed their intent, revoke the old one first (`caw pact revoke <old_pact_id>`), then proceed.
 
 3. **Construct** pact parameters from the user's intent (see [Intent -> Submit Parameter Mapping](#intent---submit-parameter-mapping))
 
@@ -116,7 +116,7 @@ Pact management is implemented via the `caw pact` CLI commands.
 
      Only proceed after explicit user confirmation. If the user declines: stop, do not submit.
 
-5. **Submit**: `caw --format json pact submit ...`
+5. **Submit**: `caw pact submit ...`
 
 6. **Communicate**: Tell the user the pact has been submitted and the owner must approve it in the **CAW App** before execution proceeds. Instruct the user to forward the request to the owner. If the owner does not have the app yet, share the download link:
 
@@ -152,7 +152,7 @@ Common states:
 - `active`: approved, delegated execution can proceed
 - terminal: `rejected`, `completed`, `expired`, `revoked`
 
-Use `caw --format json pact show <pact_id>` to observe state transitions and current details.
+Use `caw pact show <pact_id>` to observe state transitions and current details.
 
 ## CLI Command Reference
 
@@ -192,7 +192,7 @@ Use `--spec-file` or `--spec-json` when you need custom policies (allow/deny pai
 **Example (inline mode):**
 
 ```bash
-caw --format json pact submit \
+caw pact submit \
   --wallet-id a1b2c3d4-5678-9abc-def0-123456789abc \
   --intent "Execute weekly ETH DCA on Base for 3 months" \
   --permissions operator \
@@ -223,7 +223,7 @@ After 12 swaps OR \$6,000 total spent OR 90 days." \
 **Example (full pact spec with policies):**
 
 ```bash
-caw --format json pact submit \
+caw pact submit \
   --wallet-id a1b2c3d4-5678-9abc-def0-123456789abc \
   --intent "Execute weekly ETH DCA on Base for 3 months" \
   --name "Base ETH Weekly DCA" \
@@ -242,8 +242,8 @@ Where `pact-dca.json` contains a full pact spec with policies:
       "rules": {
         "effect": "allow",
         "when": {
-          "chain_in": ["BASE_ETH"],
-          "target_in": [{ "chain_id": "BASE_ETH", "contract_addr": "0x2626664c2603336E57B271c5C0b26F421741e481" }]
+          "chain_in": ["BASE"],
+          "target_in": [{ "chain_id": "BASE", "contract_addr": "0x2626664c2603336E57B271c5C0b26F421741e481" }]
         },
         "review_if": { "amount_usd_gt": "500" }
       }
@@ -254,8 +254,8 @@ Where `pact-dca.json` contains a full pact spec with policies:
       "rules": {
         "effect": "deny",
         "when": {
-          "chain_in": ["BASE_ETH"],
-          "target_in": [{ "chain_id": "BASE_ETH", "contract_addr": "0x2626664c2603336E57B271c5C0b26F421741e481" }]
+          "chain_in": ["BASE"],
+          "target_in": [{ "chain_id": "BASE", "contract_addr": "0x2626664c2603336E57B271c5C0b26F421741e481" }]
         },
         "deny_if": {
           "amount_usd_gt": "550",
@@ -288,7 +288,7 @@ The `api_key` field is only visible to the operator principal that submitted the
 Use `caw pact status <pact-id>` as a lighter alternative that also triggers lazy activation.
 
 ```bash
-caw --format json pact show <pact_id>
+caw pact show <pact_id>
 ```
 
 ### `caw pact list`
@@ -304,10 +304,10 @@ List pacts accessible to the authenticated principal.
 
 ```bash
 # List all pending pacts for a specific wallet
-caw --format json pact list --status pending_approval --wallet-id <wallet_uuid>
+caw pact list --status pending_approval --wallet-id <wallet_uuid>
 
 # List all active pacts
-caw --format json pact list --status active
+caw pact list --status active
 ```
 
 ### `caw pact events <pact-id>`
@@ -315,7 +315,7 @@ caw --format json pact list --status active
 Get the lifecycle event history for a pact. Useful for tracking state transitions, activation timestamps, and completion/revocation reasons.
 
 ```bash
-caw --format json pact events <pact_id>
+caw pact events <pact_id>
 ```
 
 ### `caw pact revoke <pact-id>`
@@ -325,7 +325,7 @@ Revoke an active pact. **Wallet owner only.** Revoking removes the associated de
 Prompts for confirmation by default. Use `--yes` to skip.
 
 ```bash
-caw --format json pact revoke <pact_id>
+caw pact revoke <pact_id>
 ```
 
 ### `caw pact withdraw <pact-id>`
@@ -335,7 +335,7 @@ Withdraw a pact that is still **pending approval**. **Operator only.** Withdrawi
 Prompts for confirmation by default. Use `--yes` to skip.
 
 ```bash
-caw --format json pact withdraw <pact_id>
+caw pact withdraw <pact_id>
 ```
 
 ## Least Privilege Principle
@@ -391,7 +391,7 @@ When user intent is fully understood and execution is ready, construct submit ar
 > User: "DCA $500/week into ETH on Base for 3 months, max $550 per swap"
 
 ```bash
-caw --format json pact submit \
+caw pact submit \
   --wallet-id <uuid> \
   --intent "DCA $500/week into ETH on Base for 3 months, max $550 per swap" \
   --permissions write:contract_call,read:wallet \
@@ -425,7 +425,7 @@ If delegated execution is required and intent is complete, submit a pact immedia
 
 - `owner_linked` is `false` and the user has not yet confirmed (see [flow step 1](#pact-submission-flow))
 - The user's intent is ambiguous — ask for clarification first
-- The wallet target is unknown — query `caw --format json status` or ask the user
+- The wallet target is unknown — query `caw status` or ask the user
 - The operation is a token transfer within default quota — try `caw tx transfer` directly first
 
 ## Post-Submission Flow
@@ -449,7 +449,7 @@ This rule applies to:
 After submit, the request enters `pending_approval`. To manually check status:
 
 ```bash
-caw --format json pact show <pact_id>
+caw pact show <pact_id>
 ```
 
 ### Using the Active Pact
@@ -479,7 +479,7 @@ All operations are checked against the delegation-scoped policies.
 | Symptom | Cause | Resolution |
 |---|---|---|
 | `403` on submit | Wallet not paired with an owner, or not an AGENT principal | Run `caw onboard` and ensure the owner has paired the wallet via the Human App |
-| `404` on submit | Wallet not found or not owned by the agent's owner | Verify wallet UUID with `caw --format json status` |
+| `404` on submit | Wallet not found or not owned by the agent's owner | Verify wallet UUID with `caw status` |
 | `422` on submit | Invalid pact spec (policy rules, permissions, or completion conditions malformed) | Check [pact-knowledge.md](./pact-knowledge.md) for schema rules and validation constraints |
 | Pact stuck in `pending_approval` | Owner hasn't reviewed in CAW App | Inform user that owner approval is pending |
 | `api_key` not in response | Querying principal is not the submitting operator | Only the operator that submitted the request can see the API key |
