@@ -258,7 +258,7 @@ await wait_for_onchain(client, WALLET_UUID, "batch-002")
 # tx2 = await client.transfer_tokens(...)  # also nonce=5 — conflict!
 ```
 
-The same rule applies to CLI scripts — poll with `caw tx get <wallet_uuid> <request_id>` and wait for `status` to be `Confirming` or `Completed` before firing the next `caw tx transfer` or `caw tx call`.
+The same rule applies to CLI scripts — poll with `caw tx get <wallet_uuid> <tx-id>` and wait for `status` to be `Confirming` or `Completed` before firing the next `caw tx transfer` or `caw tx call`.
 
 ## DeFi Operations
 

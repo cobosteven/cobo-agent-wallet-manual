@@ -141,12 +141,13 @@ Pattern:
 
 ### Executing Under a Pact
 
-When the request becomes `active`, pass `--pact-id` to tx commands to execute under the pact's scope:
+When the request becomes `active`, pass the `<pact-id>` as the first positional argument to tx commands. The CLI resolves the wallet UUID and API key from the pact automatically — do not pass `--wallet-id` separately.
 
 ```bash
 # The pact_id is returned in the pact submit / show response
-caw tx transfer --pact-id <pact_id> --wallet-id <uuid> --token-id USDC ...
-caw tx call --pact-id <pact_id> --wallet-id <uuid> --chain-id BASE --contract 0x... --calldata 0x...
+caw tx transfer <pact_id> --token-id USDC --to 0x... --amount 10 ...
+caw tx call <pact_id> --chain-id BASE_ETH --contract 0x... --calldata 0x...
+caw tx sign-message <pact_id> --chain-id ETH --destination-type eip712 --eip712-typed-data '{...}'
 ```
 
 ## Policy Reference
