@@ -16,7 +16,7 @@ The SDK is available in **Python** and **TypeScript**. Choose whichever fits you
    ```bash
    ls ./scripts/  # list available scripts
    ```
-   Common naming patterns: `swap-*`, `transfer-*`, `claim-*`, `bridge-*`, `dca-*`, `payroll-*` (`.py` or `.ts`)
+   Common naming patterns: `swap-*`, `transfer-*`, `bridge-*`, `dca-*`, `payroll-*` (`.py` or `.ts`)
 
 2. **Reuse if exists** — if a matching script is found, use it directly with appropriate parameters. Report the script name to the user.
 

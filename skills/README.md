@@ -74,7 +74,7 @@ Core capabilities:
 - Check balance: caw wallet balance <wallet_uuid>
 - List transactions: caw tx list <wallet_uuid>
 
-Always use --format json for programmatic output. Check exit code and stderr on failure.
+Check exit code and stderr on failure.
 If a transfer is denied by policy, parse the error's "suggestion" field for the corrected parameters.
 See error-handling.md for common error codes and recovery steps.
 
@@ -93,7 +93,7 @@ This project uses Cobo Agentic Wallet for crypto operations.
 The cobo-agentic-wallet skill is installed at ./skills/cobo-agentic-wallet/.
 
 When asked to perform wallet operations:
-1. Use `caw` CLI with `--format json` for all commands
+1. Use `caw` CLI for all commands
 2. Always check transaction status after submission
 3. Handle policy denials by parsing the suggestion field — see [Error Handling](./skills/cobo-agentic-wallet/references/error-handling.md)
 4. For DeFi operations, refer to the skill's recipe files
@@ -143,8 +143,8 @@ Common chain IDs for `--chain-id` flag:
 For the full list of supported chains and tokens, run:
 
 ```bash
-caw --format json chain list
-caw --format json token list --chain-id <CHAIN>
+caw chain list
+caw token list --chain-id <CHAIN>
 ```
 
 ## Evals
