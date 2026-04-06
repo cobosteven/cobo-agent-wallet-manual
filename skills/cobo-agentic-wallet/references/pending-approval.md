@@ -7,10 +7,10 @@ How to handle transactions that return `status=pending_approval` — the require
 Always check `owner_linked` before telling the user how to approve:
 
 ```bash
-caw --format json status | jq .owner_linked
+caw status | jq .owner_linked
 ```
 
-Or read it from the response of any `caw --format json status` call earlier in the conversation.
+Or read it from the response of any `caw status` call earlier in the conversation.
 
 ## owner_linked = false — approve in this conversation
 
@@ -41,7 +41,7 @@ The wallet owner must approve via the Cobo Human App (mobile). Inform the user:
 Do NOT call `caw pending approve` — that requires the owner's credentials. Poll for completion instead:
 
 ```bash
-caw --format json pending get <pending_operation_id>
+caw pending get <pending_operation_id>
 # Check .status: pending → approved → (transaction executes) / rejected
 ```
 
@@ -50,11 +50,11 @@ caw --format json pending get <pending_operation_id>
 The `pending_operation_id` is in the submit response:
 
 ```bash
-caw --format json tx transfer ... | jq .result.pending_operation_id
+caw tx transfer ... | jq .result.pending_operation_id
 ```
 
 If the transfer was submitted earlier and you no longer have the response, list pending operations:
 
 ```bash
-caw --format json pending list | jq '.result.items[] | select(.request_id == "<request_id>")'
+caw pending list | jq '.result.items[] | select(.request_id == "<request_id>")'
 ```

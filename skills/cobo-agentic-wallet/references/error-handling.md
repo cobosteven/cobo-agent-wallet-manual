@@ -62,7 +62,7 @@ Transaction requires owner approval before execution.
 
 ```bash
 # Poll the pending operation
-caw --format json pending get <operation_id>
+caw pending get <operation_id>
 ```
 
 **Recovery:** Wait for the owner to approve/reject in the Web Console, then check the transaction status.

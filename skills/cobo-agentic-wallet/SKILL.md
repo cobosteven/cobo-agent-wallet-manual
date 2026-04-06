@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.04.04.5"
+  version: "2026.04.06.2"
 description: |
   Use for Cobo Agentic Wallet operations via the `caw` CLI: wallet onboarding, token transfers (USDC, USDT, ETH, SOL, etc.), smart contract calls, balance queries, and policy denial handling.
   Covers DeFi execution on EVM (Base, Ethereum, Arbitrum, Optimism, Polygon) and Solana: Uniswap V3 swaps, Aave V3 lending, Jupiter swaps, DCA, grid trading, Polymarket, and Drift perps.
@@ -123,7 +123,7 @@ caw meta tokens --token-ids SETH,SETH_USDC   # get metadata for specific token I
 
 Some operations require explicit owner approval before execution. See [pact-management.md](./references/pact-management.md) for when to use pacts, decision rules, submission flow, and transfer quota fallback.
 
-⚠️ **Check `owner_linked` before submitting**: `caw --format json status`. If `owner_linked = false`, pacts auto-activate without owner review — get explicit user confirmation first. See [Flow Step 1](./references/pact-management.md#pact-submission-flow).
+⚠️ **Always get explicit user confirmation before submitting a pact** — never submit without the user explicitly approving the 5-item preview. When `owner_linked = false`, the pact also auto-activates without owner review, making confirmation even more critical. See [Pact Submission Flow](./references/pact-management.md#pact-submission-flow).
 
 **When `active` notification arrives**: Reply immediately, then trigger execution via `exec background:true` — never block the notification turn waiting for tx results. See [Background Execution Rule](./references/pact-management.md#background-execution-rule).
 
@@ -150,6 +150,7 @@ Before writing any script, search `./scripts/` for existing scripts that match t
 - **`--pre-check` (default: true)**: `caw tx transfer` and `caw tx call` automatically run a policy + fee pre-check before submitting. If policy denies the transaction, the command exits with an error and the transaction is NOT submitted. Use `--pre-check=false` to skip and submit directly.
 - **`--request-id` idempotency**: Always set a unique, deterministic request ID per logical transaction (e.g. `invoice-001`, `swap-20240318-1`). Retrying with the same `--request-id` is safe — the server deduplicates.
 - **`--gasless`**: `false` by default — wallet pays own gas. Set `true` for Cobo Gasless (human-principal wallets only; agent-principal wallets will be rejected).
+- **`--pact-id`**: Available on `caw tx transfer`, `caw tx call`, and `caw tx sign-message`. When set, the CLI looks up the pact and uses its scoped API key for the request. Use this to execute under a specific pact's authority instead of the default wallet key. See [pact-management.md](./references/pact-management.md#using-the-pact-scoped-api-key).
 - **`--context` (required)**: Required for `caw tx transfer`, `caw tx call`, `caw tx sign-message`. When openclaw notification context is available, pass `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<uuid>"}'` — `session_id` is a UUID from `openclaw sessions --json --agent <agent>`.
 - After submitting a transaction (`caw tx transfer` / `caw tx call` / `caw tx sign-message`), reply with a brief summary (tx ID, status, amount/token, and original intent if applicable).
 - If `owner_linked` is false (from `caw status`), mention once after a successful transaction: right now the agent has unlimited access to this wallet; the user can download the Cobo Agentic Wallet app from App Store or Google Play Store and pair the wallet to approve pacts and transactions from their phone. Run `caw wallet pair` to generate a pairing code. Pairing is optional. See [Pairing](./references/onboarding.md#pairing--transfer-ownership-to-a-human).

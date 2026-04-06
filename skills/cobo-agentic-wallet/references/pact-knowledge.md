@@ -243,6 +243,7 @@ Implementation requirement:
 - Rationale: stale cached key objects may still carry `delegation_id = null`, which can bypass bound-delegation evaluation and incorrectly hit owner/controller allow logic.
 - Operational expectation: the very next request with that key must observe the latest `delegation_id` and be evaluated against delegation permissions.
 - Wallet pairing confirmation must not clear existing API key `delegation_id` / `pact_id` bindings; preserving bound keys keeps pre-pairing active pact keys valid after ownership transfer.
+- For bound keys tied to the **default pact**, permission denials on `can_transfer`, `can_call_contract`, and `can_message_sign` should include an `INSUFFICIENT_PERMISSION` suggestion that tells the caller to create a pact and retry with that pact.
 
 ## Policies
 
@@ -279,8 +280,8 @@ Policies constrain operations within granted permissions. Each policy targets a 
 
 | Field | Type | Description |
 |---|---|---|
-| `chain_in` | string[] | Restrict to specific chains (e.g. `["BASE", "ETH"]`) |
-| `token_in` | ChainTokenRef[] | Restrict to specific tokens, e.g. `[{"chain_id":"BASE","token_id":"USDC"}]` |
+| `chain_in` | string[] | Restrict to specific chains using chain identifiers (e.g. `["BASE_ETH", "ETH"]`) — same identifiers as `--chain-id` in the CLI (e.g. `ETH`, `BASE_ETH`, `ARBITRUM_ETH`, `SOL`) |
+| `token_in` | ChainTokenRef[] | Restrict to specific tokens, e.g. `[{"chain_id":"BASE_ETH","token_id":"BASE_USDC"}]` — use token IDs as returned by `caw meta tokens` |
 | `destination_address_in` | ChainAddressRef[] | Restrict to specific destination addresses |
 
 **For `contract_call` policies (EVM):**
@@ -347,9 +348,9 @@ A common pattern is pairing an `allow` policy with a `deny` policy for the same 
     "rules": {
       "effect": "allow",
       "when": {
-        "chain_in": ["BASE"],
+        "chain_in": ["BASE_ETH"],
         "target_in": [{
-          "chain_id": "BASE",
+          "chain_id": "BASE_ETH",
           "contract_addr": "0x2626664c2603336E57B271c5C0b26F421741e481"
         }]
       },
@@ -364,9 +365,9 @@ A common pattern is pairing an `allow` policy with a `deny` policy for the same 
     "rules": {
       "effect": "deny",
       "when": {
-        "chain_in": ["BASE"],
+        "chain_in": ["BASE_ETH"],
         "target_in": [{
-          "chain_id": "BASE",
+          "chain_id": "BASE_ETH",
           "contract_addr": "0x2626664c2603336E57B271c5C0b26F421741e481"
         }]
       },
@@ -393,10 +394,10 @@ A common pattern is pairing an `allow` policy with a `deny` policy for the same 
     "rules": {
       "effect": "allow",
       "when": {
-        "chain_in": ["BASE"],
-        "token_in": [{ "chain_id": "BASE", "token_id": "USDC" }],
+        "chain_in": ["BASE_ETH"],
+        "token_in": [{ "chain_id": "BASE_ETH", "token_id": "BASE_USDC" }],
         "destination_address_in": [{
-          "chain_id": "BASE",
+          "chain_id": "BASE_ETH",
           "address": "0xRecipientAddress..."
         }]
       }
@@ -408,8 +409,8 @@ A common pattern is pairing an `allow` policy with a `deny` policy for the same 
     "rules": {
       "effect": "deny",
       "when": {
-        "chain_in": ["BASE"],
-        "token_in": [{ "chain_id": "BASE", "token_id": "USDC" }]
+        "chain_in": ["BASE_ETH"],
+        "token_in": [{ "chain_id": "BASE_ETH", "token_id": "BASE_USDC" }]
       },
       "deny_if": {
         "amount_usd_gt": "1000",

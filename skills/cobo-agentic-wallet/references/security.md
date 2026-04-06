@@ -72,7 +72,7 @@ execution. When this happens:
 
 - Inform the user that the operation is pending owner approval
 - Do not resubmit the same operation — it is already queued
-- Poll status with `caw --format json pending get <operation_id>` if needed
+- Poll status with `caw pending get <operation_id>` if needed
 - If the operation is rejected, report the outcome and ask how to proceed
 
 ---

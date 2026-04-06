@@ -16,7 +16,7 @@ The SDK is available in **Python** and **TypeScript**. Choose whichever fits you
    ```bash
    ls ./scripts/  # list available scripts
    ```
-   Common naming patterns: `swap-*`, `transfer-*`, `claim-*`, `bridge-*`, `dca-*`, `payroll-*` (`.py` or `.ts`)
+   Common naming patterns: `swap-*`, `transfer-*`, `bridge-*`, `dca-*`, `payroll-*` (`.py` or `.ts`)
 
 2. **Reuse if exists** — if a matching script is found, use it directly with appropriate parameters. Report the script name to the user.
 
@@ -49,8 +49,8 @@ npm install @cobo/agentic-wallet
 After onboarding, retrieve your API key and wallet UUID from the CLI:
 
 ```bash
-caw --format json wallet current    # -> api_key, api_url, wallet_uuid
-caw --format json wallet list       # -> list all local wallet profiles (includes wallet_uuid per entry)
+caw wallet current    # -> api_key, api_url, wallet_uuid
+caw wallet list       # -> list all local wallet profiles (includes wallet_uuid per entry)
 ```
 
 ## Script Template
@@ -215,7 +215,7 @@ console.log(wallets.data.result);
 
 ## Key Conventions
 
-- **`wallet_uuid`**: pass explicitly to every method; retrieve with `caw --format json wallet current` (active profile) or `caw --format json wallet list` (all local profiles).
+- **`wallet_uuid`**: pass explicitly to every method; retrieve with `caw wallet current` (active profile) or `caw wallet list` (all local profiles).
 - **`request_id` idempotency**: always set a unique, deterministic ID per logical transaction. Retrying with the same `request_id` is safe — the server deduplicates.
 - **`sponsor`**: `false` by default (wallet pays own gas). Set `true` for Cobo Gasless (human-principal wallets only).
 - **SDK returns unwrapped data**: Python SDK methods return the `result` payload directly. TypeScript SDK responses are in `response.data.result`.
@@ -258,7 +258,7 @@ await wait_for_onchain(client, WALLET_UUID, "batch-002")
 # tx2 = await client.transfer_tokens(...)  # also nonce=5 — conflict!
 ```
 
-The same rule applies to CLI scripts — poll with `caw --format json tx get <wallet_uuid> <request_id>` and wait for `status` to be `Confirming` or `Completed` before firing the next `caw tx transfer` or `caw tx call`.
+The same rule applies to CLI scripts — poll with `caw tx get <wallet_uuid> <request_id>` and wait for `status` to be `Confirming` or `Completed` before firing the next `caw tx transfer` or `caw tx call`.
 
 ## DeFi Operations
 
@@ -290,10 +290,3 @@ Drop the Python SDK as a toolkit into any agent framework:
 | CrewAI | `pip install cobo-agentic-wallet[crewai]` | `from cobo_agentic_wallet.integrations.crewai import CoboAgentWalletCrewAIToolkit` |
 | MCP | `pip install cobo-agentic-wallet[mcp]` | `python -m cobo_agentic_wallet.mcp` |
 
-**MCP server:**
-
-```bash
-AGENT_WALLET_API_URL=https://api-core.agenticwallet.sandbox.cobo.com \
-AGENT_WALLET_API_KEY=your-key \
-python -m cobo_agentic_wallet.mcp
-```

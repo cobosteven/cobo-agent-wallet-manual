@@ -66,7 +66,6 @@ You have access to a Cobo Agentic Wallet for managing crypto assets with policy 
 
 Environment:
 - API URL: https://api-agent-wallet-core.sandbox.cobo.com
-- API Key: (stored in AGENT_WALLET_API_KEY)
 - CLI tool: caw
 
 Core capabilities:

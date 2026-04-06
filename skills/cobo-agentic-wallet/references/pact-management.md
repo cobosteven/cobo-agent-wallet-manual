@@ -45,7 +45,7 @@ Pact management is implemented via the `caw pact` CLI commands.
 
 ## Pact Submission Flow
 
-1. **Owner-linked check**: Run `caw --format json status` and read `owner_linked`. Note the value — it determines whether step 4 requires explicit confirmation.
+1. **Owner-linked check**: Run `caw --format json status` and read `owner_linked`. Note the value — it determines the urgency of the pre-submit warning in step 4 (auto-activation when `false` vs. human review required when `true`). Explicit user confirmation is required in **both** cases.
 
 2. **Dedup check**: `caw --format json pact list --status pending_approval --wallet-id <id>`. If a pending request exists with the same intent, do NOT submit — inform the user and share the existing review link. If the user changed their intent, revoke the old one first (`caw --format json pact revoke <old_pact_id>`), then proceed.
 
@@ -242,8 +242,8 @@ Where `pact-dca.json` contains a full pact spec with policies:
       "rules": {
         "effect": "allow",
         "when": {
-          "chain_in": ["BASE"],
-          "target_in": [{ "chain_id": "BASE", "contract_addr": "0x2626664c2603336E57B271c5C0b26F421741e481" }]
+          "chain_in": ["BASE_ETH"],
+          "target_in": [{ "chain_id": "BASE_ETH", "contract_addr": "0x2626664c2603336E57B271c5C0b26F421741e481" }]
         },
         "review_if": { "amount_usd_gt": "500" }
       }
@@ -254,8 +254,8 @@ Where `pact-dca.json` contains a full pact spec with policies:
       "rules": {
         "effect": "deny",
         "when": {
-          "chain_in": ["BASE"],
-          "target_in": [{ "chain_id": "BASE", "contract_addr": "0x2626664c2603336E57B271c5C0b26F421741e481" }]
+          "chain_in": ["BASE_ETH"],
+          "target_in": [{ "chain_id": "BASE_ETH", "contract_addr": "0x2626664c2603336E57B271c5C0b26F421741e481" }]
         },
         "deny_if": {
           "amount_usd_gt": "550",
@@ -452,18 +452,15 @@ After submit, the request enters `pending_approval`. To manually check status:
 caw --format json pact show <pact_id>
 ```
 
-### Using the Pact-Scoped API Key
+### Using the Active Pact
 
-When the request becomes `active`, the response includes an `api_key`. The operator uses this key for all subsequent operations under the pact:
+When the request becomes `active`, +**pass `--pact-id` directly for `caw tx transfer`, `caw tx call`, and `caw tx sign-message`** — the CLI looks up the pact and uses its scoped API key automatically:
 
 ```bash
-# Pass the pact-scoped API key via flag or env var
-export AGENT_WALLET_API_KEY=caw_sk_pact_abc123...
-# or pass inline per command:
-# caw --api-key caw_sk_pact_abc123... --format json tx call ...
-
-# Execute operations within pact scope
-caw --format json tx call --chain-id BASE --contract 0x... --calldata 0x...
+# Preferred: pass the pact ID; caw resolves the scoped key automatically
+caw tx transfer --pact-id <pact_id> --to 0x... --token-id ETH_USDC --amount 10
+caw tx call    --pact-id <pact_id> --chain-id BASE_ETH --contract 0x... --calldata 0x...
+caw tx sign-message --pact-id <pact_id> --chain-id BASE_ETH --destination-type eip712 ...
 ```
 
 All operations are checked against the delegation-scoped policies.

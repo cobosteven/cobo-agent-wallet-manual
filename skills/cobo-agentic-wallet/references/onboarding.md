@@ -12,7 +12,7 @@ Run `./scripts/bootstrap-env.sh --env sandbox --only caw` to install caw. caw �
 
 ```bash
 export PATH="$HOME/.cobo-agentic-wallet/bin:$PATH"
-caw --format json onboard --create-wallet --env sandbox
+caw onboard --create-wallet --env sandbox
 ```
 
 If the user already has an invitation code **before starting**, pass it directly on the **first call** to skip the waitlist and credential prompts:
@@ -20,7 +20,7 @@ If the user already has an invitation code **before starting**, pass it directly
 ```bash
 # Invitation code from Cobo — you own the wallet initially, with limited functionality.
 # Your owner can pair the wallet later to unlock full functionality (see Pairing below).
-caw --format json onboard --create-wallet --env sandbox --invitation-code <CODE>
+caw onboard --create-wallet --env sandbox --invitation-code <CODE>
 ```
 
 > **CRITICAL:** The shortcut commands above are for the **first call only**. Once you have called `caw onboard` and received a `session_id`, you **MUST** include `--session-id <SESSION_ID>` on **every** subsequent call — even when adding `--invitation-code`. Omitting `--session-id` starts a brand-new session, discarding prior progress and TSS prewarm work.
@@ -35,7 +35,7 @@ caw --format json onboard --create-wallet --env sandbox --invitation-code <CODE>
 Example follow-up call:
 
 ```bash
-caw --format json onboard --session-id <SESSION_ID> --answers '{"security_ack":true}'
+caw onboard --session-id <SESSION_ID> --answers '{"security_ack":true}'
 ```
 
 Use `phase` + `bootstrap_stage` + `wallet_status` to track progress.

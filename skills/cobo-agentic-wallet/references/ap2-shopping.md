@@ -201,7 +201,7 @@ Session statuses: `carts_received` → `purchasing` → `completed` | `failed` |
 
 ## Output conventions
 
-- **stdout**: structured data — respects the global `--format` flag (**default: `json`**, `--format table` for human display).
+- **stdout**: structured data — always JSON.
 - **stderr**: progress messages, prompts, errors — always human-readable.
 - Agent should parse **stdout** (JSON) and present extracted info to the user; stderr is for real-time status.
 
