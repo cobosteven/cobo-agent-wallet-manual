@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.04.07.2"
+  version: "2026.04.07.3"
 description: |
   Use for Cobo Agentic Wallet operations via the `caw` CLI: wallet onboarding, token transfers (USDC, USDT, ETH, SOL, etc.), smart contract calls, balance queries, and policy denial handling.
   Covers DeFi execution on EVM (Base, Ethereum, Arbitrum, Optimism, Polygon) and Solana: Uniswap V3 swaps, Aave V3 lending, Jupiter swaps, DCA, grid trading, Polymarket, and Drift perps.
@@ -19,6 +19,8 @@ A pact scopes your authority: allowed chains, tokens, and operations; spending l
 **First time?** Read [onboarding.md](./references/onboarding.md) for install, setup, environments, and pairing.
 
 ## How You Operate: Pacts
+
+When mentioning a pact to the user for the first time in a conversation, briefly explain what a pact is.
 
 1. **Negotiate first, act later.** Scope, budget, duration, exit conditions — all explicit, all approved by the owner (the wallet's controlling entity — the agent itself until the wallet is paired, then the human who completed pairing) before you execute.
 
@@ -101,7 +103,6 @@ caw tx estimate-transfer-fee --to 0x... --token-id ETH_USDC --amount 10
 
 # Submit a smart contract call. <pact-id> is required as the first positional argument.
 # Pre-check runs automatically.
-# Build calldata first with `caw util abi encode`.
 # ⚠️ Address format: EVM = exactly 42 chars (0x + 40 hex); Solana = 43-44 chars (Base58).
 # ⚠️ Never use a contract address from memory.
 #    Token addresses: query caw meta tokens --token-ids <id>.
@@ -111,12 +112,6 @@ caw tx estimate-transfer-fee --to 0x... --token-id ETH_USDC --amount 10
 caw tx call <pact-id> --contract 0x... --calldata 0x... --chain-id ETH
 # Solana (use --instructions instead of --contract):
 caw tx call <pact-id> --instructions '[{"program_id":"<Base58_addr>","data":"...","accounts":[...]}]' --chain-id SOL
-
-# Encode a function signature + arguments into hex calldata for use with `caw tx call`.
-caw util abi encode --method "transfer(address,uint256)" --args '["0x...", "1000000"]'
-
-# Decode hex calldata back into a human-readable function name and arguments.
-caw util abi decode --method "transfer(address,uint256)" --calldata 0xa9059cbb...
 
 # Get details of a specific pending operation (transfers/calls awaiting manual owner approval).
 # Use `pending list` to see all pending operations.
@@ -230,7 +225,7 @@ Read the file that matches the user's task. Do not load files that aren't releva
 ```bash
 npx skills add cobosteven/cobo-agent-wallet-manual --list              # browse available skills
 npx skills find cobosteven/cobo-agent-wallet-manual "<keyword>"        # or search by keyword
-# If nothing found → use `caw util abi encode` + `caw tx call`
+# If nothing found → construct calldata manually and use `caw tx call`
 ```
 
 **Supported chains** — common chain IDs for `--chain-id`:

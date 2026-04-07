@@ -8,6 +8,19 @@ Pact management is implemented via the `caw pact` CLI commands.
 > - All on-chain transactions MUST go through a pact. Default pacts cannot be used for any transaction — always create a new pact or use an existing non-default pact.
 > - On-chain transactions include: token transfers (`caw tx transfer`), contract calls (`caw tx call`), and message signing (`caw tx sign-message`). Read-only queries (`caw wallet balance`, `caw tx list`, etc.) do not require a pact.
 
+> ℹ️ **Default pact credential lifecycle**: The system-created default pact key is long-lived (no automatic expiry) so agents can continue submitting new pacts over time. Its runtime permissions remain restricted by the bound default delegation/pact (read/manage only, no transfer/contract-call/sign).
+
+**Decision principle**: Any on-chain write operation requires a pact. Always submit a pact for owner approval before executing transactions.
+
+**Pact required:**
+- Token transfers (`caw tx transfer`)
+- Contract calls (`caw tx call`) or message signing (`caw tx sign-message`)
+- Any task that spans time or repeats (recurring transfers, DCA, periodic rebalancing)
+- Multi-step workflows with risk bounds
+
+**No pact needed:**
+- Read-only queries (`caw wallet balance`, `caw tx list`, etc.)
+
 ## Pact Submission Flow
 
 1. **Dedup check**: `caw pact list --status pending_approval --wallet-id <id>`. If a pending request exists with the same intent, do NOT submit.
@@ -16,12 +29,12 @@ Pact management is implemented via the `caw pact` CLI commands.
 
 3. **Pre-submit preview** — always present a human-readable summary of the **4 core items** before submitting:
 
-   | # | Item | What to show |
-   |---|------|-------------|
-   | 1 | 🎯 **Intent** | One-sentence goal: what asset, what action, which chain |
-   | 2 | 📝 **Execution Plan** | 2–4 bullet summary of what will happen |
-   | 3 | 📜 **Policies** | Per-tx cap, daily cap, scope/chain/token/contract restrictions |
-   | 4 | 🏁 **Completion Conditions** | Time limit, total spend cap, tx count |
+   | # | Item | What to show                                                             |
+   |---|------|--------------------------------------------------------------------------|
+   | 1 | 🎯 **Intent** | One-sentence goal: what asset, what action, which chain                  |
+   | 2 | 📝 **Execution Plan** | 2–4 bullet summary of what will happen, **concrete on-chain operations the agent will perform once the pact is active** |
+   | 3 | 📜 **Policies** | Per-tx cap, daily cap, scope/chain/token/contract restrictions           |
+   | 4 | 🏁 **Completion Conditions** | Time limit, total spend cap, tx count                                    |
 
    **After the preview**, ask for explicit user confirmation. Never submit a pact without user sign-off.
 
@@ -96,9 +109,9 @@ Withdraw a pending pact. **Operator only.**
 | Goal description | `--intent` | Normalized goal including asset/protocol/chain |
 | Time window | `--duration` | Parse explicit time: `30d` -> `2592000`, `3 months` -> `7776000` |
 | Per-transaction budget | `--max-tx` | Per-transaction USD cap (inline policy shortcut) |
-| Custom policies | `--spec-file` / `--spec-json` | For chain/token/contract scoping, allow/deny pairs, rolling limits |
+| Custom policies | `--spec-file` / `--spec-json` | For chain/token/contract scoping and rolling limits. Pact policies are allow-only; deny effect is rejected by API validation. |
 | Display name | `--name` | Concise title for owner review |
-| Execution plan | `--execution-plan` | Markdown with `# Summary`, `# Contract Operations`, `# Risk Controls` |
+| Execution plan | `--execution-plan` | Markdown describing **only the on-chain operations that will run after the pact is active** — aligned with the user's intent. Use sections `# Summary` (one-line goal), `# Operations` (concrete calls/transfers, e.g. token, amount, target contract), `# Risk Controls` (per-tx cap, daily cap). **Never include** pact creation, pact submission, approval waiting, or any other system-level step — those are not part of the execution plan shown to the owner. |
 | Raw user input | `--original-intent` | User's original message(s) verbatim |
 
 ## Post-Submission Flow
@@ -146,7 +159,7 @@ Policies constrain operations within a pact. Each policy targets a specific oper
 
 | Field | Required | Description |
 |---|---|---|
-| `effect` | Yes | Always set to `"allow"`.|
+| `effect` | Yes | Always set to `"allow"`. Any non-allow effect (for example `"deny"`) is rejected at submit/update time. |
 | `when` | Yes (unless `always_review=true`) | Allowlist conditions — which chains/tokens/contracts/domains to permit |
 | `deny_if` | Optional | Hard-block conditions — usage limits that trigger an automatic deny |
 | `review_if` | Optional | Soft-block conditions — thresholds that require owner approval before proceeding |
