@@ -2,38 +2,11 @@
 
 Pact management is implemented via the `caw pact` CLI commands.
 
-## Table of Contents
-
-- [When to use pact](#when-to-use-pact)
-- [Pact Submission Flow](#pact-submission-flow)
-- [CLI Command Reference](#cli-command-reference)
-- [Least Privilege Principle](#least-privilege-principle)
-- [Intent -> Submit Parameter Mapping](#intent---submit-parameter-mapping)
-- [Post-Submission Flow](#post-submission-flow)
-- [Policy Reference](#policy-reference)
-  - [Policy Structure](#policy-structure)
-  - [Allowlist Conditions (when)](#allowlist-conditions-when)
-  - [Usage Limits (deny_if)](#usage-limits-deny_if)
-  - [Review USD Threshold (review_if)](#review-usd-threshold-review_if)
-  - [Message Sign Policies](#message-sign-policies)
-  - [USD Pricing Note](#usd-pricing-note)
-- [Policy Construction Patterns](#policy-construction-patterns)
-- [Handling Outcomes](#handling-outcomes)
-
 ## When to use pact
 
-> ⚠️ **Important**: All on-chain transactions MUST go through a pact. Default pacts cannot be used for any transaction — always create a new pact or use an existing non-default pact.
-
-**Decision principle**: Any on-chain write operation requires a pact. Always submit a pact for owner approval before executing transactions.
-
-**Pact required:**
-- Token transfers (`caw tx transfer`)
-- Contract calls (`caw tx call`) or message signing (`caw tx sign-message`)
-- Any task that spans time or repeats (recurring transfers, DCA, periodic rebalancing)
-- Multi-step workflows with risk bounds
-
-**No pact needed:**
-- Read-only queries (`caw wallet balance`, `caw tx list`, etc.)
+> ⚠️ **Important**:
+> - All on-chain transactions MUST go through a pact. Default pacts cannot be used for any transaction — always create a new pact or use an existing non-default pact.
+> - On-chain transactions include: token transfers (`caw tx transfer`), contract calls (`caw tx call`), and message signing (`caw tx sign-message`). Read-only queries (`caw wallet balance`, `caw tx list`, etc.) do not require a pact.
 
 ## Pact Submission Flow
 
@@ -173,6 +146,7 @@ Policies constrain operations within a pact. Each policy targets a specific oper
 
 | Field | Required | Description |
 |---|---|---|
+| `effect` | Yes | Always set to `"allow"`.|
 | `when` | Yes (unless `always_review=true`) | Allowlist conditions — which chains/tokens/contracts/domains to permit |
 | `deny_if` | Optional | Hard-block conditions — usage limits that trigger an automatic deny |
 | `review_if` | Optional | Soft-block conditions — thresholds that require owner approval before proceeding |
@@ -311,6 +285,26 @@ Matching operations require owner approval before execution.
         "amount_usd_gt": "1000",
         "usage_limits": { "rolling_24h": { "amount_usd_gt": "5000" } }
       }
+    }
+  }
+]
+```
+
+### Pattern: Blacklist via Empty `deny_if`
+
+An empty `deny_if: {}` unconditionally denies any operation that matches the `when` clause. This turns an `allow` policy into a targeted blacklist — useful for blocking an entire chain, token, or contract.
+
+"Block all transfers on BSC regardless of amount":
+
+```json
+[
+  {
+    "name": "block-bsc-transfers",
+    "type": "transfer",
+    "rules": {
+      "effect": "allow",
+      "when": { "chain_in": ["BSC_BNB"] },
+      "deny_if": {}
     }
   }
 ]

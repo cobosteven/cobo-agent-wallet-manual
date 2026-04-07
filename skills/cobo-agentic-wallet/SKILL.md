@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.04.07.1"
+  version: "2026.04.07.2"
 description: |
   Use for Cobo Agentic Wallet operations via the `caw` CLI: wallet onboarding, token transfers (USDC, USDT, ETH, SOL, etc.), smart contract calls, balance queries, and policy denial handling.
   Covers DeFi execution on EVM (Base, Ethereum, Arbitrum, Optimism, Polygon) and Solana: Uniswap V3 swaps, Aave V3 lending, Jupiter swaps, DCA, grid trading, Polymarket, and Drift perps.
@@ -155,7 +155,7 @@ Before writing any script, search `./scripts/` for existing scripts that match t
 ### CLI conventions
 - **Before using an unfamiliar command**: Run `caw schema <command>` (e.g. `caw schema tx transfer`) to get exact flags, required parameters, and exit codes. Do not guess flag names or assume parameters from memory.
 - **If a command fails with a parameter error**: Run `caw schema <subcmd>` to get required flags. Do not call `caw help` — it does not show parameter details.
-- **After pact submit or tx call**: Always verify with `caw pact show <id>` or `caw tx get <id>` before retrying. `exit=0` means the command ran, not that the operation succeeded.
+- **After pact submit or tx call**: Always verify with `caw pact show <id>` or `caw tx get --tx-id <record-uuid>` / `caw tx get --request-id <request-id>` (exactly one: record UUID from `caw tx list` or submit output, or the same `--request-id` as on submit) before retrying. `exit=0` means the command ran, not that the operation succeeded.
 - **Output is always JSON**. No `--format` flag — output is always JSON.
 - **`wallet_uuid` is optional** in most commands — if omitted, the CLI uses the default wallet
 - **Long-running commands** (`caw onboard --create-wallet`): run in background or wait until completion
@@ -177,7 +177,7 @@ Before writing any script, search `./scripts/` for existing scripts that match t
   - Underpriced gas: Re-estimate gas price and retry once.
   - Unknown error: Do not retry. Surface raw error data and wait for user instructions.
 - **`status=pending_approval`**: The transaction requires human approval before it executes. Follow [pending-approval.md](./references/pending-approval.md).
-- **Sequential execution for same-address transactions (nonce ordering)**: On EVM chains, each transaction from the same address must use an incrementing nonce. Submitting a new transaction before the previous one is on-chain causes nonce conflicts and failures. **Wait for each transaction to reach at least `Confirming` status (tx is on-chain, nonce consumed) before submitting the next one.** Waiting for `Completed` (all confirmations) is unnecessary and slow. Poll with `caw tx get <wallet_uuid> <tx-id>` and check `.status` — the lifecycle is `Submitted → PendingScreening → Broadcasting → Confirming → Success/Completed`. This applies to both direct CLI usage and SDK scripts. See [sdk-scripting.md](./references/sdk-scripting.md) for the polling pattern.
+- **Sequential execution for same-address transactions (nonce ordering)**: On EVM chains, each transaction from the same address must use an incrementing nonce. Submitting a new transaction before the previous one is on-chain causes nonce conflicts and failures. **Wait for each transaction to reach at least `Confirming` status (tx is on-chain, nonce consumed) before submitting the next one.** Waiting for `Completed` (all confirmations) is unnecessary and slow. Poll with `caw tx get --tx-id <record-uuid>` or `caw tx get --request-id <request-id>` and check `.status` — the lifecycle is `Submitted → PendingScreening → Broadcasting → Confirming → Success/Completed`. This applies to both direct CLI usage and SDK scripts. See [sdk-scripting.md](./references/sdk-scripting.md) for the polling pattern.
 
 ### List pagination (cursor)
 All list endpoints use cursor-based pagination: pass `after` / `before` as query params, read `meta.after` / `meta.before` (and `meta.has_more`) from responses. Prefer cursors over deprecated `offset`. Audit log responses also include legacy `result.next_cursor` (alias for `meta.after`) for backward compatibility.
