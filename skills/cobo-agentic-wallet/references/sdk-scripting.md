@@ -217,7 +217,7 @@ console.log(wallets.data.result);
 
 - **`wallet_uuid`**: pass explicitly to every method; retrieve with `caw wallet current` (active profile) or `caw wallet list` (all local profiles).
 - **`request_id` idempotency**: always set a unique, deterministic ID per logical transaction. Retrying with the same `request_id` is safe — the server deduplicates.
-- **`sponsor`**: `false` by default (wallet pays own gas). Set `true` for Cobo Gasless (human-principal wallets only).
+- **`sponsor`**: `false` by default (wallet pays own gas). Set `true` for Cobo Gasless (paired wallets only).
 - **SDK returns unwrapped data**: Python SDK methods return the `result` payload directly. TypeScript SDK responses are in `response.data.result`.
 - **Exceptions on failure**: SDK raises exceptions on HTTP/API errors — catch and report; do not silently retry.
 - **Sequential nonce ordering**: On EVM chains, each transaction from the same address must use an incrementing nonce. Submitting a new transaction before the previous one is on-chain causes nonce conflicts and failures. **Poll and wait for at least `Confirming` status (tx is on-chain, nonce consumed) before submitting the next transaction.** Waiting for `Completed` (all block confirmations) is unnecessary and slow — once a tx reaches `Confirming`, its nonce is consumed and the next tx can safely use nonce+1.

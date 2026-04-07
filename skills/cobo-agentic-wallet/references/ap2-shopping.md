@@ -1,6 +1,6 @@
 # AP2 shopping (Human-Present)
 
-CAW exposes **AP2** (Agent Payments Protocol) Human-Present shopping via `caw ap2`: the agent searches a merchant catalog, presents carts to the user for confirmation, signs x402 on-chain authorization, obtains **user authorization** (default: CAW App approval), then settles with the Merchant Agent over A2A.
+CAW exposes **AP2** (Agent Payments Protocol) Human-Present shopping via `caw ap2`: the agent searches a merchant catalog, presents carts to the user for confirmation, signs x402 on-chain authorization, obtains **user authorization** (default: Human App approval), then settles with the Merchant Agent over A2A.
 
 ## When to use
 
@@ -107,7 +107,7 @@ caw ap2 purchase "<session_id>" \
 | `<session_id>` | **yes** (positional) | — | From Step 2 output |
 | `--cart-id` | **yes** | — | `cart_id` the user confirmed |
 | `--wallet` / `-w` | no | default wallet | Explicit wallet UUID; omit to use the default wallet |
-| `--simulate-user-auth` | no | `false` | Skip CAW App, use local ECDSA simulation (dev only) |
+| `--simulate-user-auth` | no | `false` | Skip Human App, use local ECDSA simulation (dev only) |
 
 **This command blocks** (typically 30 s – 2 min) while it:
 
@@ -124,7 +124,7 @@ caw ap2 purchase "<session_id>" \
 ✓ merchant_authorization verified.
 ⏳ Requesting x402 payment signature...
 ✓ Payment signature obtained.
-⏳ Waiting for approval in CAW App...   ← default path
+⏳ Waiting for approval in Human App...   ← default path
 ✓ Approved. Executing payment...
 ⏳ Submitting payment to merchant...
 ✓ Payment completed.
@@ -134,7 +134,7 @@ caw ap2 purchase "<session_id>" \
 
 | Mode | When | How |
 |---|---|---|
-| **Default (App approval)** | Production & normal use | CLI creates `POST /approvals` with cart + payment details → user approves in **CAW App** (Passkey/WebAuthn). **Tell the user: "Please open CAW App and approve the payment."** |
+| **Default (App approval)** | Production & normal use | CLI creates `POST /approvals` with cart + payment details → user approves in **Human App** (Passkey/WebAuthn). **Tell the user: "Please open Human App and approve the payment."** |
 | **Local simulation** | Dev / testing without App | Add `--simulate-user-auth` flag or set env `CAW_AP2_SIMULATE_USER_AUTH=1` |
 
 ### Step 5 — Handle the result
@@ -190,8 +190,8 @@ Session statuses: `carts_received` → `purchasing` → `completed` | `failed` |
 
 | Symptom | Cause | Action |
 |---|---|---|
-| 403 on `caw ap2 purchase` (approval creation) | Wallet not paired by owner | Run `caw wallet pair` to generate a pairing code, then ask the owner to enter it in the Human App |
-| "Waiting for approval..." never completes | User hasn't opened CAW App, or approval expired | Remind user to open CAW App; if expired, re-run `caw ap2 purchase` (same session + cart-id is OK) |
+| 403 on `caw ap2 purchase` (approval creation) | Wallet not paired by owner | Run `caw wallet pair` to generate a pairing code, then give the code to the user to enter in the Human App |
+| "Waiting for approval..." never completes | User hasn't opened Human App, or approval expired | Remind user to open Human App; if expired, re-run `caw ap2 purchase` (same session + cart-id is OK) |
 | Approval **rejected** by user | User declined in App | Inform user the payment was cancelled; do not retry unless user asks |
 | Approval **expired** | Timed out (no action in App) | Re-run `caw ap2 purchase` to create a new approval |
 | `✗ x402 payment failed` | Insufficient balance or TSS Node issue | Check `caw wallet balance`; check TSS Node status. Top up if needed (`caw faucet deposit` on testnet) |

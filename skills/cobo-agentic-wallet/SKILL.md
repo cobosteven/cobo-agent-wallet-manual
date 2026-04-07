@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.04.06.5"
+  version: "2026.04.07.1"
 description: |
   Use for Cobo Agentic Wallet operations via the `caw` CLI: wallet onboarding, token transfers (USDC, USDT, ETH, SOL, etc.), smart contract calls, balance queries, and policy denial handling.
   Covers DeFi execution on EVM (Base, Ethereum, Arbitrum, Optimism, Polygon) and Solana: Uniswap V3 swaps, Aave V3 lending, Jupiter swaps, DCA, grid trading, Polymarket, and Drift perps.
@@ -12,7 +12,7 @@ description: |
 
 # Cobo Agentic Wallet (Sandbox)
 
-Cobo Agentic Wallet — execute crypto transactions on behalf of the owner, bound by pacts.
+Cobo Agentic Wallet — execute crypto transactions on behalf of the user, bound by pacts.
 A pact scopes your authority: allowed chains, tokens, and operations; spending limits per transaction and over time; expiry. Infrastructure-enforced — you cannot exceed them.
 `caw` CLI for single operations. SDK scripts for multi-step workflows.
 
@@ -20,7 +20,7 @@ A pact scopes your authority: allowed chains, tokens, and operations; spending l
 
 ## How You Operate: Pacts
 
-1. **Negotiate first, act later.** Scope, budget, duration, exit conditions — all explicit, all approved by the owner before you execute.
+1. **Negotiate first, act later.** Scope, budget, duration, exit conditions — all explicit, all approved by the owner (the wallet's controlling entity — the agent itself until the wallet is paired, then the human who completed pairing) before you execute.
 
 2. **The rules are not yours to bend.** You cannot modify limits, escalate scope, or bypass a denial. When denied, follow the recovery steps in Operating Safely — don't improvise.
 
@@ -53,7 +53,7 @@ No pact for the user's intent? Propose one — describe the task, propose the mi
 - No available pact: create a [pact](#pacts) for this operation
 - See [error-handling.md](./references/error-handling.md) for recovery patterns and user communication templates
 
-See [security.md](./references/security.md) for full security guide, delegation boundaries, and incident response.
+See [security.md](./references/security.md) for full security guide and incident response.
 
 **Workflow**:
 - **Token transfers**: create a [pact](#pacts) first, then run `caw tx transfer <pact-id>` under that pact's scope.
@@ -66,17 +66,19 @@ See [security.md](./references/security.md) for full security guide, delegation 
 > For exact flags and required parameters, run `caw schema <command>` (returns structured JSON). Use `caw <command> --help` only if `schema` is unavailable.
 
 ```bash
-# Full wallet snapshot: agent info, wallet details + spend summary, all balances, pending ops, delegations.
+# Full wallet snapshot: agent info, wallet details + spend summary, all balances, pending ops.
 caw status
 
 # List all token balances for the wallet, optionally filtered by token or chain.
 caw wallet balance
 
 # Rename the wallet.
-caw wallet update --name <NAME> --wallet <ID>
+caw wallet rename --name <NAME>
 
-# Pair with a human owner. After calling, you'll receive an 8-digit code — give it to the user
-# to enter in the Cobo Human App. Use `caw wallet pair-status` to check if pairing completed.
+# Pair the wallet — transfer ownership from the agent to a human. After calling, you'll receive
+# an 8-digit code — give it to the user to enter in the Human App (the Cobo mobile app for
+# managing the wallet, approving pacts, and authorizing transactions).
+# Use `caw wallet pair-status` to check if pairing completed.
 caw wallet pair
 
 # List all on-chain addresses. Run before `address create` to check if one already exists.
@@ -162,7 +164,7 @@ Before writing any script, search `./scripts/` for existing scripts that match t
 
 ### Transactions
 - **`--request-id` idempotency**: Always set a unique, deterministic request ID per logical transaction (e.g. `invoice-001`, `swap-20240318-1`). Retrying with the same `--request-id` is safe — the server deduplicates.
-- **`--gasless`**: `false` by default — wallet pays own gas. Set `true` for Cobo Gasless (human-principal wallets only; agent-principal wallets will be rejected).
+- **`--gasless`**: `false` by default — wallet pays own gas. Set `true` for Cobo Gasless (paired wallets only; unpaired wallets will be rejected).
 - **`<pact-id>` (required positional arg)**: `caw tx transfer`, `caw tx call`, and `caw tx sign-message` all take `<pact-id>` as the first positional argument. The CLI resolves the wallet UUID and API key from the pact automatically — do not pass `--wallet-id` separately. See [pact.md](./references/pact.md#executing-under-a-pact).
 - **`--context` (required)**: Required for `caw tx transfer`, `caw tx call`, `caw tx sign-message`. When openclaw notification context is available, pass `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<uuid>"}'` — `session_id` is a UUID from `openclaw sessions --json --agent <agent>`.
 - After submitting a transaction (`caw tx transfer` / `caw tx call` / `caw tx sign-message`), reply with a brief summary (tx ID, status, amount/token, and original intent if applicable).
@@ -205,7 +207,7 @@ If the user's phrasing doesn't match CLI terminology, map it:
 | "set up / initialize / configure wallet" | `caw onboard` |
 | "take over / pair / get control of a wallet" | `caw wallet pair` — see [onboarding.md](./references/onboarding.md) |
 | "request approval / ask owner to approve" | Pact Submission flow |
-| "pact / delegation / time-limited access" | `caw pending` + [pact.md](./references/pact.md) |
+| "pact / time-limited access" | `caw pending` + [pact.md](./references/pact.md) |
 | "current agent / active identity / which profile" | `caw wallet current` |
 
 ## Reference

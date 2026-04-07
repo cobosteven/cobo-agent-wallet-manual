@@ -54,7 +54,7 @@ Pact management is implemented via the `caw pact` CLI commands.
 
 4. **Submit**: `caw pact submit ...`
 
-5. **Communicate**: Tell the user the pact has been submitted and the owner must approve it in the **CAW App**.
+5. **Communicate**: Tell the user the pact has been submitted and ask for their confirmation in this conversation. If the wallet is paired, also let them know they will need to approve it in the **Human App** as well.
 
 6. **Track**: `caw track --watch` starts automatically after submission.
 
@@ -153,6 +153,8 @@ caw tx sign-message <pact_id> --chain-id ETH --destination-type eip712 --eip712-
 ## Policy Reference
 
 Policies constrain operations within a pact. Each policy targets a specific operation type (`transfer`, `contract_call`, or `message_sign`) and always uses `allow` effect.
+
+> 🔒 **Default-deny semantics**: Any operation that does **not** match the `when` conditions of at least one `allow` policy is **automatically denied**. There is no implicit pass-through — if a transaction type, chain, token, or contract is not explicitly covered by a policy, the request is rejected. Always define policies that explicitly cover every operation the agent needs to perform.
 
 ### Policy Structure
 
@@ -318,7 +320,7 @@ Matching operations require owner approval before execution.
 
 | Status | Agent action |
 |---|---|
-| `pending_approval` | Notify user that owner approval is required via **CAW App** |
+| `pending_approval` | Ask the user to confirm in this conversation. If the wallet is paired, also notify them that approval in the **Human App** is required. |
 | `active` | Proceed with execution within pact scope |
 | `rejected` | Surface rejection to user; ask whether to adjust constraints |
 | `revoked` / `expired` / `completed` | Stop execution; inform user; submit new pact if needed |

@@ -14,7 +14,7 @@ Or read it from the response of any `caw status` call earlier in the conversatio
 
 ## owner_linked = false — approve in this conversation
 
-The wallet has no linked owner yet. The agent itself acts as the approver. Ask the user to reply with their decision directly in the chat:
+The wallet has no linked owner yet. Approval happens directly in this conversation — the user decides, and the agent executes their decision. Ask the user to reply with their decision directly in the chat:
 
 > "This transaction requires your approval before it can proceed.
 > Transaction ID: `<request_id>`
