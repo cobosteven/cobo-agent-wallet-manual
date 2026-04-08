@@ -79,20 +79,26 @@ cobo-agentic-wallet-sandbox skill 已激活。
 按照以下用户指令完成操作：
 
 {user_message}
-
-完成后，用 bash 找到并输出本次 session 文件的完整路径（注意是 .jsonl 文件，不是 sessions.json）：
-ls -t ~/.openclaw/agents/main/sessions/*.jsonl 2>/dev/null | head -1
 ```
+
+> **subagent 无需输出 session 文件路径**。任务完成后，父 agent 通过 item_id grep 精准定位（并发安全）：
+> ```bash
+> grep -rl "CAW 评测 case {item_id}" ~/.openclaw/agents/main/sessions/ 2>/dev/null | head -1
+> ```
 
 ---
 
 ## 上传 Session 文件
 
-每批 task 完成后，对每个 item 执行 upload：
+每批 task 完成后，对每个 item 定位并上传 session 文件：
 
 ```bash
+# Step 1: 通过 item_id grep 精准定位 session 文件（并发安全）
+SESSION_FILE=$(grep -rl "CAW 评测 case E2E-01L1" ~/.openclaw/agents/main/sessions/ 2>/dev/null | head -1)
+
+# Step 2: 上传
 .venv/bin/python sdk/skills/caw-eval/scripts/run_eval.py upload \
-  --session /path/to/session.jsonl \
+  --session "$SESSION_FILE" \
   --dataset-name caw-agent-eval-v1 \
   --item-id E2E-01L1 \
   --run-name eval-run-20260407-1000
@@ -112,19 +118,25 @@ ls -t ~/.openclaw/agents/main/sessions/*.jsonl 2>/dev/null | head -1
 
 ---
 
-## Session 文件位置
+## Session 文件位置与定位
 
 openclaw session 文件默认存储在：
 
 - **Linux / macOS**：`~/.openclaw/agents/main/sessions/*.jsonl`
 
-> 注意：同目录下的 `sessions.json`（无 `.jsonl` 后缀）是元数据文件，不是 session 数据。使用 `*.jsonl` 通配符可自动排除。
+> 注意：同目录下的 `sessions.json`（无 `.jsonl` 后缀）是元数据文件，不是 session 数据。
 
-task subagent 执行后，最新的 `.jsonl` 即为对应 session：
+**并发安全的精准定位方式（推荐）**
+
+由于多个 subagent 并发执行，`ls -t | head -1` 可能返回错误文件。正确方式是通过 item_id grep 定位：
+
 ```bash
-# 找到最近生成的 session 文件（最新的就是刚完成的 task 的 session）
-ls -t ~/.openclaw/agents/main/sessions/*.jsonl 2>/dev/null | head -5
+# 每个 task prompt 包含唯一的 "CAW 评测 case {item_id}"，
+# session 文件第一条消息就是该 prompt，因此 grep 可精准命中
+grep -rl "CAW 评测 case E2E-01L1" ~/.openclaw/agents/main/sessions/ 2>/dev/null | head -1
 ```
+
+这是 100% 并发安全的方法，不依赖文件时间戳。
 
 ---
 

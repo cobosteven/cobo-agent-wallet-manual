@@ -112,16 +112,25 @@ cobo-agentic-wallet-sandbox skill 已激活。
 按照以下用户指令完成操作：
 
 {user_message}
-
-完成后，用 bash 找到并输出本次 session 文件的完整路径（注意是 .jsonl 文件，不是 sessions.json）：
-ls -t ~/.openclaw/agents/main/sessions/*.jsonl 2>/dev/null | head -1
 ```
 
-**3. 每批完成后上传 session**
+> **Session 文件定位由父 agent 负责**（并发安全）：任务完成后，父 agent 通过 item_id grep 精准定位 session 文件：
+> ```bash
+> grep -rl "CAW 评测 case {item_id}" ~/.openclaw/agents/main/sessions/ 2>/dev/null | head -1
+> ```
+> 这比 `ls -t | head -1` 更可靠：item_id 唯一，并发执行不会混淆文件归属。
+
+**3. 每批完成后定位并上传 session 文件**
+
+通过 item_id grep 精准定位（并发安全，不会混淆文件）：
 ```bash
+# 定位 session 文件（每个 item 独立执行）
+SESSION_FILE=$(grep -rl "CAW 评测 case E2E-01L1" ~/.openclaw/agents/main/sessions/ 2>/dev/null | head -1)
+
+# 上传
 .venv/bin/python sdk/skills/caw-eval/scripts/run_eval.py upload \
-  --session <session.jsonl 路径> \
-  --item-id <item_id> \
+  --session "$SESSION_FILE" \
+  --item-id E2E-01L1 \
   --run-name <run_name>
 ```
 > CAW 凭证自动从 `~/.cobo-agentic-wallet/config` 读取，无需额外参数。
