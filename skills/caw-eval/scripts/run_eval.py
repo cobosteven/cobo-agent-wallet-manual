@@ -3,10 +3,12 @@
 Script 2: 从 Langfuse 拉取测试数据，上传 session 数据
 
 执行模式说明:
-    本脚本负责数据集查询、session 收集和上传。测试用例的执行由 openclaw
+    本脚本负责数据集查询和 session 上传。测试用例的执行由 openclaw
     agent 通过 task subagent 完成（每个 item 独立 task，可并行）。
 
-    数据集读写和 session 上传均通过 Langfuse SDK + API key 直接操作（无需 CAW 后端）。
+    数据集读写通过 Langfuse SDK + API key 直接操作（无需 CAW 后端）。
+    Session 上传通过 upload_session.py → CAW 后端 → Langfuse，需要
+    AGENT_WALLET_API_URL 和 CAW_API_KEY。
 
 用法:
     # 列出数据集中的所有 item（供 agent 读取后分发执行）
@@ -15,27 +17,19 @@ Script 2: 从 Langfuse 拉取测试数据，上传 session 数据
     # 列出并输出 JSON 格式（方便 agent 解析）
     python run_eval.py list --dataset-name caw-agent-eval-v1 --format json
 
-    # task 执行完成后，将该 item 的 session 文件收集到 run 目录
-    python run_eval.py collect \
-        --item-id E2E-01L1 \
-        --run-dir ~/.caw-eval/runs/eval-run-20260407
-
-    # 上传单个 session 文件并关联到 Langfuse run
+    # task 执行完成后，上传 session 文件并关联到 Langfuse run
     python run_eval.py upload \
         --session /path/to/session.jsonl \
         --dataset-name caw-agent-eval-v1 \
         --item-id E2E-01L1 \
         --run-name eval-run-20260407
 
-    # 批量上传 run 目录下所有 session（文件名 stem = item_id）
-    python run_eval.py upload \
-        --run-dir ~/.caw-eval/runs/eval-run-20260407 \
-        --run-name eval-run-20260407
-
 环境变量:
     LANGFUSE_HOST         - Langfuse 服务地址
-    LANGFUSE_PUBLIC_KEY   - Langfuse 公钥（数据集读写 + session 上传）
-    LANGFUSE_SECRET_KEY   - Langfuse 私钥（数据集读写 + session 上传）
+    LANGFUSE_PUBLIC_KEY   - Langfuse 公钥（数据集读写）
+    LANGFUSE_SECRET_KEY   - Langfuse 私钥（数据集读写）
+    AGENT_WALLET_API_URL  - CAW Backend API 地址（session 上传必须）
+    CAW_API_KEY           - CAW API Key（session 上传必须）
 """
 
 import argparse
@@ -57,8 +51,8 @@ _UPLOAD_SESSION_SCRIPT = Path(__file__).parent / "upload_session.py"
 _DEFAULT_HOST = "https://langfuse.1cobo.com"
 
 
-def get_langfuse_config() -> dict[str, str]:
-    """Langfuse project credentials — used for both dataset reading and session upload.
+def get_dataset_langfuse_config() -> dict[str, str]:
+    """Credentials for the Langfuse *dataset* project (test item storage).
 
     Priority: LANGFUSE_DATASET_* → LANGFUSE_* → .env file.
     """
@@ -68,9 +62,9 @@ def get_langfuse_config() -> dict[str, str]:
     pub = _pick("LANGFUSE_DATASET_PUBLIC_KEY", "LANGFUSE_PUBLIC_KEY")
     sec = _pick("LANGFUSE_DATASET_SECRET_KEY", "LANGFUSE_SECRET_KEY")
     if not pub or not sec:
-        print("[WARN] Langfuse credentials not set. "
-              "Set LANGFUSE_PUBLIC_KEY + LANGFUSE_SECRET_KEY "
-              "(or LANGFUSE_DATASET_PUBLIC_KEY + LANGFUSE_DATASET_SECRET_KEY) in .env or env vars.")
+        print("[WARN] Langfuse dataset-project credentials not set. "
+              "Set LANGFUSE_DATASET_PUBLIC_KEY + LANGFUSE_DATASET_SECRET_KEY "
+              "(or LANGFUSE_PUBLIC_KEY + LANGFUSE_SECRET_KEY) in .env or env vars.")
     return {
         "host": _pick("LANGFUSE_DATASET_HOST", "LANGFUSE_HOST") or _DEFAULT_HOST,
         "public_key": pub,
@@ -78,8 +72,19 @@ def get_langfuse_config() -> dict[str, str]:
     }
 
 
-# Keep backward-compatible alias
-get_dataset_langfuse_config = get_langfuse_config
+def get_result_langfuse_config() -> dict[str, str]:
+    """Credentials for the Langfuse *results* project (session traces + scores).
+
+    Priority: LANGFUSE_RESULT_* → LANGFUSE_* (no hard-coded default — user must configure).
+    """
+    def _pick(specific: str, generic: str) -> str:
+        return os.environ.get(specific) or os.environ.get(generic) or ""
+
+    return {
+        "host": os.environ.get("LANGFUSE_RESULT_HOST") or os.environ.get("LANGFUSE_HOST") or _DEFAULT_HOST,
+        "public_key": _pick("LANGFUSE_RESULT_PUBLIC_KEY", "LANGFUSE_PUBLIC_KEY"),
+        "secret_key": _pick("LANGFUSE_RESULT_SECRET_KEY", "LANGFUSE_SECRET_KEY"),
+    }
 
 
 def preflight_check() -> bool:
@@ -88,8 +93,8 @@ def preflight_check() -> bool:
         print(f"[PREFLIGHT ERROR] upload_session.py not found at: {_UPLOAD_SESSION_SCRIPT}")
         return False
     print("[PREFLIGHT OK] upload_session.py found")
-    print("[INFO] Langfuse credentials read from LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY "
-          "(or LANGFUSE_DATASET_* variants) in .env or env vars.")
+    print("[INFO] CAW credentials will be loaded by upload_session.py "
+          "(~/.cobo-agentic-wallet/config or AGENT_WALLET_API_URL/CAW_API_KEY env vars)")
     return True
 
 
@@ -156,13 +161,16 @@ def _extract_session_id(session_path: str) -> str:
 
 def upload_session(
     session_path: str,
+    api_url: str = "",
+    api_key: str = "",
     skill_name: str = "cobo-agentic-wallet-sandbox",
 ) -> str | None:
     """
-    通过 upload_session.py CLI 直接上传 session.jsonl 到 Langfuse。
+    通过 upload_session.py CLI 上传 session.jsonl 到 backend telemetry。
     返回 session_id（作为 Langfuse trace_id），失败返回 None。
 
-    Langfuse 凭据由 upload_session.py 从环境变量或 .env 文件读取。
+    api_url / api_key 为空时，upload_session.py 会自动从
+    ~/.cobo-agentic-wallet/config 读取（与 otel_report.py 行为一致）。
     """
     session_id = _extract_session_id(session_path)
     if not session_id:
@@ -173,7 +181,12 @@ def upload_session(
         print(f"    [UPLOAD ERROR] upload_session.py not found at {_UPLOAD_SESSION_SCRIPT}")
         return None
 
+    # 只在非空时覆盖，空值交由 upload_session.py 的 load_caw_config() 处理
     env = {**os.environ}
+    if api_url:
+        env["AGENT_WALLET_API_URL"] = api_url
+    if api_key:
+        env["CAW_API_KEY"] = api_key
 
     try:
         result = subprocess.run(
@@ -205,14 +218,15 @@ def link_to_dataset_run(
     run_name: str,
     trace_id: str,
 ) -> None:
-    """将 Langfuse trace 关联到 dataset item run（Langfuse v4 API）。"""
+    """将 Langfuse trace 关联到 dataset item run。"""
     try:
-        lf.api.dataset_run_items.create(
-            run_name=run_name,
-            dataset_item_id=item_id,
-            trace_id=trace_id,
-        )
-        print(f"    [LINKED] trace={trace_id[:8]}... -> run={run_name} item={item_id}")
+        dataset = lf.get_dataset(dataset_name)
+        for item in dataset.items:
+            if item.id == item_id:
+                item.link(trace_id=trace_id, run_name=run_name)
+                print(f"    [LINKED] trace={trace_id[:8]}... -> run={run_name}")
+                return
+        print(f"    [WARN] item '{item_id}' not found in dataset '{dataset_name}'")
     except Exception as e:
         print(f"    [LINK ERROR] {e}")
 
@@ -222,6 +236,8 @@ def cmd_upload(
     dataset_name: str,
     item_id: str,
     run_name: str,
+    api_url: str,
+    api_key: str,
     skill: str,
 ) -> None:
     """上传 session 文件并关联到 Langfuse dataset run。"""
@@ -229,7 +245,7 @@ def cmd_upload(
 
     preflight_check()
 
-    cfg = get_langfuse_config()
+    cfg = get_result_langfuse_config()
     lf = Langfuse(
         public_key=cfg["public_key"],
         secret_key=cfg["secret_key"],
@@ -237,7 +253,7 @@ def cmd_upload(
     )
 
     print(f"[INFO] Uploading session: {session_path}")
-    trace_id = upload_session(session_path, skill)
+    trace_id = upload_session(session_path, api_url, api_key, skill)
     if trace_id:
         print(f"[INFO] trace_id: {trace_id}")
         if dataset_name and item_id:
@@ -269,6 +285,10 @@ def main() -> None:
     up.add_argument("--item-id", required=True, help="对应的 dataset item ID")
     up.add_argument("--run-name", default=f"eval-run-{ts}",
                     help="Langfuse dataset run 名称")
+    up.add_argument("--api-url", default="",
+                    help="CAW backend URL（默认从 ~/.cobo-agentic-wallet/config 读取）")
+    up.add_argument("--api-key", default="",
+                    help="CAW API key（默认从 ~/.cobo-agentic-wallet/config 读取）")
     up.add_argument("--skill", default="cobo-agentic-wallet-sandbox",
                     help="Session skill 标签")
 
@@ -286,6 +306,8 @@ def main() -> None:
             dataset_name=args.dataset_name,
             item_id=args.item_id,
             run_name=args.run_name,
+            api_url=args.api_url,
+            api_key=args.api_key,
             skill=args.skill,
         )
     else:

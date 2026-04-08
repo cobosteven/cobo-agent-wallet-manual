@@ -44,26 +44,25 @@ Covers dataset management, execution, session upload to Langfuse, and trace scor
 cd <repo>/cobo-agent-wallet
 .venv/bin/python -c "import langfuse; print('langfuse ok')"
 
-# 2. upload_session.py 是否存在（用于 session 上传）
-ls sdk/skills/caw-eval/scripts/upload_session.py
+# 2. otel_report.py 是否存在（用于 session 上传）
+ls assistant-backend/assistant/tests/e2e/opentelemetry/otel_report.py
 
-# 3. CAW 本地配置（CAW 凭证自动从此处读取）
-cat ~/.cobo-agentic-wallet/config    # 确认已登录
+# 3. 环境变量（session 上传必须）
+echo $AGENT_WALLET_API_URL    # e.g. https://api-agent-wallet-assistant.sandbox.cobo.com
+echo $CAW_API_KEY             # CAW API key
 ```
 
 **环境变量说明：**
 
 | 变量 | 用途 | 是否必须 |
 |------|------|--------|
-| `AGENT_WALLET_API_URL` | 覆盖 CAW Backend 地址（自动从 `~/.cobo-agentic-wallet/config` 读取） | 可选 |
-| `CAW_API_KEY` | 覆盖 CAW API key（自动从 `~/.cobo-agentic-wallet/config` 读取） | 可选 |
-| `LANGFUSE_DATASET_PUBLIC_KEY` | Dataset project 公钥（在 `scripts/.env` 中配置） | 必须 |
-| `LANGFUSE_DATASET_SECRET_KEY` | Dataset project 私钥 | 必须 |
-| `LANGFUSE_RESULT_PUBLIC_KEY` | Results project 公钥（在 `scripts/.env` 中配置） | 上传/评分必须 |
-| `LANGFUSE_RESULT_SECRET_KEY` | Results project 私钥 | 上传/评分必须 |
+| `AGENT_WALLET_API_URL` | Session 上传 telemetry endpoint | 执行阶段必须 |
+| `CAW_API_KEY` | Session 上传鉴权 | 执行阶段必须 |
+| `LANGFUSE_PUBLIC_KEY` | Langfuse 认证（有内置默认值） | 可选 |
+| `LANGFUSE_SECRET_KEY` | Langfuse 认证（有内置默认值） | 可选 |
+| `LANGFUSE_HOST` | Langfuse 地址（有内置默认值） | 可选 |
 
-> CAW 凭证（API key / API URL）自动从 `~/.cobo-agentic-wallet/config` 读取，与 `caw` CLI 保持一致，无需手动配置。  
-> Langfuse 凭证在 `scripts/.env` 中配置（参考 `scripts/.env.example`）。
+> Langfuse 默认使用内置凭证连接 `https://langfuse.1cobo.com`，无需手动配置。
 
 如果环境检查不通过，`run_eval.py` 的 `preflight_check()` 会在运行时打印具体错误。
 
@@ -101,45 +100,23 @@ cd <repo>/cobo-agent-wallet
 ```
 你正在执行 CAW 评测 case {item_id}。
 cobo-agentic-wallet-sandbox skill 已激活。
-
-**评测模式约束 — 仅针对 skill 内部的交互流程，不影响对用户指令本身的响应：**
-
-需要自动跳过的 skill 内部交互（来自 cobo-agentic-wallet-sandbox skill）：
-- 提交 pact 时：跳过展示预览和等待用户确认的步骤，直接调用 `caw pact submit` 提交
-- 交易返回 `status=pending_approval` 且 `owner_linked=false` 时：立即自动执行 `caw pending approve <pending_operation_id>`
-- 如遇到无法自动化处理的真实阻塞（如 `owner_linked=true` 需要 Human App 审批），记录原因并跳过，继续执行其余步骤
-
-需要正常响应的情况（勿混淆）：
-- 若用户指令本身信息不完整（如未指定代币类型、目标地址、金额等），应根据上下文合理推断，或明确说明缺少哪些必要信息，不得凭空假设关键参数
-- 若操作存在歧义或实质性风险，应如实反馈，不得因"自动化模式"掩盖真实错误
-
-这是自动化评测，无人工实时监控，须完整执行至结束，不得因 skill 内部的交互流程而中断。
-
 按照以下用户指令完成操作：
 
 {user_message}
+
+完成后，使用 bash 输出你的 session 文件路径：
+find ~/.openclaw/agents/main/sessions -name "*.jsonl" -newer /tmp -maxdepth 1 | tail -1
 ```
 
-> **Session 文件定位由父 agent 负责**（并发安全）：任务完成后，父 agent 通过 item_id grep 精准定位 session 文件：
-> ```bash
-> grep -rl "CAW 评测 case {item_id}" ~/.openclaw/agents/main/sessions/ 2>/dev/null | head -1
-> ```
-> 这比 `ls -t | head -1` 更可靠：item_id 唯一，并发执行不会混淆文件归属。
-
-**3. 每批完成后定位并上传 session 文件**
-
-通过 item_id grep 精准定位（并发安全，不会混淆文件）：
+**3. 每批完成后上传 session**
 ```bash
-# 定位 session 文件（每个 item 独立执行）
-SESSION_FILE=$(grep -rl "CAW 评测 case E2E-01L1" ~/.openclaw/agents/main/sessions/ 2>/dev/null | head -1)
-
-# 上传
 .venv/bin/python sdk/skills/caw-eval/scripts/run_eval.py upload \
-  --session "$SESSION_FILE" \
-  --item-id E2E-01L1 \
-  --run-name <run_name>
+  --session <session.jsonl 路径> \
+  --item-id <item_id> \
+  --run-name <run_name> \
+  --api-url $AGENT_WALLET_API_URL \
+  --api-key $CAW_API_KEY
 ```
-> CAW 凭证自动从 `~/.cobo-agentic-wallet/config` 读取，无需额外参数。
 
 ---
 

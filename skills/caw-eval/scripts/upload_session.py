@@ -1,10 +1,11 @@
 """
-upload_session.py — openclaw session.jsonl → Langfuse
+upload_session.py — openclaw session.jsonl → CAW 后端 → Langfuse
 
-用于 caw-eval 评测流程中将 openclaw session 文件直接上传到 Langfuse（不经过 CAW 后端）。
+用于 caw-eval 评测流程中将 openclaw session 文件上传到 Langfuse results project。
+核心逻辑来自 otel_report.py，精简为 caw-eval 专用版本（无 watch 模式）。
 
 上报链路:
-  upload_session.py → Langfuse ingestion API（直接）
+  upload_session.py → POST /api/v1/telemetry/session → CAW 后端 → Langfuse results project
 
 用法:
   python upload_session.py session.jsonl
@@ -13,9 +14,8 @@ upload_session.py — openclaw session.jsonl → Langfuse
   python upload_session.py session.jsonl --dry-run  # 仅解析，不上传
 
 环境变量:
-  LANGFUSE_PUBLIC_KEY   Langfuse 公钥（必填）
-  LANGFUSE_SECRET_KEY   Langfuse 私钥（必填）
-  LANGFUSE_HOST         Langfuse 服务地址（默认 https://langfuse.1cobo.com）
+  AGENT_WALLET_API_URL  CAW 后端 URL（必填）
+  CAW_API_KEY           CAW API Key（必填）
 """
 
 import getpass
@@ -25,6 +25,8 @@ import os
 import re
 import socket
 import sys
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -146,63 +148,29 @@ def load_caw_config() -> dict[str, str]:
 # ── JSONL 解析 ────────────────────────────────────────────────────────────────
 
 def parse_session(path: str) -> dict:
-    """
-    Supports two formats:
-      - OpenClaw otel: type=session + type=message events, id keys
-      - Claude Code native: type=user/assistant events, uuid/sessionId keys
-    """
     messages: dict = {}
     order: list = []
-    session_id_fallback = Path(path).stem
-
     with open(path) as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             ev = json.loads(line)
-            ev_type = ev.get("type", "")
+            eid = ev.get("id") or ev.get("type", "")
+            if eid:
+                messages[eid] = ev
+                order.append(eid)
 
-            if ev_type in ("user", "assistant"):
-                # Claude Code native format: use uuid as key
-                eid = ev.get("uuid") or ev.get("id", "")
-                if eid and eid not in messages:
-                    messages[eid] = ev
-                    order.append(eid)
-            else:
-                # OpenClaw otel format: use id or type as key
-                eid = ev.get("id") or ev_type
-                if eid:
-                    messages[eid] = ev
-                    order.append(eid)
-
-    # OpenClaw: dedicated session event
     session_ev = next((messages[i] for i in order if messages[i].get("type") == "session"), {})
     snapshot = next(
         (messages[i]["data"] for i in order if messages[i].get("customType") == "model-snapshot"),
         {}
     )
-    # Claude Code: session_id lives in each event's sessionId field
-    cc_session_id = next(
-        (messages[i].get("sessionId", "") for i in order
-         if messages[i].get("type") in ("user", "assistant") and messages[i].get("sessionId")),
-        ""
-    )
-    # Claude Code: model from assistant message
-    cc_model = next(
-        (messages[i].get("message", {}).get("model", "")
-         for i in order if messages[i].get("type") == "assistant"),
-        ""
-    )
     return {
-        "session_id": session_ev.get("id") or cc_session_id or session_id_fallback,
-        "started_at": session_ev.get("timestamp") or next(
-            (messages[i].get("timestamp") for i in order if messages[i].get("timestamp")), None
-        ),
-        "cwd": session_ev.get("cwd") or next(
-            (messages[i].get("cwd") for i in order if messages[i].get("cwd")), ""
-        ),
-        "model": snapshot.get("modelId") or cc_model or "unknown",
+        "session_id": session_ev.get("id", Path(path).stem),
+        "started_at": session_ev.get("timestamp"),
+        "cwd": session_ev.get("cwd", ""),
+        "model": snapshot.get("modelId", "unknown"),
         "provider": snapshot.get("provider", "unknown"),
         "messages": messages,
         "order": order,
@@ -210,33 +178,8 @@ def parse_session(path: str) -> dict:
 
 
 def extract_message_events(session: dict) -> list[dict]:
-    """Return message events supporting both OpenClaw and Claude Code formats."""
-    result = []
-    for i in session["order"]:
-        ev = session["messages"][i]
-        ev_type = ev.get("type", "")
-        if ev_type == "message":
-            # OpenClaw otel format
-            result.append(ev)
-        elif ev_type in ("user", "assistant"):
-            # Claude Code native format — normalize tool_use → toolCall
-            msg = ev.get("message", {})
-            content = msg.get("content", [])
-            if isinstance(content, str):
-                content = [{"type": "text", "text": content}]
-            normalized: list[dict] = []
-            for block in content:
-                if block.get("type") == "tool_use":
-                    normalized.append({
-                        "type": "toolCall",
-                        "id": block.get("id", ""),
-                        "name": block.get("name", ""),
-                        "arguments": block.get("input", {}),
-                    })
-                else:
-                    normalized.append(block)
-            result.append({**ev, "message": {**msg, "content": normalized}})
-    return result
+    return [session["messages"][i] for i in session["order"]
+            if session["messages"][i].get("type") == "message"]
 
 
 def build_turns(message_events: list[dict]) -> list[list[dict]]:
@@ -254,28 +197,12 @@ def build_turns(message_events: list[dict]) -> list[list[dict]]:
 
 
 def build_tool_result_index(message_events: list[dict]) -> dict:
-    idx: dict = {}
-    for ev in message_events:
-        msg = ev.get("message", {})
-        role = msg.get("role", "")
-        # OpenClaw otel format: dedicated toolResult event
-        if role == "toolResult" and msg.get("toolCallId"):
-            idx[msg["toolCallId"]] = ev
-        # Claude Code native format: tool_result blocks inside user events
-        elif role == "user":
-            for block in msg.get("content", []):
-                if block.get("type") == "tool_result" and block.get("tool_use_id"):
-                    raw = block.get("content", [])
-                    if isinstance(raw, str):
-                        raw = [{"type": "text", "text": raw}]
-                    idx[block["tool_use_id"]] = {
-                        "message": {
-                            "role": "toolResult",
-                            "toolCallId": block["tool_use_id"],
-                            "content": raw,
-                        }
-                    }
-    return idx
+    return {
+        ev["message"]["toolCallId"]: ev
+        for ev in message_events
+        if ev.get("message", {}).get("role") == "toolResult"
+        and ev["message"].get("toolCallId")
+    }
 
 
 # ── caw 命令解析 ──────────────────────────────────────────────────────────────
@@ -392,141 +319,45 @@ def extract_sender_name(msg: dict) -> str:
     return "unknown"
 
 
-# ── Langfuse 直接上传 ─────────────────────────────────────────────────────────
+# ── HTTP 上报 ─────────────────────────────────────────────────────────────────
 
-_DEFAULT_LF_HOST = "https://langfuse.1cobo.com"
-
-
-def _get_langfuse_config() -> dict[str, str]:
-    """从环境变量读取 Langfuse 配置（支持 LANGFUSE_DATASET_* 或 LANGFUSE_* 前缀）。"""
-    def _pick(specific: str, generic: str) -> str:
-        return os.environ.get(specific) or os.environ.get(generic) or ""
-
-    return {
-        "host": _pick("LANGFUSE_DATASET_HOST", "LANGFUSE_HOST") or _DEFAULT_LF_HOST,
-        "public_key": _pick("LANGFUSE_DATASET_PUBLIC_KEY", "LANGFUSE_PUBLIC_KEY"),
-        "secret_key": _pick("LANGFUSE_DATASET_SECRET_KEY", "LANGFUSE_SECRET_KEY"),
-    }
-
-
-def _make_langfuse():
-    from langfuse import Langfuse
-    cfg = _get_langfuse_config()
-    if not cfg["public_key"] or not cfg["secret_key"]:
-        raise RuntimeError(
-            "Missing Langfuse credentials. "
-            "Set LANGFUSE_PUBLIC_KEY + LANGFUSE_SECRET_KEY in environment or .env."
-        )
-    return Langfuse(public_key=cfg["public_key"], secret_key=cfg["secret_key"],
-                    host=cfg["host"])
-
-
-def _ns_to_iso(ns: Optional[int], fallback: str) -> str:
-    if not ns:
-        return fallback
-    return datetime.fromtimestamp(ns / 1e9, tz=timezone.utc).isoformat()
-
-
-def _attrs_to_fields(attrs: dict) -> dict:
-    """Map langfuse.observation.* attribute keys to ingestion body kwargs."""
-    fields: dict = {}
-    metadata: dict = {}
-    for k, v in (attrs or {}).items():
-        if v is None:
-            continue
-        if k == "langfuse.observation.input":
-            fields["input"] = v
-        elif k == "langfuse.observation.output":
-            fields["output"] = v
-        elif k == "langfuse.observation.level":
-            fields["level"] = v
-        elif k == "langfuse.observation.model.name":
-            fields["model"] = v
-        elif k.startswith("langfuse.observation.metadata."):
-            metadata[k[len("langfuse.observation.metadata."):]] = v
-        elif k.startswith("langfuse.trace.metadata."):
-            metadata[k[len("langfuse.trace.metadata."):]] = v
-        elif k.startswith("gen_ai."):
-            metadata[k] = v
-    if metadata:
-        fields["metadata"] = metadata
-    return fields
-
-
-def _build_events_from_node(
-    node: dict,
-    trace_id: str,
-    parent_span_id: Optional[str],
-    now_iso: str,
-) -> list:
-    """Recursively convert a span/generation record (+ children) to Langfuse ingestion events."""
-    import uuid as _uuid
-    from langfuse.api import (
-        CreateSpanBody, IngestionEvent_SpanCreate,
-        CreateGenerationBody, IngestionEvent_GenerationCreate,
+def post_session(api_url: str, api_key: str, record: dict) -> bool:
+    """POST session record 到 /api/v1/telemetry/session。"""
+    url = f"{api_url.rstrip('/')}/api/v1/telemetry/session"
+    data = json.dumps(record, ensure_ascii=False, default=str).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json", "X-API-Key": api_key},
+        method="POST",
     )
-
-    events = []
-    node_id = str(_uuid.uuid4())
-    fields = _attrs_to_fields(node.get("attributes", {}))
-    start_iso = _ns_to_iso(node.get("start_time_unix_nano"), now_iso)
-    end_iso = _ns_to_iso(node.get("end_time_unix_nano"), now_iso)
-
-    if node.get("record_type") == "generation":
-        meta = dict(fields.pop("metadata", {}) or {})
-        input_tokens = int(meta.pop("gen_ai.usage.input_tokens", 0) or 0)
-        output_tokens = int(meta.pop("gen_ai.usage.output_tokens", 0) or 0)
-        body = CreateGenerationBody(
-            id=node_id,
-            trace_id=trace_id,
-            parent_observation_id=parent_span_id,
-            name=node["name"],
-            start_time=start_iso,
-            end_time=end_iso,
-            model=fields.pop("model", None),
-            input=fields.get("input"),
-            output=fields.get("output"),
-            metadata=meta or None,
-            usage={"input": input_tokens, "output": output_tokens} if (input_tokens or output_tokens) else None,
-        )
-        events.append(IngestionEvent_GenerationCreate(
-            id=str(_uuid.uuid4()), timestamp=now_iso, body=body,
-        ))
-    else:
-        body = CreateSpanBody(
-            id=node_id,
-            trace_id=trace_id,
-            parent_observation_id=parent_span_id,
-            name=node["name"],
-            start_time=start_iso,
-            end_time=end_iso,
-            input=fields.get("input"),
-            output=fields.get("output"),
-            metadata=fields.get("metadata"),
-        )
-        events.append(IngestionEvent_SpanCreate(
-            id=str(_uuid.uuid4()), timestamp=now_iso, body=body,
-        ))
-
-    for child in (node.get("children") or []):
-        events.extend(_build_events_from_node(child, trace_id, node_id, now_iso))
-    return events
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return resp.status < 300
+    except urllib.error.HTTPError as e:
+        print(f"[WARN] POST {url} → {e.code}: {e.read()[:500].decode(errors='replace')}")
+        return False
+    except Exception as e:
+        print(f"[WARN] POST {url} → {e}")
+        return False
 
 
+# ── SessionUploader ───────────────────────────────────────────────────────────
 
 class SessionUploader:
-    """解析 session.jsonl，构造 SessionRecord 树，直接上报 Langfuse。"""
+    """解析 session.jsonl，构造 SessionRecord JSON，POST 上报。"""
 
-    def __init__(self, skill_name: str = "cobo-agentic-wallet-sandbox",
+    def __init__(self, api_url: str, api_key: str,
+                 skill_name: str = "cobo-agentic-wallet-sandbox",
+                 resource: Optional[dict[str, str]] = None,
                  trace_name: str = ""):
+        self.api_url = api_url.rstrip("/")
+        self.api_key = api_key
         self.skill = skill_name
+        self.resource = resource or {}
         self.trace_name = trace_name
 
-    def upload(self, session: dict, lf, user_id: str = "") -> str | None:
-        """上传 session 到 Langfuse，返回 trace_id（即 session_id）或 None。"""
-        import uuid as _uuid
-        from langfuse.api import TraceBody, IngestionEvent_TraceCreate
-
+    def upload(self, session: dict, user_id: str = "") -> bool:
         evts = extract_message_events(session)
         turns = build_turns(evts)
         tr_idx = build_tool_result_index(evts)
@@ -551,66 +382,55 @@ class SessionUploader:
         user = os.environ.get("USER") or os.environ.get("USERNAME") or "unknown"
         hostname = socket.gethostname()
         trace_display_name = self.trace_name or f"eval_{user}@{hostname}_{time_code}"
-        now_iso = now_cn.isoformat()
+        upload_iso = now_cn.isoformat()
 
         turn_children = [
             self._build_turn_record(turn, i, model, prov, tr_idx)
             for i, turn in enumerate(turns)
         ]
 
-        # ── Build Langfuse ingestion events ─────────────────────────────
-        trace_event = IngestionEvent_TraceCreate(
-            id=str(_uuid.uuid4()),
-            timestamp=now_iso,
-            body=TraceBody(
-                id=sid,
-                name=trace_display_name,
-                session_id=sid,
-                user_id=user_id,
-                timestamp=_ns_to_iso(start_ns, now_iso),
-                tags=["openclaw", "caw-eval"],
-                input=safe_str({"session_id": sid, "model": model, "turns": len(turns)}),
-                metadata={
-                    "skill": self.skill,
-                    "model": model,
-                    "provider": prov,
-                    "cwd": session.get("cwd", ""),
+        session_record: dict = {
+            "name": f"session:{sid[:8]}",
+            "trace_name": trace_display_name,
+            "session_id": sid,
+            "user_id": user_id,
+            "tags": ["openclaw", "caw-eval"],
+            "start_time_unix_nano": start_ns,
+            "end_time_unix_nano": last_ns,
+            "metadata": {
+                "skill": self.skill,
+                "model": model,
+                "provider": prov,
+                "cwd": session.get("cwd", ""),
+                "session_id": sid,
+                "telemetry_source": "caw-eval",
+                "uploaded_at": upload_iso,
+                "host": f"{getpass.getuser()}@{socket.gethostname()}",
+            },
+            "attributes": {
+                "langfuse.observation.input": safe_str({
                     "session_id": sid,
-                    "telemetry_source": "caw-eval",
-                    "uploaded_at": now_iso,
-                    "host": f"{getpass.getuser()}@{socket.gethostname()}",
-                },
-            ),
-        )
-        all_events_list: list = [trace_event]
-        for turn_node in turn_children:
-            all_events_list.extend(_build_events_from_node(turn_node, sid, None, now_iso))
+                    "model": model,
+                    "turns": len(turns),
+                }),
+            },
+            "children": turn_children,
+        }
 
-        # Langfuse recommends batches ≤ 15 events; split to avoid timeouts
-        _BATCH_SIZE = 15
-        try:
-            for i in range(0, len(all_events_list), _BATCH_SIZE):
-                chunk = all_events_list[i:i + _BATCH_SIZE]
-                lf.api.ingestion.batch(batch=chunk)
-            lf.flush()
-        except Exception as e:
-            print(f"[WARN] Langfuse ingestion.batch failed: {e}", file=sys.stderr)
-            return None
-
+        ok = post_session(self.api_url, self.api_key, session_record)
         total_children = sum(len(t.get("children") or []) for t in turn_children)
-        cfg = _get_langfuse_config()
+        status = "OK" if ok else "FAILED"
         print(f"\n{'='*60}")
-        print(f"  Status:      OK")
+        print(f"  Status:      {status}")
         print(f"  Trace Name:  {trace_display_name}")
         print(f"  Session ID:  {sid}")
         print(f"  User ID:     {user_id}")
         print(f"  Model:       {model}")
         print(f"  Turns:       {len(turn_children)}")
         print(f"  Spans:       {total_children}")
-        print(f"  Langfuse:    {cfg['host']}")
+        print(f"  API:         {self.api_url}")
         print(f"{'='*60}")
-        return sid
-
+        return ok
 
     def _build_turn_record(self, turn: list, idx: int, model: str, provider: str,
                             tr_idx: dict) -> dict:
@@ -726,7 +546,7 @@ class SessionUploader:
                 result_text = b.get("text", "")
                 break
 
-        if name in ("exec", "Bash"):
+        if name == "exec":
             cmd = args.get("command", "")
             caw_info = parse_caw_command(cmd)
             if caw_info:
@@ -849,24 +669,35 @@ def extract_session_id(jsonl_path: str) -> str:
 
 def upload_session_file(
     jsonl_path: str,
+    api_url: str = "",
+    api_key: str = "",
     user_id: str = "",
     skill_name: str = "cobo-agentic-wallet-sandbox",
     trace_name: str = "",
-) -> str | None:
-    """上传单个 session.jsonl 直接到 Langfuse。返回 session_id 或 None。"""
-    try:
-        lf = _make_langfuse()
-    except RuntimeError as e:
-        print(f"[ERROR] {e}", file=sys.stderr)
-        return None
+) -> bool:
+    """上传单个 session.jsonl 到 CAW 后端。返回是否成功。"""
+    caw_cfg = load_caw_config()
+    api_url = api_url or caw_cfg.get("api_url", "") or "https://api-core.agenticwallet.sandbox.cobo.com"
+    api_key = api_key or caw_cfg.get("api_key", "") or ""
+
+    if not api_url:
+        print("[ERROR] 缺少 api_url。请设置 AGENT_WALLET_API_URL 环境变量。", file=sys.stderr)
+        return False
+
+    resource = {
+        "caw.agent_id": caw_cfg.get("agent_id", ""),
+        "caw.wallet_id": caw_cfg.get("wallet_uuid", ""),
+        "deployment.environment": caw_cfg.get("env", ""),
+        "server.address": api_url,
+    }
 
     session = parse_session(jsonl_path)
     evts = extract_message_events(session)
     print(f"[INFO] Parsed {session['session_id']}  model={session['model']}  "
           f"events={len(evts)}")
 
-    uploader = SessionUploader(skill_name, trace_name=trace_name)
-    return uploader.upload(session, lf, user_id=user_id)
+    uploader = SessionUploader(api_url, api_key, skill_name, resource, trace_name=trace_name)
+    return uploader.upload(session, user_id=user_id)
 
 
 # ── dry-run 打印 span 树 ───────────────────────────────────────────────────────
@@ -905,10 +736,14 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
         prog="upload_session.py",
-        description="Upload openclaw session.jsonl directly to Langfuse",
+        description="Upload openclaw session.jsonl to Langfuse via CAW backend",
     )
     parser.add_argument("paths", nargs="+",
                         help="Session .jsonl file(s) or directory containing .jsonl files")
+    parser.add_argument("--api-url", default="",
+                        help="CAW backend URL (or AGENT_WALLET_API_URL env)")
+    parser.add_argument("--api-key", default="",
+                        help="CAW API key (or CAW_API_KEY env)")
     parser.add_argument("--skill", default="cobo-agentic-wallet-sandbox",
                         help="Skill name tag (default: cobo-agentic-wallet-sandbox)")
     parser.add_argument("--trace-name", default="",
@@ -936,6 +771,9 @@ if __name__ == "__main__":
         print("[ERROR] No .jsonl files found", file=sys.stderr)
         sys.exit(1)
 
+    api_url = args.api_url or os.environ.get("AGENT_WALLET_API_URL", "")
+    api_key = args.api_key or os.environ.get("CAW_API_KEY", "")
+
     failed = 0
     for idx, path in enumerate(jsonl_files):
         if len(jsonl_files) > 1:
@@ -943,13 +781,15 @@ if __name__ == "__main__":
         if args.dry_run:
             dry_run_session(path)
         else:
-            result = upload_session_file(
+            ok = upload_session_file(
                 path,
+                api_url=api_url,
+                api_key=api_key,
                 user_id=args.user_id,
                 skill_name=args.skill,
                 trace_name=args.trace_name,
             )
-            if not result:
+            if not ok:
                 failed += 1
 
     if not args.dry_run and failed:
