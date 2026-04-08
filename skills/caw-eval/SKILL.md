@@ -44,25 +44,26 @@ Covers dataset management, execution, session upload to Langfuse, and trace scor
 cd <repo>/cobo-agent-wallet
 .venv/bin/python -c "import langfuse; print('langfuse ok')"
 
-# 2. otel_report.py 是否存在（用于 session 上传）
-ls assistant-backend/assistant/tests/e2e/opentelemetry/otel_report.py
+# 2. upload_session.py 是否存在（用于 session 上传）
+ls sdk/skills/caw-eval/scripts/upload_session.py
 
-# 3. 环境变量（session 上传必须）
-echo $AGENT_WALLET_API_URL    # e.g. https://api-agent-wallet-assistant.sandbox.cobo.com
-echo $CAW_API_KEY             # CAW API key
+# 3. CAW 本地配置（CAW 凭证自动从此处读取）
+cat ~/.cobo-agentic-wallet/config    # 确认已登录
 ```
 
 **环境变量说明：**
 
 | 变量 | 用途 | 是否必须 |
 |------|------|--------|
-| `AGENT_WALLET_API_URL` | Session 上传 telemetry endpoint | 执行阶段必须 |
-| `CAW_API_KEY` | Session 上传鉴权 | 执行阶段必须 |
-| `LANGFUSE_PUBLIC_KEY` | Langfuse 认证（有内置默认值） | 可选 |
-| `LANGFUSE_SECRET_KEY` | Langfuse 认证（有内置默认值） | 可选 |
-| `LANGFUSE_HOST` | Langfuse 地址（有内置默认值） | 可选 |
+| `AGENT_WALLET_API_URL` | 覆盖 CAW Backend 地址（自动从 `~/.cobo-agentic-wallet/config` 读取） | 可选 |
+| `CAW_API_KEY` | 覆盖 CAW API key（自动从 `~/.cobo-agentic-wallet/config` 读取） | 可选 |
+| `LANGFUSE_DATASET_PUBLIC_KEY` | Dataset project 公钥（在 `scripts/.env` 中配置） | 必须 |
+| `LANGFUSE_DATASET_SECRET_KEY` | Dataset project 私钥 | 必须 |
+| `LANGFUSE_RESULT_PUBLIC_KEY` | Results project 公钥（在 `scripts/.env` 中配置） | 上传/评分必须 |
+| `LANGFUSE_RESULT_SECRET_KEY` | Results project 私钥 | 上传/评分必须 |
 
-> Langfuse 默认使用内置凭证连接 `https://langfuse.1cobo.com`，无需手动配置。
+> CAW 凭证（API key / API URL）自动从 `~/.cobo-agentic-wallet/config` 读取，与 `caw` CLI 保持一致，无需手动配置。  
+> Langfuse 凭证在 `scripts/.env` 中配置（参考 `scripts/.env.example`）。
 
 如果环境检查不通过，`run_eval.py` 的 `preflight_check()` 会在运行时打印具体错误。
 
@@ -104,8 +105,8 @@ cobo-agentic-wallet-sandbox skill 已激活。
 
 {user_message}
 
-完成后，使用 bash 输出你的 session 文件路径：
-find ~/.openclaw/agents/main/sessions -name "*.jsonl" -newer /tmp -maxdepth 1 | tail -1
+完成后，用 bash 找到并输出本次 session 文件的完整路径（注意是 .jsonl 文件，不是 sessions.json）：
+ls -t ~/.openclaw/agents/main/sessions/*.jsonl 2>/dev/null | head -1
 ```
 
 **3. 每批完成后上传 session**
@@ -113,10 +114,9 @@ find ~/.openclaw/agents/main/sessions -name "*.jsonl" -newer /tmp -maxdepth 1 | 
 .venv/bin/python sdk/skills/caw-eval/scripts/run_eval.py upload \
   --session <session.jsonl 路径> \
   --item-id <item_id> \
-  --run-name <run_name> \
-  --api-url $AGENT_WALLET_API_URL \
-  --api-key $CAW_API_KEY
+  --run-name <run_name>
 ```
+> CAW 凭证自动从 `~/.cobo-agentic-wallet/config` 读取，无需额外参数。
 
 ---
 

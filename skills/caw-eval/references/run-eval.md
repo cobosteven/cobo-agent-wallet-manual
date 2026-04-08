@@ -26,15 +26,15 @@ openclaw agent（caw-eval skill）
 ## Prerequisites
 
 ```bash
-# Session 上传必须的环境变量
-export AGENT_WALLET_API_URL=https://api-agent-wallet-assistant.sandbox.cobo.com
-export CAW_API_KEY=<your-caw-api-key>
+# 验证 upload_session.py 可访问
+ls <repo>/cobo-agent-wallet/sdk/skills/caw-eval/scripts/upload_session.py
 
-# 验证 otel_report.py 可访问
-ls <repo>/cobo-agent-wallet/assistant-backend/assistant/tests/e2e/opentelemetry/otel_report.py
+# 验证 CAW 本地配置已登录（凭证自动读取，无需手动 export）
+cat ~/.cobo-agentic-wallet/config
 ```
 
-> **不设置 `AGENT_WALLET_API_URL` / `CAW_API_KEY`：** session 不会被上传，`upload` 命令会报错。
+> **CAW 凭证（API URL / API Key）** 自动从 `~/.cobo-agentic-wallet/config` 读取，与 `caw` CLI 保持一致，无需手动设置环境变量。  
+> 如需覆盖，可设置 `AGENT_WALLET_API_URL` 和 `CAW_API_KEY` 环境变量。
 
 ---
 
@@ -72,7 +72,8 @@ cobo-agentic-wallet-sandbox skill 已激活。
 
 {user_message}
 
-完成后，输出 session 文件路径以便上传。
+完成后，用 bash 找到并输出本次 session 文件的完整路径（注意是 .jsonl 文件，不是 sessions.json）：
+ls -t ~/.openclaw/agents/main/sessions/*.jsonl 2>/dev/null | head -1
 ```
 
 ---
@@ -86,9 +87,7 @@ cobo-agentic-wallet-sandbox skill 已激活。
   --session /path/to/session.jsonl \
   --dataset-name caw-agent-eval-v1 \
   --item-id E2E-01L1 \
-  --run-name eval-run-20260407-1000 \
-  --api-url $AGENT_WALLET_API_URL \
-  --api-key $CAW_API_KEY
+  --run-name eval-run-20260407-1000
 ```
 
 **参数说明：**
@@ -98,8 +97,8 @@ cobo-agentic-wallet-sandbox skill 已激活。
 | `--session` | — | session.jsonl 文件路径（必须） |
 | `--item-id` | — | 对应的 dataset item ID（必须） |
 | `--run-name` | `eval-run-<timestamp>` | Langfuse run 名称（同一次评测保持一致） |
-| `--api-url` | `$AGENT_WALLET_API_URL` | CAW backend telemetry endpoint |
-| `--api-key` | `$CAW_API_KEY` | CAW API key |
+| `--api-url` | 自动从 `~/.cobo-agentic-wallet/config` 读取 | 覆盖 CAW backend telemetry endpoint（可选） |
+| `--api-key` | 自动从 `~/.cobo-agentic-wallet/config` 读取 | 覆盖 CAW API key（可选） |
 | `--skill` | `cobo-agentic-wallet-sandbox` | Session 标签 |
 | `--dataset-name` | `caw-agent-eval-v1` | Langfuse 数据集名称 |
 
@@ -109,13 +108,14 @@ cobo-agentic-wallet-sandbox skill 已激活。
 
 openclaw session 文件默认存储在：
 
-- **Linux**：`~/.openclaw/agents/main/sessions/*.jsonl`
-- **macOS**：`~/.claude/projects/<encoded-path>/*.jsonl`
+- **Linux / macOS**：`~/.openclaw/agents/main/sessions/*.jsonl`
+
+> 注意：同目录下的 `sessions.json`（无 `.jsonl` 后缀）是元数据文件，不是 session 数据。使用 `*.jsonl` 通配符可自动排除。
 
 task subagent 执行后，最新的 `.jsonl` 即为对应 session：
 ```bash
-# 找到最近生成的 session 文件
-ls -t ~/.openclaw/agents/main/sessions/*.jsonl | head -5
+# 找到最近生成的 session 文件（最新的就是刚完成的 task 的 session）
+ls -t ~/.openclaw/agents/main/sessions/*.jsonl 2>/dev/null | head -5
 ```
 
 ---
@@ -123,9 +123,9 @@ ls -t ~/.openclaw/agents/main/sessions/*.jsonl | head -5
 ## How Session Upload Works
 
 1. `run_eval.py upload` 从 session.jsonl 提取 `session_id`（第一个 `type=session` 事件）
-2. 调用 `otel_report.py` 上传到 backend telemetry：
+2. 调用 `upload_session.py` 上传到 backend telemetry，CAW 凭证自动从 `~/.cobo-agentic-wallet/config` 读取：
    ```bash
-   python otel_report.py <session.jsonl> --trace-name cobo-agentic-wallet-sandbox
+   python upload_session.py <session.jsonl> --trace-name cobo-agentic-wallet-sandbox
    ```
 3. `session_id` 作为 `trace_id` 写入 Langfuse dataset item run
 
@@ -143,7 +143,7 @@ ls -t ~/.openclaw/agents/main/sessions/*.jsonl | head -5
 
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
-| `[PREFLIGHT ERROR] otel_report.py not found` | Script missing | Check `assistant-backend/` submodule or clone |
-| `[UPLOAD ERROR] exit=1` | Missing API URL/key, or backend unreachable | Set `AGENT_WALLET_API_URL` and `CAW_API_KEY` |
+| `[PREFLIGHT ERROR] upload_session.py not found` | Script missing | 确认在正确的 repo 路径下执行 |
+| `[UPLOAD ERROR] exit=1` | CAW 未登录或 backend 不可访问 | 检查 `~/.cobo-agentic-wallet/config`，或设置 `AGENT_WALLET_API_URL` 和 `CAW_API_KEY` |
 | `[LINK ERROR] item not found` | Wrong dataset name or item ID | Verify with `list` subcommand |
-| Session file not found after task | Task ran in different env | Check `~/.openclaw/agents/main/sessions/` |
+| Session file not found after task | Task ran in different env | Check `~/.openclaw/agents/main/sessions/*.jsonl` |
