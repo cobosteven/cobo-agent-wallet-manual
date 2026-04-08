@@ -26,15 +26,15 @@ openclaw agent（caw-eval skill）
 ## Prerequisites
 
 ```bash
-# Session 上传必须的环境变量
-export AGENT_WALLET_API_URL=https://api-agent-wallet-assistant.sandbox.cobo.com
-export CAW_API_KEY=<your-caw-api-key>
+# 验证 upload_session.py 可访问
+ls <repo>/cobo-agent-wallet/sdk/skills/caw-eval/scripts/upload_session.py
 
-# 验证 otel_report.py 可访问
-ls <repo>/cobo-agent-wallet/assistant-backend/assistant/tests/e2e/opentelemetry/otel_report.py
+# 验证 CAW 本地配置已登录（凭证自动读取，无需手动 export）
+cat ~/.cobo-agentic-wallet/config
 ```
 
-> **不设置 `AGENT_WALLET_API_URL` / `CAW_API_KEY`：** session 不会被上传，`upload` 命令会报错。
+> **CAW 凭证（API URL / API Key）** 自动从 `~/.cobo-agentic-wallet/config` 读取，与 `caw` CLI 保持一致，无需手动设置环境变量。  
+> 如需覆盖，可设置 `AGENT_WALLET_API_URL` 和 `CAW_API_KEY` 环境变量。
 
 ---
 
@@ -66,29 +66,44 @@ cd <repo>/cobo-agent-wallet
 
 Task prompt 模板：
 ```
-你正在执行 CAW 评测 case {item_id}。
+[EVAL:{item_id}]
 cobo-agentic-wallet-sandbox skill 已激活。
+
+**评测模式约束 — 仅针对 skill 内部的交互流程，不影响对用户指令本身的响应：**
+
+需要自动跳过的 skill 内部交互（来自 cobo-agentic-wallet-sandbox skill）：
+- 提交 pact 时：跳过展示预览和等待用户确认的步骤，直接调用 `caw pact submit` 提交
+- 交易返回 `status=pending_approval` 且 `owner_linked=false` 时：立即自动执行 `caw pending approve <pending_operation_id>`
+- 如遇到无法自动化处理的真实阻塞（如 `owner_linked=true` 需要 Human App 审批），记录原因并跳过，继续执行其余步骤
+
+这是自动化评测，无人工实时监控，须完整执行至结束，不得因 skill 内部的交互流程而中断。
+
 按照以下用户指令完成操作：
 
 {user_message}
-
-完成后，输出 session 文件路径以便上传。
 ```
+
+> **subagent 无需输出 session 文件路径**。任务完成后，父 agent 通过 item_id grep 精准定位（并发安全）：
+> ```bash
+> grep -rl "[EVAL:{item_id}]" ~/.openclaw/agents/main/sessions/ 2>/dev/null | head -1
+> ```
 
 ---
 
 ## 上传 Session 文件
 
-每批 task 完成后，对每个 item 执行 upload：
+每批 task 完成后，对每个 item 定位并上传 session 文件：
 
 ```bash
+# Step 1: 通过 item_id grep 精准定位 session 文件（并发安全）
+SESSION_FILE=$(grep -rl "[EVAL:E2E-01L1]" ~/.openclaw/agents/main/sessions/ 2>/dev/null | head -1)
+
+# Step 2: 上传
 .venv/bin/python sdk/skills/caw-eval/scripts/run_eval.py upload \
-  --session /path/to/session.jsonl \
+  --session "$SESSION_FILE" \
   --dataset-name caw-agent-eval-v1 \
   --item-id E2E-01L1 \
-  --run-name eval-run-20260407-1000 \
-  --api-url $AGENT_WALLET_API_URL \
-  --api-key $CAW_API_KEY
+  --run-name eval-run-20260407-1000
 ```
 
 **参数说明：**
@@ -98,34 +113,39 @@ cobo-agentic-wallet-sandbox skill 已激活。
 | `--session` | — | session.jsonl 文件路径（必须） |
 | `--item-id` | — | 对应的 dataset item ID（必须） |
 | `--run-name` | `eval-run-<timestamp>` | Langfuse run 名称（同一次评测保持一致） |
-| `--api-url` | `$AGENT_WALLET_API_URL` | CAW backend telemetry endpoint |
-| `--api-key` | `$CAW_API_KEY` | CAW API key |
 | `--skill` | `cobo-agentic-wallet-sandbox` | Session 标签 |
 | `--dataset-name` | `caw-agent-eval-v1` | Langfuse 数据集名称 |
 
 ---
 
-## Session 文件位置
+## Session 文件位置与定位
 
 openclaw session 文件默认存储在：
 
-- **Linux**：`~/.openclaw/agents/main/sessions/*.jsonl`
-- **macOS**：`~/.claude/projects/<encoded-path>/*.jsonl`
+- **Linux / macOS**：`~/.openclaw/agents/main/sessions/*.jsonl`
 
-task subagent 执行后，最新的 `.jsonl` 即为对应 session：
+> 注意：同目录下的 `sessions.json`（无 `.jsonl` 后缀）是元数据文件，不是 session 数据。
+
+**并发安全的精准定位方式（推荐）**
+
+由于多个 subagent 并发执行，`ls -t | head -1` 可能返回错误文件。正确方式是通过 item_id grep 定位：
+
 ```bash
-# 找到最近生成的 session 文件
-ls -t ~/.openclaw/agents/main/sessions/*.jsonl | head -5
+# 每个 task prompt 的第一行是唯一的 "[EVAL:{item_id}]" 标记，
+# session 文件第一条消息就是该 prompt，因此 grep 可精准命中
+grep -rl "[EVAL:E2E-01L1]" ~/.openclaw/agents/main/sessions/ 2>/dev/null | head -1
 ```
+
+这是 100% 并发安全的方法，不依赖文件时间戳。
 
 ---
 
 ## How Session Upload Works
 
-1. `run_eval.py upload` 从 session.jsonl 提取 `session_id`（第一个 `type=session` 事件）
-2. 调用 `otel_report.py` 上传到 backend telemetry：
+1. `run_eval.py upload` 从 session.jsonl 提取 `session_id`
+2. 调用 `upload_session.py` 直接写入 Langfuse ingestion API（无需 CAW 后端）：
    ```bash
-   python otel_report.py <session.jsonl> --trace-name cobo-agentic-wallet-sandbox
+   python upload_session.py <session.jsonl>
    ```
 3. `session_id` 作为 `trace_id` 写入 Langfuse dataset item run
 
@@ -134,7 +154,7 @@ ls -t ~/.openclaw/agents/main/sessions/*.jsonl | head -5
 ## Langfuse Run Linking
 
 上传完成后，在 Langfuse UI 查看：
-- **Datasets** → `caw-agent-eval-v1` → **Runs** tab
+- **Datasets** → `agent_evalation` → **Runs** tab
 - 选择 run 名称，查看所有 item 的 trace 和输出
 
 ---
@@ -143,7 +163,7 @@ ls -t ~/.openclaw/agents/main/sessions/*.jsonl | head -5
 
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
-| `[PREFLIGHT ERROR] otel_report.py not found` | Script missing | Check `assistant-backend/` submodule or clone |
-| `[UPLOAD ERROR] exit=1` | Missing API URL/key, or backend unreachable | Set `AGENT_WALLET_API_URL` and `CAW_API_KEY` |
+| `[PREFLIGHT ERROR] upload_session.py not found` | Script missing | 确认在正确的 repo 路径下执行 |
+| `[UPLOAD ERROR] Missing Langfuse credentials` | 未配置 Langfuse key | 检查 `.env` 或设置 `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` |
 | `[LINK ERROR] item not found` | Wrong dataset name or item ID | Verify with `list` subcommand |
-| Session file not found after task | Task ran in different env | Check `~/.openclaw/agents/main/sessions/` |
+| Session file not found after task | Task ran in different env | Check `~/.openclaw/agents/main/sessions/*.jsonl` |

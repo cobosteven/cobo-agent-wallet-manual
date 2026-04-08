@@ -20,8 +20,8 @@ E2E = S1×0.20 + S2×0.40 + S3×0.40
 
 S2 和 S3 各占 40%，对等权重。结果报告作为 S3 的 `result_verification` 维度内嵌评估，不单独成阶段。
 
-每个阶段通过 **启发式规则**（关键词匹配 + 结构检查）打分；
-设置了 `ANTHROPIC_API_KEY` 时，额外调用 **LLM-as-Judge**（Claude Haiku）进行综合评估，与启发式分数混合（LLM 权重 30%）。
+**主评分**：`score_traces.py` 通过 openclaw 子 agent（`claude --print`）直接评估所有 S1-S3 维度及综合指标，返回结构化 JSON 分数。评分结果带有来源标记 `caw.scoring_source`（1.0=子 agent / 0.0=启发式）。
+**备用评分**：找不到 openclaw 时自动退回**启发式规则**（关键词匹配 + 结构检查），确保流程不中断。
 
 ---
 
@@ -127,8 +127,7 @@ for score in trace.scores:
    caw.s2_pact         → S2 Pact 协商阶段分
    caw.s3_execution    → S3 交易执行阶段分（含结果验证）
    caw.e2e_composite   → 综合加权分
-   caw.llm_judge       → LLM 综合判断分（可选）
-   caw.e2e_blended     → LLM 混合加权分（可选）
+   caw.scoring_source  → 1.0=subagent / 0.0=heuristic
    ```
 
 3. 在 Langfuse UI 中可通过 **Scores** 面板查看各维度趋势。
@@ -167,17 +166,22 @@ CAW skill 要求在每次提交 pact 前展示 4-item preview（Intent / Executi
 
 ---
 
-## LLM-as-Judge (Optional)
+## Subagent Judge
 
-设置了 `ANTHROPIC_API_KEY` 时，`score_traces.py` 会调用 Claude Haiku 对完整对话进行综合评估，返回 intent/pact/exec 三个维度的语义分数，与启发式分数混合（LLM 权重 30%）。
+`score_traces.py` 通过调用本地 `claude` CLI（openclaw）以**子 agent** 模式对完整对话进行综合语义评估，直接输出 S1/S2/S3 各阶段分及综合指标，作为**主评分来源**。
+
+无需任何额外配置——直接复用 openclaw 已配置的模型和 API key：
 
 ```bash
-export ANTHROPIC_API_KEY=<your-key>
+# 启用 Subagent Judge（claude CLI 在 PATH 中即自动生效）
 .venv/bin/python sdk/skills/caw-eval/scripts/score_traces.py \
   --run-name eval-run-20260407 --report
 ```
 
-> 没有 `ANTHROPIC_API_KEY` 时，自动退回到纯启发式评分，不影响流程。
+当 `session_path` 可用时，使用 `--allowedTools Read` 让子 agent 直接读取文件；
+否则将对话文本内嵌入 prompt（前 4000 字符）。
+
+> 找不到 `claude` CLI 时，自动退回到纯启发式评分，不影响流程。
 
 ---
 
@@ -206,7 +210,7 @@ for score in trace.scores:
 |------|------|------|
 | `No items found for run X` | run_name 拼写错误或 run 未关联 | 确认 `run_eval.py` 的 `--run-name` 与此处一致 |
 | 所有 S2 分数偏低 | Pact 命令未被调用或 session 无 pact 相关内容 | 检查 `caw pact submit` 是否出现在 session |
-| LLM judge 未生效 | `ANTHROPIC_API_KEY` 未设置 | 设置环境变量或使用纯启发式评分 |
+| Subagent judge 未生效 | `claude` CLI 不在 PATH 中 | 确认 `which claude` 可找到 openclaw 二进制 |
 | 分数未在 Langfuse 出现 | Langfuse 凭证错误 | 验证 `LANGFUSE_PUBLIC_KEY` 和 `LANGFUSE_SECRET_KEY` |
 | `--dry-run` 后无 Scores | 预期行为，dry-run 不写回 | 去掉 `--dry-run` 后重新运行 |
 
