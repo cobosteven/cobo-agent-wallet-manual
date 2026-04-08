@@ -32,7 +32,8 @@ Script 3: 从 Langfuse 拉取 trace 数据，按 S1-S3 各阶段评分，结果�
     LANGFUSE_HOST          - Langfuse 服务地址（默认 sandbox）
     LANGFUSE_PUBLIC_KEY    - Langfuse 公钥
     LANGFUSE_SECRET_KEY    - Langfuse 私钥
-    ANTHROPIC_API_KEY      - Claude API key（用于 LLM-as-Judge，可选）
+    ANTHROPIC_API_KEY      - LLM API key（用于 LLM-as-Judge，可选；使用 openclaw 本地配置的模型）
+    LLM_JUDGE_MODEL        - LLM-as-Judge 模型名称（默认: claude-haiku-4-5）
 """
 
 import argparse
@@ -847,12 +848,13 @@ def llm_judge(
     full_conversation: str,
     expected: dict,
     metadata: dict,
-    api_key: str | None,
 ) -> dict[str, Any]:
     """
-    使用 Claude Haiku 对完整对话进行综合质量评估。
+    使用本地配置的 LLM 对完整对话进行综合质量评估。
+    API key 从 ANTHROPIC_API_KEY 环境变量读取（与 openclaw 共享配置）。
     返回包含各维度分数的 dict；无 API key 时跳过。
     """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         return {"stage_score": None, "note": "skipped (no ANTHROPIC_API_KEY)"}
 
@@ -890,8 +892,9 @@ weighted_total = task_completion*0.4 + recipe_hit_quality*0.3 + pact_intent_matc
 {{"task_completion": X, "recipe_hit_quality": X, "pact_intent_match": X, "reasoning_chain": X, "hallucination": X, "weighted_total": X, "comment": "<30字评语>"}}"""
 
     url = "https://api.anthropic.com/v1/messages"
+    model = os.environ.get("LLM_JUDGE_MODEL", "claude-haiku-4-5")
     payload = {
-        "model": "claude-haiku-4-5",
+        "model": model,
         "max_tokens": 400,
         "messages": [{"role": "user", "content": prompt}],
     }
@@ -927,7 +930,6 @@ def score_trace_full(
     item_input: dict,
     item_expected: dict,
     item_metadata: dict,
-    anthropic_api_key: str | None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """
@@ -970,7 +972,7 @@ def score_trace_full(
         stage_content["full"], stage_content["s3"], expected_with_msg, item_metadata
     )
     diagnostics = score_diagnostics(stage_content["full"], expected_with_msg)
-    llm = llm_judge(stage_content["full"], expected_with_msg, item_metadata, anthropic_api_key)
+    llm = llm_judge(stage_content["full"], expected_with_msg, item_metadata)
 
     stage_scores = {"s1": s1, "s2": s2, "s3": s3}
     e2e = compute_e2e_score(stage_scores, task_completion=task_completion, diagnostics=diagnostics)
@@ -1011,7 +1013,6 @@ def score_session_file(
     item_input: dict,
     item_expected: dict,
     item_metadata: dict,
-    anthropic_api_key: str | None,
     dry_run: bool = False,
     lf: Any = None,
 ) -> dict[str, Any]:
@@ -1045,7 +1046,7 @@ def score_session_file(
         stage_content["full"], stage_content["s3"], expected_with_msg, item_metadata
     )
     diagnostics = score_diagnostics(stage_content["full"], expected_with_msg)
-    llm = llm_judge(stage_content["full"], expected_with_msg, item_metadata, anthropic_api_key)
+    llm = llm_judge(stage_content["full"], expected_with_msg, item_metadata)
 
     stage_scores = {"s1": s1, "s2": s2, "s3": s3}
     e2e = compute_e2e_score(stage_scores, task_completion=task_completion, diagnostics=diagnostics)
@@ -1188,7 +1189,6 @@ def score_dataset_run(
     dataset_name: str,
     run_name: str,
     lf: Any,
-    anthropic_api_key: str | None,
     dry_run: bool = False,
 ) -> list[dict]:
     print(f"[INFO] Loading '{dataset_name}' / run '{run_name}' ...")
@@ -1224,7 +1224,6 @@ def score_dataset_run(
             item_input=item.input or {},
             item_expected=item.expected_output or {},
             item_metadata=item.metadata or {},
-            anthropic_api_key=anthropic_api_key,
             dry_run=dry_run,
         )
         result["item_id"] = item_id
@@ -1335,7 +1334,6 @@ def session_main() -> None:
     parser.add_argument("--output", help="Save results JSON to file")
     args = parser.parse_args(sys.argv[2:])
 
-    anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY")
     lf = None if args.dry_run else _make_langfuse()
 
     # Optionally fetch item context from Langfuse dataset project
@@ -1377,7 +1375,7 @@ def session_main() -> None:
               "Use --item-id <E2E-XXX> to load item-specific scoring criteria from the dataset.")
 
     print(f"[INFO] Scoring {len(session_files)} session file(s)...")
-    if anthropic_api_key:
+    if os.environ.get("ANTHROPIC_API_KEY"):
         print("[INFO] ANTHROPIC_API_KEY set — LLM-as-Judge enabled")
     else:
         print("[INFO] ANTHROPIC_API_KEY not set — LLM-as-Judge skipped")
@@ -1390,7 +1388,6 @@ def session_main() -> None:
                 item_input=item_input,
                 item_expected=item_expected,
                 item_metadata=item_metadata or {"session_file": sf.name},
-                anthropic_api_key=anthropic_api_key,
                 dry_run=args.dry_run,
                 lf=lf,
             )
@@ -1426,8 +1423,7 @@ def main() -> None:
 
     lf = None if args.dry_run else _make_langfuse()
 
-    anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not anthropic_api_key:
+    if not os.environ.get("ANTHROPIC_API_KEY"):
         print("[INFO] ANTHROPIC_API_KEY not set — LLM-as-Judge skipped")
 
     if args.trace_id:
@@ -1439,7 +1435,6 @@ def main() -> None:
             item_input={},
             item_expected={},
             item_metadata={},
-            anthropic_api_key=anthropic_api_key,
             dry_run=args.dry_run,
         )
         results = [result]
@@ -1447,7 +1442,7 @@ def main() -> None:
         if lf is None:
             lf = _make_langfuse()
         results = score_dataset_run(
-            args.dataset_name, args.run_name, lf, anthropic_api_key, args.dry_run,
+            args.dataset_name, args.run_name, lf, args.dry_run,
         )
     else:
         parser.print_help()

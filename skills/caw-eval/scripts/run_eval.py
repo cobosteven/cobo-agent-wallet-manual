@@ -3,7 +3,7 @@
 Script 2: 从 Langfuse 拉取测试数据，上传 session 数据
 
 执行模式说明:
-    本脚本负责数据集查询和 session 上传。测试用例的执行由 openclaw
+    本脚本负责数据集查询、session 收集和上传。测试用例的执行由 openclaw
     agent 通过 task subagent 完成（每个 item 独立 task，可并行）。
 
     数据集读写通过 Langfuse SDK + API key 直接操作（无需 CAW 后端）。
@@ -17,11 +17,21 @@ Script 2: 从 Langfuse 拉取测试数据，上传 session 数据
     # 列出并输出 JSON 格式（方便 agent 解析）
     python run_eval.py list --dataset-name caw-agent-eval-v1 --format json
 
-    # task 执行完成后，上传 session 文件并关联到 Langfuse run
+    # task 执行完成后，将该 item 的 session 文件收集到 run 目录
+    python run_eval.py collect \
+        --item-id E2E-01L1 \
+        --run-dir ~/.caw-eval/runs/eval-run-20260407
+
+    # 上传单个 session 文件并关联到 Langfuse run
     python run_eval.py upload \
         --session /path/to/session.jsonl \
         --dataset-name caw-agent-eval-v1 \
         --item-id E2E-01L1 \
+        --run-name eval-run-20260407
+
+    # 批量上传 run 目录下所有 session（文件名 stem = item_id）
+    python run_eval.py upload \
+        --run-dir ~/.caw-eval/runs/eval-run-20260407 \
         --run-name eval-run-20260407
 
 环境变量:
