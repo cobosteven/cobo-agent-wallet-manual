@@ -58,22 +58,19 @@ Submit a new pact for owner approval.
 
 | Flag | Description |
 |---|---|
-| `--wallet-id <uuid>` | Target wallet UUID |
 | `--intent <text>` | Natural language description of the pact's purpose |
+| `--execution-plan <text>` | Markdown execution plan shown to owner during approval review |
+| `--policies <json>` | JSON array of InlinePolicyCreate objects, e.g. `'[{"name":"limit","policy_type":"transfer","rules":{"effect":"deny","deny_if":{"amount_usd_gt":"500"}}}]'` |
+| `--completion-conditions <json>` | JSON array of completion conditions, e.g. `'[{"type":"tx_count","threshold":"5"}]'`. Types: `tx_count`, `amount_spent_usd`, `time_elapsed`, `manual` |
+| `--context <json>` | `{"channel":"<>", "target":"<>", "session_id":"<uuid>"}` — pass `{}` if not in openclaw |
 
 **Optional flags:**
 
-| Flag | Default | Description |
-|---|---|---|
-| `--duration <seconds>` | `0` (no expiry) | Pact duration in seconds from activation |
-| `--max-tx <usd>` | — | Maximum USD value per transaction (inline policy shortcut) |
-| `--name <text>` | derived | Human-readable name for owner review |
-| `--resource-scope <json>` | — | Resource scope, e.g. `'{"wallet_id":"<uuid>"}'` |
-| `--execution-plan <text>` | — | Markdown execution plan shown to owner |
-| `--original-intent <text>` | — | Raw user input that triggered this request |
-| `--spec-file <path>` | — | Full pact spec JSON file (mutually exclusive with inline flags) |
-| `--spec-json <json>` | — | Full pact spec JSON inline |
-| `--context <json>` | **required** | `{"channel":"<>", "target":"<>", "session_id":"<uuid>"}` |
+| Flag | Description |
+|---|---|
+| `--original-intent <text>` | Raw user input that triggered this request |
+
+Note: wallet UUID is read automatically from the active profile (set during `caw onboard`).
 
 ### `caw pact show <pact-id>`
 

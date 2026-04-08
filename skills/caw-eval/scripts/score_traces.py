@@ -53,54 +53,35 @@ load_dotenv(Path(__file__).parent / ".env", override=False)
 # score_traces.py 操作 *results* project（写入评分和 scoring trace）。
 # 与 dataset project（generate_dataset.py / run_eval.py list）使用不同凭证。
 
-_DEFAULT_RESULT_HOST = "https://langfuse.1cobo.com"
-_DEFAULT_DATASET_HOST = "https://langfuse.1cobo.com"
+_DEFAULT_LF_HOST = "https://langfuse.1cobo.com"
 
 
 # ── Langfuse client helper ────────────────────────────────────────────────────
 
 def _make_langfuse() -> Any:
-    """Create a Langfuse client for the *results* project.
+    """Create a Langfuse client (single unified project for both dataset and results).
 
-    Priority: LANGFUSE_RESULT_* → LANGFUSE_* → hard-coded default host.
+    Priority: LANGFUSE_DATASET_* → LANGFUSE_* → default host.
     """
     from langfuse import Langfuse
 
     def _pick(specific: str, generic: str, default: str = "") -> str:
         return os.environ.get(specific) or os.environ.get(generic) or default
 
-    host = _pick("LANGFUSE_RESULT_HOST", "LANGFUSE_HOST", _DEFAULT_RESULT_HOST)
-    public_key = _pick("LANGFUSE_RESULT_PUBLIC_KEY", "LANGFUSE_PUBLIC_KEY")
-    secret_key = _pick("LANGFUSE_RESULT_SECRET_KEY", "LANGFUSE_SECRET_KEY")
-
-    if not public_key or not secret_key:
-        print("[WARN] Langfuse results-project credentials not set. "
-              "Set LANGFUSE_RESULT_PUBLIC_KEY + LANGFUSE_RESULT_SECRET_KEY "
-              "(or LANGFUSE_PUBLIC_KEY + LANGFUSE_SECRET_KEY).")
-
-    return Langfuse(public_key=public_key, secret_key=secret_key, host=host)
-
-
-def _make_dataset_langfuse() -> Any:
-    """Create a Langfuse client for the *dataset* project (read item context).
-
-    Priority: LANGFUSE_DATASET_* → LANGFUSE_* → hard-coded default host.
-    """
-    from langfuse import Langfuse
-
-    def _pick(specific: str, generic: str, default: str = "") -> str:
-        return os.environ.get(specific) or os.environ.get(generic) or default
-
-    host = _pick("LANGFUSE_DATASET_HOST", "LANGFUSE_HOST", _DEFAULT_DATASET_HOST)
+    host = _pick("LANGFUSE_DATASET_HOST", "LANGFUSE_HOST", _DEFAULT_LF_HOST)
     public_key = _pick("LANGFUSE_DATASET_PUBLIC_KEY", "LANGFUSE_PUBLIC_KEY")
     secret_key = _pick("LANGFUSE_DATASET_SECRET_KEY", "LANGFUSE_SECRET_KEY")
 
     if not public_key or not secret_key:
-        print("[WARN] Langfuse dataset-project credentials not set. "
-              "Set LANGFUSE_DATASET_PUBLIC_KEY + LANGFUSE_DATASET_SECRET_KEY "
-              "(or LANGFUSE_PUBLIC_KEY + LANGFUSE_SECRET_KEY).")
+        print("[WARN] Langfuse credentials not set. "
+              "Set LANGFUSE_PUBLIC_KEY + LANGFUSE_SECRET_KEY "
+              "(or LANGFUSE_DATASET_PUBLIC_KEY + LANGFUSE_DATASET_SECRET_KEY).")
 
     return Langfuse(public_key=public_key, secret_key=secret_key, host=host)
+
+
+# Alias for dataset reads — same project
+_make_dataset_langfuse = _make_langfuse
 
 
 # ── Stage weights ─────────────────────────────────────────────────────────────
@@ -226,7 +207,12 @@ def _grep_block(text: str, signals: list[str], window: int = 500) -> str:
 def _parse_session_file(path: str) -> dict:
     """
     Parse a session .jsonl file into a structured dict.
-    Format matches what otel_report.py's parse_session() produces.
+
+    Supports two formats:
+      - OpenClaw otel format: type=session + type=message events, id/toolCallId keys
+      - Claude Code native format: type=user/assistant events, uuid/sessionId keys,
+        tool_use/tool_result content blocks
+
     Returns {session_id, started_at, cwd, model, provider, messages, order}.
     """
     import pathlib
@@ -248,12 +234,16 @@ def _parse_session_file(path: str) -> dict:
         except json.JSONDecodeError:
             continue
         ev_type = ev.get("type", "")
-        ev_id = ev.get("id", "")
+
         if ev_type == "session":
+            # OpenClaw otel format: dedicated session event
             session_id = ev.get("id", "")
             started_at = ev.get("timestamp", "")
             cwd = ev.get("cwd", "")
+
         elif ev_type == "message":
+            # OpenClaw otel format: dedicated message events
+            ev_id = ev.get("id", "")
             msg = ev.get("message", {})
             if not model and msg.get("model"):
                 model = msg.get("model", "")
@@ -262,6 +252,40 @@ def _parse_session_file(path: str) -> dict:
             if ev_id:
                 messages[ev_id] = ev
                 order.append(ev_id)
+
+        elif ev_type in ("user", "assistant"):
+            # Claude Code native format: user/assistant events with uuid + sessionId
+            if not session_id and ev.get("sessionId"):
+                session_id = ev["sessionId"]
+            if not cwd and ev.get("cwd"):
+                cwd = ev["cwd"]
+            if not started_at and ev.get("timestamp"):
+                started_at = ev["timestamp"]
+            ev_id = ev.get("uuid") or ev.get("id", "")
+            if ev_id and ev_id not in messages:
+                # Normalize tool_use blocks → toolCall; tool_result → toolResult role
+                msg = ev.get("message", {})
+                role = msg.get("role", ev_type)
+                content = msg.get("content", [])
+                if isinstance(content, str):
+                    content = [{"type": "text", "text": content}]
+                normalized: list[dict] = []
+                for block in content:
+                    if block.get("type") == "tool_use":
+                        normalized.append({
+                            "type": "toolCall",
+                            "id": block.get("id", ""),
+                            "name": block.get("name", ""),
+                            "arguments": block.get("input", {}),
+                        })
+                    else:
+                        normalized.append(block)
+                normalized_ev = {**ev, "message": {**msg, "role": role, "content": normalized}}
+                messages[ev_id] = normalized_ev
+                order.append(ev_id)
+
+    if not session_id:
+        session_id = pathlib.Path(path).stem
 
     return {
         "session_id": session_id,
@@ -282,13 +306,28 @@ def _session_message_events(session: dict) -> list[dict]:
 
 
 def _session_tool_result_index(events: list[dict]) -> dict[str, dict]:
-    """Build {toolCallId: event} from all toolResult events."""
-    return {
-        ev["message"]["toolCallId"]: ev
-        for ev in events
-        if ev.get("message", {}).get("role") == "toolResult"
-        and ev["message"].get("toolCallId")
-    }
+    """Build {toolCallId: synthetic_event} from toolResult events (both formats)."""
+    idx: dict[str, dict] = {}
+    for ev in events:
+        msg = ev.get("message", {})
+        # OpenClaw otel format: dedicated toolResult event
+        if msg.get("role") == "toolResult" and msg.get("toolCallId"):
+            idx[msg["toolCallId"]] = ev
+        # Claude Code native format: tool_result blocks inside user events
+        elif msg.get("role") == "user":
+            for block in msg.get("content", []):
+                if block.get("type") == "tool_result" and block.get("tool_use_id"):
+                    raw = block.get("content", [])
+                    if isinstance(raw, str):
+                        raw = [{"type": "text", "text": raw}]
+                    idx[block["tool_use_id"]] = {
+                        "message": {
+                            "role": "toolResult",
+                            "toolCallId": block["tool_use_id"],
+                            "content": raw,
+                        }
+                    }
+    return idx
 
 
 def extract_stage_content_from_session(session: dict) -> dict[str, str]:
@@ -324,14 +363,13 @@ def extract_stage_content_from_session(session: dict) -> dict[str, str]:
 
     def is_pact_call(tc: dict) -> bool:
         name = tc.get("name", "").lower()
-        cmd = tc.get("arguments", {}).get("command", "").lower() if name == "exec" else ""
+        cmd = tc.get("arguments", {}).get("command", "").lower()
         return "pact" in name or (bool(cmd) and "caw pact" in cmd)
 
     def is_tx_call(tc: dict) -> bool:
-        name = tc.get("name", "").lower()
-        cmd = tc.get("arguments", {}).get("command", "").lower() if name == "exec" else ""
+        cmd = tc.get("arguments", {}).get("command", "").lower()
         tx_cmds = ("caw tx transfer", "caw tx call", "caw transfer --to", "caw tx sign")
-        return name == "exec" and any(kw in cmd for kw in tx_cmds)
+        return any(kw in cmd for kw in tx_cmds)
 
     # S1: first user message + first assistant response (before any tool calls)
     s1_parts: list[str] = []
@@ -1105,14 +1143,26 @@ def _create_scoring_trace(
     metadata: dict,
 ) -> str | None:
     """
-    通过 Langfuse SDK 在 Langfuse 中创建评分 trace。
+    通过 Langfuse v4 ingestion API 在 Langfuse 中创建评分 trace。
     input 指向原始 trace_id，output 包含分阶段评分结果。
     返回新建 trace 的 trace_id。
     """
+    import uuid as _uuid
+    from datetime import datetime, timezone
     try:
-        trace = lf.trace(
+        from langfuse.api import TraceBody, IngestionEvent_TraceCreate
+    except ImportError:
+        print("    [SCORING TRACE ERROR] Cannot import Langfuse v4 ingestion types")
+        return None
+
+    try:
+        scoring_trace_id = str(_uuid.uuid4())
+        now_iso = datetime.now(timezone.utc).isoformat()
+        trace_body = TraceBody(
+            id=scoring_trace_id,
             name="caw-eval-scoring",
             session_id=original_trace_id,
+            timestamp=now_iso,
             input={
                 "original_trace_id": original_trace_id,
                 "operation_type": metadata.get("operation_type", ""),
@@ -1129,8 +1179,14 @@ def _create_scoring_trace(
             },
             metadata={"eval": "true", "evaluated_trace_id": original_trace_id},
         )
-        print(f"    [SCORING TRACE] {trace.id}")
-        return trace.id
+        event = IngestionEvent_TraceCreate(
+            id=str(_uuid.uuid4()),
+            timestamp=now_iso,
+            body=trace_body,
+        )
+        lf.api.ingestion.batch(batch=[event])
+        print(f"    [SCORING TRACE] {scoring_trace_id}")
+        return scoring_trace_id
     except Exception as e:
         print(f"    [SCORING TRACE ERROR] {e}")
         return None

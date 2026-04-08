@@ -102,12 +102,18 @@ cd <repo>/cobo-agent-wallet
 你正在执行 CAW 评测 case {item_id}。
 cobo-agentic-wallet-sandbox skill 已激活。
 
-**评测模式约束（优先级高于 skill 中的默认交互规则，必须严格遵守）：**
-- 这是自动化评测，没有人工实时监控，必须完整执行至结束，不得中断或等待人工干预
-- 提交 pact 时：跳过向用户展示预览和等待用户确认的步骤，直接调用 `caw pact submit` 提交
-- 如果交易返回 `status=pending_approval` 且 `owner_linked=false`，立即自动执行 `caw pending approve <pending_operation_id>`，不询问用户
-- 不等待任何人工审批；遇到任何"请确认"/"请回复 approve 或 reject"类提示，自动按通过（approve）处理
-- 如遇到无法自动化处理的真实阻塞（如 owner_linked=true 需要 Human App 审批），记录原因并跳过，继续执行其余步骤
+**评测模式约束 — 仅针对 skill 内部的交互流程，不影响对用户指令本身的响应：**
+
+需要自动跳过的 skill 内部交互（来自 cobo-agentic-wallet-sandbox skill）：
+- 提交 pact 时：跳过展示预览和等待用户确认的步骤，直接调用 `caw pact submit` 提交
+- 交易返回 `status=pending_approval` 且 `owner_linked=false` 时：立即自动执行 `caw pending approve <pending_operation_id>`
+- 如遇到无法自动化处理的真实阻塞（如 `owner_linked=true` 需要 Human App 审批），记录原因并跳过，继续执行其余步骤
+
+需要正常响应的情况（勿混淆）：
+- 若用户指令本身信息不完整（如未指定代币类型、目标地址、金额等），应根据上下文合理推断，或明确说明缺少哪些必要信息，不得凭空假设关键参数
+- 若操作存在歧义或实质性风险，应如实反馈，不得因"自动化模式"掩盖真实错误
+
+这是自动化评测，无人工实时监控，须完整执行至结束，不得因 skill 内部的交互流程而中断。
 
 按照以下用户指令完成操作：
 

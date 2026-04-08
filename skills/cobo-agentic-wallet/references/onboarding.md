@@ -83,4 +83,4 @@ Use `pair-status` to check state: `not_found`, `valid` (pending, waiting for use
 
 If the code expires before the user pairs, re-run `caw wallet pair` to generate a new code.
 
-**Pair status tracking**: `--context` is **required** for `caw wallet pair`. When openclaw notification context is available, pass `channel`, `target`, `session_id`. **`session_id`**: UUID string identifying the current openclaw conversation session — read it from `openclaw sessions --json --agent <agent>` or equivalent method. When the terminal notification is delivered (claimed/expired), continue any established next steps from the conversation context. Use: `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<uuid>"}'`**
+**Pair status tracking**: `--context` is **required** for `caw wallet pair`. In an openclaw environment, pass `channel`, `target`, and `session_id` (UUID from `openclaw sessions --json --agent <agent>`). If not running in openclaw or notification context is unavailable, pass `--context '{}'`. When the terminal notification is delivered (claimed/expired), continue any established next steps from the conversation context.
