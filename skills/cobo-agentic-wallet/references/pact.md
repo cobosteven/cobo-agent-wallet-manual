@@ -28,8 +28,8 @@ All on-chain transactions MUST go through a pact. On-chain transactions include:
   | 3 | 📜 **Policies** | Per-tx cap, daily cap, scope/chain/token/contract restrictions |
   | 4 | 🏁 **Completion Conditions** | Time limit, total spend cap |
 
-- If the wallet is **not paired**: ask for explicit user confirmation. Do not submit without sign-off.
-- If the wallet is **paired**: submit directly — the owner will review and approve in the **Human App**, so in-conversation confirmation is not needed.
+  - If the wallet is **not paired**: ask for explicit user confirmation before you submit the pact. Do not submit without sign-off.
+  - If the wallet is **paired**: submit directly — the owner will review and approve the pact in the **Human App**, so in-conversation confirmation is not needed.
 
 ### Phase 3 — Submit & Track
 
@@ -147,13 +147,13 @@ Weekly DCA: swap $500 USDC to ETH on Base via Uniswap V3.
 
 ### Completion Conditions (`--completion-conditions`)
 
-JSON array defining when a pact is considered complete. Each object has `type` and optional `threshold`.
+JSON array defining when a pact is considered complete. Each object has `type` and `threshold` (required). At least one condition is required. Types cannot be duplicated within a pact.
 
-| Type | Threshold type | Description |
+| Type | Threshold | Description |
 |---|---|---|
-| `tx_count` | string (integer) | Complete after N transactions. E.g., `"5"` |
-| `amount_spent_usd` | string (decimal) | Complete after spending N USD total. E.g., `"3000"` (USD $3000) |
-| `time_elapsed` | string (seconds) | Complete after N seconds after the pact becomes active. E.g., `"3600"` (1 hour) |
+| `tx_count` | string (integer) | Complete after N successful transactions (across all operation types). E.g., `"5"` |
+| `amount_spent_usd` | string (decimal) | Complete after cumulative USD spend reaches threshold. E.g., `"3000"`. Note: transactions without price data won't increment progress. |
+| `time_elapsed` | string (seconds) | Complete after N seconds from pact activation. E.g., `"3600"` (1 hour). |
 
 Multiple conditions can be set; the pact completes when **any one** is satisfied (any-of semantics). Once complete, all permissions granted by the pact are revoked immediately.
 
@@ -171,7 +171,8 @@ Policies constrain operations within a pact via the `--policies` flag. Each poli
     "effect": "allow",
     "when": { ... },
     "deny_if": { ... },
-    "review_if": { ... }
+    "review_if": { ... },
+    "always_review": true | false
   }
 }
 ```
@@ -183,8 +184,9 @@ Policies constrain operations within a pact via the `--policies` flag. Each poli
 | **`rules`** | | |
 | `rules.effect` | Yes | Always set to `"allow"`. |
 | `rules.when` | Yes (unless `always_review=true`) | Allowlist conditions — which chains/tokens/contracts/domains to permit |
-| `rules.deny_if` | Optional | Hard-block conditions — usage limits that trigger an automatic deny. Use empty `{}` to blacklist — unconditionally deny all operations matching `when`. |
+| `rules.deny_if` | Optional | Hard-block conditions — usage limits that trigger an automatic deny. |
 | `rules.review_if` | Optional | Soft-block conditions — thresholds that require owner approval before proceeding |
+| `rules.always_review` | Optional | When `true`, every operation matching `when` requires owner approval. Use for sensitive or high-risk tasks. |
 
 **Evaluation flow**:
 
@@ -228,7 +230,7 @@ Pause for owner approval
 | Field | Type | Description |
 |---|---|---|
 | `chain_in` | string[] | Restrict to specific chains |
-| `target_in` | ContractTargetRef[] | Restrict to specific contract addresses and/or function selectors |
+| `target_in` | ContractTargetRef[] | Restrict to specific contract addresses. E.g. `[{"chain_id":"BASE_ETH", "contract_addr":"0x..."}]` |
 
 **For `contract_call` policies (Solana):**
 
@@ -239,19 +241,19 @@ Pause for owner approval
 
 ### Usage Limits (`deny_if`)
 
-| Field | Type | Description |
-|---|---|---|
-| `amount_usd_gt` | string (decimal) | Deny if single operation USD value exceeds this |
-| `usage_limits.rolling_24h.amount_usd_gt` | string | Deny if cumulative USD value in the 24h window exceeds this |
-| `usage_limits.rolling_24h.tx_count_gt` | integer | Deny if transaction count in the 24h window exceeds this |
+| Field | Type | Applies to | Description |
+|---|---|---|---|
+| `amount_usd_gt` | string (decimal) | `transfer` only | Deny if single operation USD value exceeds this |
+| `usage_limits.rolling_24h.amount_usd_gt` | string | `transfer` only | Deny if cumulative USD value in the 24h window exceeds this |
+| `usage_limits.rolling_24h.tx_count_gt` | integer | `transfer`, `contract_call` | Deny if transaction count in the 24h window exceeds this |
 
 ### Review Threshold (`review_if`)
 
 Matching operations require owner approval before execution.
 
-| Field | Type | Description |
-|---|---|---|
-| `amount_usd_gt` | string (decimal) | Require approval if USD value exceeds this |
+| Field | Type | Applies to | Description |
+|---|---|---|---|
+| `amount_usd_gt` | string (decimal) | `transfer` only | Require approval if USD value exceeds this |
 
 ### Message Sign Policies
 
@@ -262,7 +264,7 @@ Matching operations require owner approval before execution.
 | `when.domain_match[]` | `param_name` | string | EIP-712 domain field to match (e.g. `"name"`, `"verifyingContract"`) |
 | | `op` | string | `eq`, `neq`, `in`, `not_in` |
 | | `value` | any | Value to compare against |
-| `deny_if` | `usage_limits.rolling_24h.request_count_gt` | integer | Max signing requests per 24h window. Use empty `{}` to blacklist — unconditionally deny all matched signatures. |
+| `deny_if` | `usage_limits.rolling_24h.request_count_gt` | integer | Max signing requests per 24h window |
 | `review_if` | *(same fields as `when`)* | | Require owner approval for matching signatures |
 
 **Example — restrict Permit2 signatures to a specific contract:**
@@ -294,7 +296,7 @@ Matching operations require owner approval before execution.
 
 ### Pattern: Allow with Inline Limits
 
-"Allow Uniswap V3 swaps on Base, review above $500/tx, hard-deny above $1000/tx or $3000/day":
+"Allow Uniswap V3 swaps on Base, max 5 txs/day":
 
 ```json
 [
@@ -308,11 +310,7 @@ Matching operations require owner approval before execution.
         "target_in": [{ "chain_id": "BASE_ETH", "contract_addr": "0x2626664c2603336E57B271c5C0b26F421741e481" }]
       },
       "deny_if": {
-        "amount_usd_gt": "1000",
-        "usage_limits": { "rolling_24h": { "amount_usd_gt": "3000" } }
-      },
-      "review_if": {
-        "amount_usd_gt": "500"
+        "usage_limits": { "rolling_24h": { "tx_count_gt": 5 } }
       }
     }
   }
@@ -343,25 +341,6 @@ Matching operations require owner approval before execution.
   }
 ]
 ```
-
-### Pattern: Blacklist via Empty `deny_if`
-
-"Block all transfers on BSC regardless of amount":
-
-```json
-[
-  {
-    "name": "block-bsc-transfers",
-    "type": "transfer",
-    "rules": {
-      "effect": "allow",
-      "when": { "chain_in": ["BSC_BNB"] },
-      "deny_if": {}
-    }
-  }
-]
-```
-
 
 ## CLI Command Reference
 

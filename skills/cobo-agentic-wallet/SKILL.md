@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.04.07.3"
+  version: "2026.04.09.1"
 description: |
   Use for Cobo Agentic Wallet operations via the `caw` CLI: wallet onboarding, token transfers (USDC, USDT, ETH, SOL, etc.), smart contract calls, balance queries, and policy denial handling.
   Covers DeFi execution on EVM (Base, Ethereum, Arbitrum, Optimism, Polygon) and Solana: Uniswap V3 swaps, Aave V3 lending, Jupiter swaps, DCA, grid trading, Polymarket, and Drift perps.
@@ -127,15 +127,19 @@ caw faucet deposit --address <address> --token-id <token-id>
 caw meta chains                               # list all supported chains
 caw meta tokens --chain-ids BASE_ETH         # list tokens on a specific chain
 caw meta tokens --token-ids SETH,SETH_USDC   # get metadata for specific token IDs
+
+# Search the knowledge base for domain-specific information (DeFi protocols, chains, tokens, etc.).
+# Always run this BEFORE a web search — fall back to web only search if no useful result is returned.
+caw recipe search "<query>" --keywords "<keyword 1>,....,<keyword n>"
 ```
 
 ## Pacts
 
 > ⚠️ **All on-chain transactions MUST go through a pact.** Default pacts cannot be used — always create a new pact or use an existing non-default pact.
 
-**Always get explicit user confirmation before submitting a pact** — present a 4-item preview (Intent, Execution Plan, Policies, Completion Conditions) and wait for user approval. See [Pact Submission Flow](./references/pact.md#pact-submission-flow).
+**Before submitting a pact**, present a 4-item preview (Intent, Execution Plan, Policies, Completion Conditions). If the wallet is **not paired**, wait for explicit user confirmation. If **paired**, submit directly — the owner approves in the Human App. See [Phase 2 — Create Pact](./references/pact.md#phase-2--create-pact).
 
-**When `active` notification arrives**: Reply immediately, then trigger execution via `exec background:true` — never block the notification turn waiting for tx results. See [Background Execution Rule](./references/pact.md#background-execution-rule).
+**When `active` notification arrives**: Reply immediately, then execute as a background task — do not synchronously wait for the transaction result before replying. See [Phase 4 — Act on Result](./references/pact.md#phase-4--act-on-result).
 
 See [pact.md](./references/pact.md) for CLI command reference, policy schema, lifecycle details, and troubleshooting.
 
@@ -160,7 +164,7 @@ Before writing any script, search `./scripts/` for existing scripts that match t
 ### Transactions
 - **`--request-id` idempotency**: Always set a unique, deterministic request ID per logical transaction (e.g. `invoice-001`, `swap-20240318-1`). Retrying with the same `--request-id` is safe — the server deduplicates.
 - **`--gasless`**: `false` by default — wallet pays own gas. Set `true` for Cobo Gasless (paired wallets only; unpaired wallets will be rejected).
-- **`<pact-id>` (required positional arg)**: `caw tx transfer`, `caw tx call`, and `caw tx sign-message` all take `<pact-id>` as the first positional argument. The CLI resolves the wallet UUID and API key from the pact automatically — do not pass `--wallet-id` separately. See [pact.md](./references/pact.md#executing-under-a-pact).
+- **`<pact-id>` (required positional arg)**: `caw tx transfer`, `caw tx call`, and `caw tx sign-message` all take `<pact-id>` as the first positional argument. The CLI resolves the wallet UUID and API key from the pact automatically — do not pass `--wallet-id` separately. See [pact.md](./references/pact.md#phase-4--act-on-result).
 - **`--context` (required)**: Required for `caw tx transfer`, `caw tx call`, `caw tx sign-message`. In an openclaw environment pass `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<uuid>"}'` — `session_id` is a UUID from `openclaw sessions --json --agent <agent>`. If not running in openclaw or notification context is unavailable, pass `--context '{}'`.
 - After submitting a transaction (`caw tx transfer` / `caw tx call` / `caw tx sign-message`), reply with a brief summary (tx ID, status, amount/token, and original intent if applicable).
 - If `owner_linked` is false (from `caw status`), mention once after a successful transaction: right now the agent has unlimited access to this wallet; the user can download the Cobo Agentic Wallet app from App Store or Google Play Store and pair the wallet to approve pacts and transactions from their phone. Run `caw wallet pair` to generate a pairing code. Pairing is optional. See [Pairing](./references/onboarding.md#pairing--transfer-ownership-to-a-human).
@@ -189,7 +193,7 @@ All list endpoints use cursor-based pagination: pass `after` / `before` as query
 
 ### Safety & boundaries
 - **Agent permission boundary**: Policies are set by the owner. The agent can only read policies — it cannot create or modify them. When denied, suggest the owner adjusts the policy in the Mobile App.
-- **Agent cannot**: create/modify policies, create/modify pacts, delete wallets, exceed spending limits, or initiate transactions without explicit user instruction. These are architectural constraints enforced at the infrastructure level — not software promises — so the agent cannot bypass them even if compromised or prompted to do so.
+- **Agent cannot**: modify active pacts, delete wallets, exceed spending limits, or initiate transactions without explicit user instruction. These are architectural constraints enforced at the infrastructure level — not software promises — so the agent cannot bypass them even if compromised or prompted to do so.
 - **Testnet/mainnet isolation**: Never use testnet addresses for mainnet operations and vice versa.
 - **Address sourcing**: Token addresses differ by chain — query with `caw meta tokens --token-ids <id>`. Protocol contract addresses differ by deployment.
 
