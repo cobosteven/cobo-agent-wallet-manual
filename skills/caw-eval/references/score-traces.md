@@ -166,22 +166,64 @@ CAW skill 要求在每次提交 pact 前展示 4-item preview（Intent / Executi
 
 ---
 
-## Subagent Judge
+## Subagent Judge（两阶段协议）
 
-`score_traces.py` 通过调用本地 `claude` CLI（openclaw）以**子 agent** 模式对完整对话进行综合语义评估，直接输出 S1/S2/S3 各阶段分及综合指标，作为**主评分来源**。
+LLM-as-a-Judge 通过 **Copilot task subagent** 执行，脚本本身不直接调用任何 LLM API。
 
-无需任何额外配置——直接复用 openclaw 已配置的模型和 API key：
+### 阶段一：生成 judge prompt 文件
 
 ```bash
-# 启用 Subagent Judge（claude CLI 在 PATH 中即自动生效）
+# 从 Langfuse run 生成 judge 请求文件
 .venv/bin/python sdk/skills/caw-eval/scripts/score_traces.py \
-  --run-name eval-run-20260407 --report
+  --run-name eval-run-20260407 \
+  --dump-judge-requests /tmp/judge_requests.json
+
+# 从本地 session 文件生成 judge 请求文件
+.venv/bin/python sdk/skills/caw-eval/scripts/score_traces.py session \
+  --session /path/to/sessions_dir/ \
+  --item-id E2E-01L1 \
+  --dump-judge-requests /tmp/judge_requests.json
 ```
 
-当 `session_path` 可用时，使用 `--allowedTools Read` 让子 agent 直接读取文件；
-否则将对话文本内嵌入 prompt（前 4000 字符）。
+脚本生成一个 JSON 数组，每条记录包含 `{trace_id, item_id, metadata, system_prompt, prompt, session_path}`。
 
-> 找不到 `claude` CLI 时，自动退回到纯启发式评分，不影响流程。
+### 阶段二：Copilot 执行 task subagent
+
+Copilot（openclaw）读取 `judge_requests.json`，对每条请求使用 `task` tool 启动 subagent，将评分结果写入 `judge_results.json`。
+
+结果格式为 JSON 数组，每条记录包含：
+```json
+{
+  "trace_id": "...",
+  "available": true,
+  "s1": 0.8, "s2": 0.7, "s3": 0.9,
+  "task_completion": 8,
+  "recipe_hit_quality": 7,
+  "pact_intent_match": 9,
+  "error_type": "none",
+  "recovery_logic": 8,
+  "hallucination_risk": 1,
+  "e2e": 0.8,
+  "comment": "..."
+}
+```
+
+### 阶段三：应用评分结果
+
+```bash
+# 从 Langfuse run 应用评分
+.venv/bin/python sdk/skills/caw-eval/scripts/score_traces.py \
+  --run-name eval-run-20260407 \
+  --judge-results /tmp/judge_results.json \
+  --report
+
+# 从本地 session 文件应用评分
+.venv/bin/python sdk/skills/caw-eval/scripts/score_traces.py session \
+  --session /path/to/sessions_dir/ \
+  --judge-results /tmp/judge_results.json
+```
+
+> 未提供 `--judge-results` 时，自动退回到纯启发式评分，不影响流程。
 
 ---
 

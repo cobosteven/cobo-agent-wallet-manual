@@ -1,7 +1,7 @@
 ---
 name: caw-eval
 metadata:
-  version: "2026.04.07.1"
+  version: "2026.04.09.1"
 description: |
   Evaluate CAW (Cobo Agentic Wallet) agent quality in your own environment.
   Use when: user wants to run CAW eval, benchmark caw agent quality, evaluate skill performance,

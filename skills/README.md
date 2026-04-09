@@ -33,10 +33,10 @@ If none of the above apply, this skill is probably not what you need.
 ### 1. Install the skill
 
 ```bash
-npx skills add cobosteven/cobo-agent-wallet-manual --skill cobo-agentic-wallet-sandbox-sandbox --yes --global
+npx skills add cobosteven/cobo-agent-wallet-manual --skill cobo-agentic-wallet-sandbox-sandbox-sandbox-sandbox-sandbox --yes --global
 ```
 
-Or via [ClawHub](https://clawhub.ai/) registry: `npx clawhub@latest install cobo-agentic-wallet-sandbox-sandbox`
+Or via [ClawHub](https://clawhub.ai/) registry: `npx clawhub@latest install cobo-agentic-wallet-sandbox-sandbox-sandbox-sandbox-sandbox`
 
 ### 2. Restart the gateway
 
