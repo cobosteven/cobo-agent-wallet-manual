@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.04.10.1"
+  version: "2026.04.10.2"
 description: |
   Use for Cobo Agentic Wallet operations via the `caw` CLI: wallet onboarding, token transfers (USDC, USDT, ETH, SOL, etc.), smart contract calls, balance queries, and policy denial handling.
   Covers DeFi execution on EVM (Base, Ethereum, Arbitrum, Optimism, Polygon) and Solana: Uniswap V3 swaps, Aave V3 lending, Jupiter swaps, DCA, grid trading, Polymarket, and Drift perps.
@@ -163,7 +163,7 @@ See [pact.md](./references/pact.md) for CLI command reference, policy schema, li
 - **After pact submit or tx call**: Always verify with `caw pact show <id>` or `caw tx get --tx-id <record-uuid>` / `caw tx get --request-id <request-id>` (exactly one: record UUID from `caw tx list` or submit output, or the same `--request-id` as on submit) before retrying. `exit=0` means the command ran, not that the operation succeeded.
 - **Output is always JSON**. No `--format` flag — output is always JSON.
 - **`wallet_uuid` is never a CLI argument** — all wallet commands resolve the wallet UUID from the active profile automatically. Use `caw wallet current` to check, or `caw wallet current <wallet-uuid>` to switch profiles.
-- **Long-running commands** (`caw onboard --create-wallet`): run in background or wait until completion
+- **Long-running commands** (`caw onboard`): run in background or wait until completion
 - **TSS Node auto-start**: `caw tx transfer`, `caw tx call` automatically check TSS Node status and start it if offline
 - **Show the command**: When reporting `caw` results to the user, always include the full CLI command that was executed
 
@@ -172,6 +172,23 @@ See [pact.md](./references/pact.md) for CLI command reference, policy schema, li
 **All scripts MUST be stored in [`./scripts/`](./scripts/)** — do not create scripts elsewhere.
 
 Before writing any script, search `./scripts/` for existing scripts that match the task. Prefer reusing or generalizing existing scripts over creating new ones. See [sdk-scripting.md](./references/sdk-scripting.md#script-management) for detailed guidelines.
+
+### Exit Code Check
+
+Before claiming any operation is complete, verify the last command's exit code:
+- exit 0 → operation succeeded, safe to report completion
+- exit != 0 → operation FAILED, report the error to user
+
+NEVER claim success after a non-zero exit code.
+
+### Retry Policy
+
+- Same command fails 3 times → STOP retrying
+- Report the error to user with:
+  1. What you tried
+  2. The error message
+  3. Suggested next steps
+- Retrying with identical parameters is only appropriate if the failure was transient (e.g. network timeout, rate limit); for logic or validation errors, adjust parameters or stop
 
 ### Transactions
 - **`--request-id` idempotency**: Always set a unique, deterministic request ID per logical transaction (e.g. `invoice-001`, `swap-20240318-1`). Retrying with the same `--request-id` is safe — the server deduplicates.
@@ -204,7 +221,6 @@ All list endpoints use cursor-based pagination: pass `after` / `before` as query
   3. Re-run the original command with the current CLI
 
 ### Safety & boundaries
-- **Agent permission boundary**: Policies are set by the owner. The agent can only read policies — it cannot create or modify them. When denied, suggest the owner adjusts the policy in the Mobile App.
 - **Agent cannot**: modify active pacts, delete wallets, exceed spending limits, or initiate transactions without explicit user instruction. These are architectural constraints enforced at the infrastructure level — not software promises — so the agent cannot bypass them even if compromised or prompted to do so.
 - **Testnet/mainnet isolation**: Never use testnet addresses for mainnet operations and vice versa.
 - **Address sourcing**: Token addresses differ by chain — query with `caw meta tokens --token-ids <id>`. Protocol contract addresses differ by deployment.
@@ -214,6 +230,10 @@ All list endpoints use cursor-based pagination: pass `after` / `before` as query
 Whenever possible, suggest what the user (or you) can do next — keep it brief, 1–3 bullet points. Examples:
 - After a transfer: "Transfer submitted. You can check its status with `caw tx get --request-id pay-001`, or view your updated balance with `caw wallet balance`."
 - After a balance check with low funds: "Balance is low. Want to top up via the faucet (testnet) or transfer in funds?"
+
+### Unknown questions
+
+If asked a question you cannot answer from this skill or its reference files, always fetch information from the official user manual first: `https://cobo.com/products/agentic-wallet/manual/llms.txt`
 
 ## Reference
 

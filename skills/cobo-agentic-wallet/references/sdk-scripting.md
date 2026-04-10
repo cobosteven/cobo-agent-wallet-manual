@@ -4,8 +4,6 @@ Use the Cobo Agentic Wallet SDK for complex or multi-step operations: DeFi strat
 
 The SDK is available in **Python** and **TypeScript**. Choose whichever fits your project.
 
-**SDK docs**: https://agent-wallet-doc-preview.cobo.com/sdk/client
-
 ## Script Management
 
 **All scripts MUST be stored in [`../scripts/`](../scripts/)** — do not create scripts elsewhere.
