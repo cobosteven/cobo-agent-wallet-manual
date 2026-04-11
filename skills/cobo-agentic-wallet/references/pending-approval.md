@@ -24,7 +24,7 @@ The wallet has no linked owner yet. Approval happens directly in this conversati
 
 Once the user replies:
 - **approve** → call `caw pending approve <pending_operation_id>`
-- **reject** → call `caw pending reject <pending_operation_id>`
+- **reject** → call `caw pending reject <pending_operation_id> --reason "<reason>"`
 
 The `pending_operation_id` is returned in the original `caw tx transfer` / `caw tx call` response as `result.pending_operation_id`.
 
