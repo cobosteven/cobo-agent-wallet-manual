@@ -203,7 +203,7 @@ Translate the user's request into `caw pact submit` flags. Each row maps one asp
 | `--policies <json>` | yes | JSON array of detailed risk control policy definitions: chain/token/contract allowlists, per-tx caps, rolling limits, review thresholds. | See [Policy Reference](#policy-reference---policies). |
 | `--completion-conditions <json>` | yes | JSON array of completion conditions. | See [Completion Conditions](#completion-conditions---completion-conditions). |
 | `--execution-plan <text>` | yes | Concrete on-chain steps the agent will perform post-approval. | See [Execution Plan](#execution-plan---execution-plan). |
-| `--context <json>` | yes | `{"channel":"<>", "target":"<>", "session_id":"<uuid>"}` — pass `{}` if not in openclaw | Auto-populated from agent runtime. Pass `{}` if outside OpenClaw. |
+| `--context <json>` | yes | In openclaw: `{"channel":"<>", "target":"<>", "session_id":"<string>"}`. Not in openclaw: `{"openclaw": false}`. | `session_id` is a string from `openclaw sessions --json --agent <agent>`. Must include all three fields when openclaw is active; use `{"openclaw": false}` otherwise. |
 
 
 ### Complete Example
@@ -241,7 +241,7 @@ Transfer 1000 USDC to 0xABC...123 on Base.
 # Risk Controls
 - Per-tx cap: $1001
 - One-time transfer only" \
-  --context '{}'
+  --context '{"channel": "<channel>", "target": "<target>", "session": "<session id>"}'
 ```
 
 ### Execution Plan (`--execution-plan`)

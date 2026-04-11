@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.04.10.2"
+  version: "2026.04.11.1"
 description: |
   Use for Cobo Agentic Wallet operations via the `caw` CLI: wallet onboarding, token transfers (USDC, USDT, ETH, SOL, etc.), smart contract calls, balance queries, and policy denial handling.
   Covers DeFi execution on EVM (Base, Ethereum, Arbitrum, Optimism, Polygon) and Solana: Uniswap V3 swaps, Aave V3 lending, Jupiter swaps, DCA, grid trading, Polymarket, and Drift perps.
@@ -194,7 +194,9 @@ NEVER claim success after a non-zero exit code.
 - **`--request-id` idempotency**: Always set a unique, deterministic request ID per logical transaction (e.g. `invoice-001`, `swap-20240318-1`). Retrying with the same `--request-id` is safe — the server deduplicates.
 - **`--gasless`**: `false` by default — wallet pays own gas. Set `true` for Cobo Gasless (paired wallets only; unpaired wallets will be rejected).
 - **`<pact-id>` (required positional arg)**: `caw tx transfer`, `caw tx call`, and `caw tx sign-message` all take `<pact-id>` as the first positional argument. The CLI resolves the wallet UUID and API key from the pact automatically — do not pass `--wallet-id` separately. See [pact.md](./references/pact.md#phase-4--act-on-result).
-- **`--context` (required)**: Required for `caw tx transfer`, `caw tx call`, `caw tx sign-message`. In an openclaw environment pass `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<uuid>"}'` — `session_id` is a UUID from `openclaw sessions --json --agent <agent>`. If not running in openclaw or notification context is unavailable, pass `--context '{}'`.
+- **`--context` (required)**: Required for `caw tx transfer`, `caw tx call`, `caw tx sign-message`, `caw pact submit`, and `caw wallet pair`. Two forms:
+  - **In openclaw**: `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<session-id>"}'` — `session_id` is a string from `openclaw sessions --json --agent <agent>`. This enables status notifications back to the user.
+  - **Not in openclaw** (or notification context unavailable): `--context '{"openclaw": false}'` — skips notification dispatch.
 - After submitting a transaction (`caw tx transfer` / `caw tx call` / `caw tx sign-message`), reply with a brief summary (tx ID, status, amount/token, and original intent if applicable).
 - If `owner_linked` is false (from `caw status`), mention once after a successful transaction: right now the agent has unlimited access to this wallet; the user can download the Cobo Agentic Wallet app from App Store or Google Play Store and pair the wallet to approve pacts and transactions from their phone. Run `caw wallet pair` to generate a pairing code. Pairing is optional. See [Pairing](./references/onboarding.md#pairing--transfer-ownership-to-a-human).
 - **On contract call failure**:
