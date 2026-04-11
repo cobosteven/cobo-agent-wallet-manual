@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.04.11.2"
+  version: "2026.04.11.3"
 description: |
   Use for Cobo Agentic Wallet operations via the `caw` CLI: wallet onboarding, token transfers (USDC, USDT, ETH, SOL, etc.), smart contract calls, balance queries, and policy denial handling.
   Covers DeFi execution on EVM (Base, Ethereum, Arbitrum, Optimism, Polygon) and Solana: Uniswap V3 swaps, Aave V3 lending, Jupiter swaps, DCA, grid trading, Polymarket, and Drift perps.
@@ -165,7 +165,7 @@ See [pact.md](./references/pact.md) for CLI command reference, policy schema, li
 - **`wallet_uuid` is never a CLI argument** — all wallet commands resolve the wallet UUID from the active profile automatically. Use `caw wallet current` to check, or `caw wallet current <wallet-uuid>` to switch profiles.
 - **Long-running commands** (`caw onboard`): run in background or wait until completion
 - **TSS Node auto-start**: `caw tx transfer`, `caw tx call` automatically check TSS Node status and start it if offline
-- **Show the command**: When reporting `caw` results to the user, always include the full CLI command that was executed
+- **`caw` is your tool, not the user's**: Run `caw` commands silently and present results in plain language. Do not show raw CLI commands or JSON output to the user — they want outcomes, not terminal logs. Exception: only show a command if the user explicitly asks "what command did you run?"
 
 ### Script Management
 
@@ -229,9 +229,16 @@ All list endpoints use cursor-based pagination: pass `after` / `before` as query
 
 ### Next Steps
 
-Whenever possible, suggest what the user (or you) can do next — keep it brief, 1–3 bullet points. Examples:
-- After a transfer: "Transfer submitted. You can check its status with `caw tx get --request-id pay-001`, or view your updated balance with `caw wallet balance`."
-- After a balance check with low funds: "Balance is low. Want to top up via the faucet (testnet) or transfer in funds?"
+After completing any task, proactively suggest 1–3 relevant next steps. Draw from two sources:
+1. **`suggestions` field in the CLI response** — if present, always surface these to the user (they are server-generated hints specific to the current state).
+2. **Your own understanding of the workflow** — based on what just happened, what would a knowledgeable person do next?
+
+Be concise and action-oriented. Frame suggestions as what *you* can do for the user, not commands for the user to run.
+
+Examples:
+- After a transfer: "Transfer submitted (tx ID: `pay-001`). I can check its status once it's on-chain, or show your updated balance — just say the word."
+- After a balance check with low funds: "Balance is low. Want me to request testnet tokens via the faucet, or transfer funds in from another address?"
+- After onboarding: "Wallet is ready. You can pair it with the Cobo app for owner approval, or go straight to your first transfer — what would you like to do?"
 
 ### Unknown questions
 
