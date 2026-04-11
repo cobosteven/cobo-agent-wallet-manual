@@ -28,15 +28,15 @@ Once the user replies:
 
 The `pending_operation_id` is returned in the original `caw tx transfer` / `caw tx call` response as `result.pending_operation_id`.
 
-## owner_linked = true — approve in Human App
+## owner_linked = true — approve in Cobo Agentic Wallet app
 
-The wallet owner must approve via the Cobo Human App (mobile). Inform the user:
+The wallet owner must approve via the Cobo Cobo Agentic Wallet app (mobile). Inform the user:
 
-> "This transaction requires approval from the wallet owner in the Cobo Human App.
+> "This transaction requires approval from the wallet owner in the Cobo Cobo Agentic Wallet app.
 > Transaction ID: `<request_id>`
 > Amount: `<amount>` `<token>` → `<recipient>`
 >
-> Please open the Human App and approve the pending operation. I'll continue once it's approved."
+> Please open the Cobo Agentic Wallet app and approve the pending operation. I'll continue once it's approved."
 
 Do NOT call `caw pending approve` — that requires the owner's credentials. Poll for completion instead:
 

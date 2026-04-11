@@ -28,6 +28,12 @@ This skill is relevant if your agent needs to do any of the following:
 
 If none of the above apply, this skill is probably not what you need.
 
+## Additional skills
+
+| Workflow | Skill |
+|---|---|
+| Pact: Hire client-agent operations with `caw-hire` | [pact-hire-client](./pact-hire-client/SKILL.md) |
+
 ## Install
 
 ### 1. Install the skill
@@ -66,15 +72,16 @@ You have access to a Cobo Agentic Wallet for managing crypto assets with policy 
 
 Environment:
 - API URL: https://api-agent-wallet-core.sandbox.cobo.com
+- API Key: (stored in AGENT_WALLET_API_KEY)
 - CLI tool: caw
 
 Core capabilities:
-- Transfer tokens: caw tx transfer <wallet_uuid> --to <addr> --token-id <id> --amount <n>
-- Contract call: caw tx call <wallet_uuid> --contract <addr> --calldata <hex> --chain-id <id>
+- Transfer tokens: caw tx transfer <wallet_uuid> --to <addr> --token <id> --amount <n>
+- Contract call: caw tx call <wallet_uuid> --contract <addr> --calldata <hex> --chain <id>
 - Check balance: caw wallet balance <wallet_uuid>
 - List transactions: caw tx list <wallet_uuid>
 
-Check exit code and stderr on failure.
+Always use --format json for programmatic output. Check exit code and stderr on failure.
 If a transfer is denied by policy, parse the error's "suggestion" field for the corrected parameters.
 See error-handling.md for common error codes and recovery steps.
 
@@ -93,7 +100,7 @@ This project uses Cobo Agentic Wallet for crypto operations.
 The cobo-agentic-wallet skill is installed at ./skills/cobo-agentic-wallet/.
 
 When asked to perform wallet operations:
-1. Use `caw` CLI for all commands
+1. Use `caw` CLI with `--format json` for all commands
 2. Always check transaction status after submission
 3. Handle policy denials by parsing the suggestion field — see [Error Handling](./skills/cobo-agentic-wallet/references/error-handling.md)
 4. For DeFi operations, refer to the skill's recipe files
@@ -127,7 +134,7 @@ Also see: [Policy Management](./cobo-agentic-wallet/references/policy-management
 
 ## Supported Chains
 
-Common chain IDs for `--chain-id` flag:
+Common chain IDs for `--chain` and `--chain-id` flags:
 
 | Chain | Chain ID | Type |
 |---|---|---|
@@ -143,8 +150,8 @@ Common chain IDs for `--chain-id` flag:
 For the full list of supported chains and tokens, run:
 
 ```bash
-caw chain list
-caw token list --chain-id <CHAIN>
+caw --format json chain list
+caw --format json token list --chain <CHAIN>
 ```
 
 ## Evals
@@ -180,6 +187,8 @@ The script auto-generates the full contents of `cobo-agentic-wallet-sandbox/` an
 ```
 skills/
 ├── README.md                            # This file
+├── pact-hire-client/                    # Pact: Hire client-agent skill
+│   └── SKILL.md                         # Client workflow instructions for `caw-hire`
 ├── cobo-agentic-wallet/                 # Core wallet skill (edit here)
 │   ├── SKILL.md                         # Main instructions (loaded on trigger)
 │   ├── references/                      # Operational reference docs

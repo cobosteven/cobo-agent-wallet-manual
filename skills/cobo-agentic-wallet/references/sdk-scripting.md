@@ -215,22 +215,22 @@ console.log(wallets.data.result);
 
 - **`wallet_uuid`**: pass explicitly to every method; retrieve with `caw wallet current` (active profile) or `caw wallet list` (all local profiles).
 - **`request_id` idempotency**: always set a unique, deterministic ID per logical transaction. Retrying with the same `request_id` is safe — the server deduplicates.
-- **`sponsor`**: `false` by default (wallet pays own gas). Set `true` for Cobo Gasless (paired wallets only).
+- **`gasless`**: `false` by default (wallet pays own gas). Set `true` for Cobo Gasless (paired wallets only).
 - **SDK returns unwrapped data**: Python SDK methods return the `result` payload directly. TypeScript SDK responses are in `response.data.result`.
 - **Exceptions on failure**: SDK raises exceptions on HTTP/API errors — catch and report; do not silently retry.
-- **Sequential nonce ordering**: On EVM chains, each transaction from the same address must use an incrementing nonce. Submitting a new transaction before the previous one is on-chain causes nonce conflicts and failures. **Poll and wait for at least `Confirming` status (tx is on-chain, nonce consumed) before submitting the next transaction.** Waiting for `Completed` (all block confirmations) is unnecessary and slow — once a tx reaches `Confirming`, its nonce is consumed and the next tx can safely use nonce+1.
+- **Sequential nonce ordering**: On EVM chains, each transaction from the same address must use an incrementing nonce. Submitting a new transaction before the previous one is confirmed on-chain causes nonce conflicts and failures. **Poll and wait for `Success` status (tx confirmed on-chain) before submitting the next transaction.**
 
 ```python
 import asyncio
 from cobo_agentic_wallet.client import WalletAPIClient
 
-# Status lifecycle: Submitted → PendingScreening → Broadcasting → Confirming → Success/Completed
-# For nonce ordering, "Confirming" is sufficient — the tx is on-chain, nonce consumed.
-ONCHAIN_STATUSES = {"Confirming", "Success", "Completed"}
-TERMINAL_FAILURE_STATUSES = {"Failed", "Rejected"}
+# Status lifecycle: Initiated → PendingApproval → Approved → Processing → Pending → Success
+# For nonce ordering, wait for "Success" — tx confirmed on-chain.
+ONCHAIN_STATUSES = {"Success"}
+TERMINAL_FAILURE_STATUSES = {"Failed", "Rejected", "Cancelled"}
 
 async def wait_for_onchain(client: WalletAPIClient, wallet_uuid: str, request_id: str, timeout: int = 120) -> dict:
-    """Poll transaction status until it is on-chain (Confirming) or terminal."""
+    """Poll transaction status until it is confirmed on-chain (Success) or terminal."""
     elapsed = 0
     interval = 1.5
     while elapsed < timeout:
@@ -256,7 +256,7 @@ await wait_for_onchain(client, WALLET_UUID, "batch-002")
 # tx2 = await client.transfer_tokens(...)  # also nonce=5 — conflict!
 ```
 
-The same rule applies to CLI scripts — poll with `caw tx get --tx-id <record-uuid>` or `caw tx get --request-id <request-id>` and wait for `status` to be `Confirming` or `Completed` before firing the next `caw tx transfer` or `caw tx call`.
+The same rule applies to CLI scripts — poll with `caw tx get --tx-id <record-uuid>` or `caw tx get --request-id <request-id>` and wait for `status` to be `Success` before firing the next `caw tx transfer` or `caw tx call`.
 
 ## DeFi Operations
 

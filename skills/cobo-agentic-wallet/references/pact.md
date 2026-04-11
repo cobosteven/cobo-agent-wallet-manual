@@ -6,8 +6,6 @@ This document covers pact lifecycle management — from creation and approval th
 
 Any task that uses `caw tx transfer`, `caw tx call`, or `caw tx sign-message` requires a pact. If no suitable pact exists, create one by following the steps below.
 
-> Default pacts cannot be used — always use a non-default pact.
-
 ## Lifecycle Management
 
 ### Submit & Track
@@ -15,7 +13,7 @@ Any task that uses `caw tx transfer`, `caw tx call`, or `caw tx sign-message` re
 - Submit: `caw pact submit ...` → returns `pact_id`.
 - Inform the user the pact has been submitted.
   - If **not paired**: tell the user the pact will be automatically approved and execution will begin once active.
-  - If **paired**: remind the user to approve in the **Human App**.
+  - If **paired**: remind the user to approve in the **Cobo Agentic Wallet app**.
 - Start tracking: `caw track --watch` polls pact status and sends a notification when the status changes.
 
 ### Act on Result
@@ -126,7 +124,7 @@ Present a pre-submit preview to the user with the **4 core items**:
 | 4 | 🏁 **Completion Conditions** | When the pact ends: tx count, spend limit, or time elapsed |
 
 - If the wallet is **not paired**: **do NOT submit without explicit user confirmation.** Show the preview and wait for sign-off.
-- If the wallet is **paired**: submit directly — the owner will review and approve the pact in the **Human App**, so in-conversation confirmation is not needed.
+- If the wallet is **paired**: submit directly — the owner will review and approve the pact in the **Cobo Agentic Wallet app**, so in-conversation confirmation is not needed.
 
 Then submit via `caw pact submit` (see [`caw pact submit` Flag Reference](#caw-pact-submit-flag-reference)).
 

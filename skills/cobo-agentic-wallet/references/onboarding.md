@@ -72,9 +72,9 @@ caw wallet pair-status              # check pairing status
 
 `pair` returns an **8-digit numeric code** (e.g. `12345678`, valid 30 minutes). Tell the user:
 
-> "To pair this wallet, open the Human App and enter code: **12345678**"
+> "To pair this wallet, open the Cobo Agentic Wallet app and enter code: **12345678**"
 
-The user completes the pairing in the **Human App** by entering the code. Once paired:
+The user completes the pairing in the **Cobo Agentic Wallet app** by entering the code. Once paired:
 - Ownership transfers from Agent → Human
 - Agent becomes a delegate, authorized to operate within the owner's configured rules
 - Operations outside those rules require the agent to submit a pact for human approval
