@@ -33,77 +33,77 @@ from typing import Optional
 # ── caw 操作分类表 ─────────────────────────────────────────────────────────────
 
 CAW_OP_TABLE = [
-    (["onboard bootstrap"],           "caw.onboard.bootstrap", "onboarding"),
-    (["onboard health"],              "caw.onboard.health",    "onboarding"),
-    (["onboard self-test"],           "caw.onboard.self_test", "onboarding"),
-    (["onboard"],                     "caw.onboard",           "onboarding"),
-    (["tx transfer"],                 "caw.tx.transfer",       "transaction"),
-    (["tx call"],                     "caw.tx.call",           "transaction"),
-    (["tx sign-message"],             "caw.tx.sign_message",   "transaction"),
-    (["tx speedup"],                  "caw.tx.speedup",        "transaction"),
-    (["tx drop"],                     "caw.tx.drop",           "transaction"),
-    (["tx estimate-transfer-fee"],    "caw.tx.estimate_fee",   "query"),
-    (["tx estimate-call-fee"],        "caw.tx.estimate_call_fee", "query"),
-    (["tx list"],                     "caw.tx.list",           "query"),
-    (["tx get"],                      "caw.tx.get",            "query"),
-    (["wallet balance"],              "caw.wallet.balance",    "query"),
-    (["wallet list"],                 "caw.wallet.list",       "query"),
-    (["wallet get"],                  "caw.wallet.get",        "query"),
-    (["wallet current"],              "caw.wallet.current",    "query"),
-    (["wallet pair-status"],          "caw.wallet.pair_status","wallet"),
-    (["wallet pair"],                 "caw.wallet.pair",       "wallet"),
-    (["wallet rename"],               "caw.wallet.rename",     "wallet"),
-    (["wallet archive"],              "caw.wallet.archive",    "wallet"),
-    (["wallet update"],               "caw.wallet.update",     "wallet"),
-    (["address create"],              "caw.address.create",    "wallet"),
-    (["address list"],                "caw.address.list",      "query"),
-    (["status"],                      "caw.status",            "query"),
-    (["pending approve"],             "caw.pending.approve",   "auth"),
-    (["pending reject"],              "caw.pending.reject",    "auth"),
-    (["pending list"],                "caw.pending.list",      "auth"),
-    (["pending get"],                 "caw.pending.get",       "auth"),
-    (["pact submit"],                 "caw.pact.submit",       "auth"),
-    (["pact status"],                 "caw.pact.status",       "auth"),
-    (["pact show"],                   "caw.pact.show",         "auth"),
-    (["pact events"],                 "caw.pact.events",       "auth"),
-    (["pact list"],                   "caw.pact.list",         "auth"),
-    (["pact revoke"],                 "caw.pact.revoke",       "auth"),
-    (["pact withdraw"],               "caw.pact.withdraw",     "auth"),
-    (["pact update-conditions"],      "caw.pact.update_conditions", "auth"),
-    (["pact update-policies"],        "caw.pact.update_policies",  "auth"),
-    (["approval create"],             "caw.approval.create",   "auth"),
-    (["approval resolve"],            "caw.approval.resolve",  "auth"),
-    (["approval list"],               "caw.approval.list",     "auth"),
-    (["approval get"],                "caw.approval.get",      "auth"),
-    (["track"],                       "caw.track",             "monitor"),
-    (["node status"],                 "caw.node.status",       "node"),
-    (["node start"],                  "caw.node.start",        "node"),
-    (["node stop"],                   "caw.node.stop",         "node"),
-    (["node restart"],                "caw.node.restart",      "node"),
-    (["node health"],                 "caw.node.health",       "node"),
-    (["node info"],                   "caw.node.info",         "node"),
-    (["node logs"],                   "caw.node.logs",         "node"),
-    (["meta chain-info"],             "caw.meta.chain_info",   "meta"),
-    (["meta search-tokens"],          "caw.meta.search_tokens","meta"),
-    (["meta prices"],                 "caw.meta.prices",       "meta"),
-    (["meta chains"],                 "caw.meta.chains",       "meta"),
-    (["meta tokens"],                 "caw.meta.tokens",       "meta"),
-    (["faucet deposit"],              "caw.faucet.deposit",    "dev"),
-    (["faucet tokens"],               "caw.faucet.tokens",     "dev"),
-    (["update"],                      "caw.update",            "meta"),
-    (["fetch"],                       "caw.fetch",             "util"),
-    (["export-key"],                  "caw.export_key",        "wallet"),
-    (["demo"],                        "caw.demo",              "dev"),
-    (["schema"],                      "caw.schema",            "meta"),
-    (["version", "--version"],        "caw.version",           "meta"),
-    (["--help", "-h"],                "caw.help",              "meta"),
+    (["onboard bootstrap"], "caw.onboard.bootstrap", "onboarding"),
+    (["onboard health"], "caw.onboard.health", "onboarding"),
+    (["onboard self-test"], "caw.onboard.self_test", "onboarding"),
+    (["onboard"], "caw.onboard", "onboarding"),
+    (["tx transfer"], "caw.tx.transfer", "transaction"),
+    (["tx call"], "caw.tx.call", "transaction"),
+    (["tx sign-message"], "caw.tx.sign_message", "transaction"),
+    (["tx speedup"], "caw.tx.speedup", "transaction"),
+    (["tx drop"], "caw.tx.drop", "transaction"),
+    (["tx estimate-transfer-fee"], "caw.tx.estimate_fee", "query"),
+    (["tx estimate-call-fee"], "caw.tx.estimate_call_fee", "query"),
+    (["tx list"], "caw.tx.list", "query"),
+    (["tx get"], "caw.tx.get", "query"),
+    (["wallet balance"], "caw.wallet.balance", "query"),
+    (["wallet list"], "caw.wallet.list", "query"),
+    (["wallet get"], "caw.wallet.get", "query"),
+    (["wallet current"], "caw.wallet.current", "query"),
+    (["wallet pair-status"], "caw.wallet.pair_status", "wallet"),
+    (["wallet pair"], "caw.wallet.pair", "wallet"),
+    (["wallet rename"], "caw.wallet.rename", "wallet"),
+    (["wallet archive"], "caw.wallet.archive", "wallet"),
+    (["wallet update"], "caw.wallet.update", "wallet"),
+    (["address create"], "caw.address.create", "wallet"),
+    (["address list"], "caw.address.list", "query"),
+    (["status"], "caw.status", "query"),
+    (["pending approve"], "caw.pending.approve", "auth"),
+    (["pending reject"], "caw.pending.reject", "auth"),
+    (["pending list"], "caw.pending.list", "auth"),
+    (["pending get"], "caw.pending.get", "auth"),
+    (["pact submit"], "caw.pact.submit", "auth"),
+    (["pact status"], "caw.pact.status", "auth"),
+    (["pact show"], "caw.pact.show", "auth"),
+    (["pact events"], "caw.pact.events", "auth"),
+    (["pact list"], "caw.pact.list", "auth"),
+    (["pact revoke"], "caw.pact.revoke", "auth"),
+    (["pact withdraw"], "caw.pact.withdraw", "auth"),
+    (["pact update-conditions"], "caw.pact.update_conditions", "auth"),
+    (["pact update-policies"], "caw.pact.update_policies", "auth"),
+    (["approval create"], "caw.approval.create", "auth"),
+    (["approval resolve"], "caw.approval.resolve", "auth"),
+    (["approval list"], "caw.approval.list", "auth"),
+    (["approval get"], "caw.approval.get", "auth"),
+    (["track"], "caw.track", "monitor"),
+    (["node status"], "caw.node.status", "node"),
+    (["node start"], "caw.node.start", "node"),
+    (["node stop"], "caw.node.stop", "node"),
+    (["node restart"], "caw.node.restart", "node"),
+    (["node health"], "caw.node.health", "node"),
+    (["node info"], "caw.node.info", "node"),
+    (["node logs"], "caw.node.logs", "node"),
+    (["meta chain-info"], "caw.meta.chain_info", "meta"),
+    (["meta search-tokens"], "caw.meta.search_tokens", "meta"),
+    (["meta prices"], "caw.meta.prices", "meta"),
+    (["meta chains"], "caw.meta.chains", "meta"),
+    (["meta tokens"], "caw.meta.tokens", "meta"),
+    (["faucet deposit"], "caw.faucet.deposit", "dev"),
+    (["faucet tokens"], "caw.faucet.tokens", "dev"),
+    (["update"], "caw.update", "meta"),
+    (["fetch"], "caw.fetch", "util"),
+    (["export-key"], "caw.export_key", "wallet"),
+    (["demo"], "caw.demo", "dev"),
+    (["schema"], "caw.schema", "meta"),
+    (["version", "--version"], "caw.version", "meta"),
+    (["--help", "-h"], "caw.help", "meta"),
 ]
 
 CAW_BIN_PATTERN = re.compile(
     r"(?:^|&&\s*)"
     r"(?:[^\s]*?/)?caw\s+"
     r"(.*?)(?:\s+&&|\s*$)",
-    re.MULTILINE
+    re.MULTILINE,
 )
 SKILL_INSTALL_PATTERN = re.compile(
     r"(?:npx\s+skills\s+add|clawhub\s+install|npx\s+skills\s+update)\s+(\S+)"
@@ -111,12 +111,13 @@ SKILL_INSTALL_PATTERN = re.compile(
 BOOTSTRAP_PATTERN = re.compile(r"bootstrap-env\.sh")
 POLICY_DENIAL_PATTERN = re.compile(
     r"(?:TRANSFER_LIMIT_EXCEEDED|POLICY_DENIED|403|policy.*denied|suggestion[\":\s]+([^\n]+))",
-    re.IGNORECASE
+    re.IGNORECASE,
 )
 UPDATE_SIGNAL = re.compile(r'"update"\s*:\s*true')
 
 
 # ── 配置读取 ──────────────────────────────────────────────────────────────────
+
 
 def load_caw_config() -> dict[str, str]:
     """从 ~/.cobo-agentic-wallet/ 读取 API key/URL 等，env vars 优先覆盖。"""
@@ -126,8 +127,13 @@ def load_caw_config() -> dict[str, str]:
         cfg = json.loads(config_path.read_text())
         profile_id = cfg.get("default_profile", "")
         if profile_id:
-            cred_path = (Path.home() / ".cobo-agentic-wallet" / "profiles"
-                         / f"profile_{profile_id}" / "credentials")
+            cred_path = (
+                Path.home()
+                / ".cobo-agentic-wallet"
+                / "profiles"
+                / f"profile_{profile_id}"
+                / "credentials"
+            )
             if cred_path.exists():
                 cred = json.loads(cred_path.read_text())
                 result["api_key"] = cred.get("api_key", "")
@@ -144,6 +150,7 @@ def load_caw_config() -> dict[str, str]:
 
 
 # ── JSONL 解析 ────────────────────────────────────────────────────────────────
+
 
 def parse_session(path: str) -> dict:
     """
@@ -180,28 +187,34 @@ def parse_session(path: str) -> dict:
     session_ev = next((messages[i] for i in order if messages[i].get("type") == "session"), {})
     snapshot = next(
         (messages[i]["data"] for i in order if messages[i].get("customType") == "model-snapshot"),
-        {}
+        {},
     )
     # Claude Code: session_id lives in each event's sessionId field
     cc_session_id = next(
-        (messages[i].get("sessionId", "") for i in order
-         if messages[i].get("type") in ("user", "assistant") and messages[i].get("sessionId")),
-        ""
+        (
+            messages[i].get("sessionId", "")
+            for i in order
+            if messages[i].get("type") in ("user", "assistant") and messages[i].get("sessionId")
+        ),
+        "",
     )
     # Claude Code: model from assistant message
     cc_model = next(
-        (messages[i].get("message", {}).get("model", "")
-         for i in order if messages[i].get("type") == "assistant"),
-        ""
+        (
+            messages[i].get("message", {}).get("model", "")
+            for i in order
+            if messages[i].get("type") == "assistant"
+        ),
+        "",
     )
     return {
         "session_id": session_ev.get("id") or cc_session_id or session_id_fallback,
-        "started_at": session_ev.get("timestamp") or next(
+        "started_at": session_ev.get("timestamp")
+        or next(
             (messages[i].get("timestamp") for i in order if messages[i].get("timestamp")), None
         ),
-        "cwd": session_ev.get("cwd") or next(
-            (messages[i].get("cwd") for i in order if messages[i].get("cwd")), ""
-        ),
+        "cwd": session_ev.get("cwd")
+        or next((messages[i].get("cwd") for i in order if messages[i].get("cwd")), ""),
         "model": snapshot.get("modelId") or cc_model or "unknown",
         "provider": snapshot.get("provider", "unknown"),
         "messages": messages,
@@ -227,12 +240,14 @@ def extract_message_events(session: dict) -> list[dict]:
             normalized: list[dict] = []
             for block in content:
                 if block.get("type") == "tool_use":
-                    normalized.append({
-                        "type": "toolCall",
-                        "id": block.get("id", ""),
-                        "name": block.get("name", ""),
-                        "arguments": block.get("input", {}),
-                    })
+                    normalized.append(
+                        {
+                            "type": "toolCall",
+                            "id": block.get("id", ""),
+                            "name": block.get("name", ""),
+                            "arguments": block.get("input", {}),
+                        }
+                    )
                 else:
                     normalized.append(block)
             result.append({**ev, "message": {**msg, "content": normalized}})
@@ -280,6 +295,7 @@ def build_tool_result_index(message_events: list[dict]) -> dict:
 
 # ── caw 命令解析 ──────────────────────────────────────────────────────────────
 
+
 def parse_caw_command(command: str) -> Optional[tuple[str, str, str]]:
     m = CAW_BIN_PATTERN.search(command)
     if not m:
@@ -287,7 +303,9 @@ def parse_caw_command(command: str) -> Optional[tuple[str, str, str]]:
     subcmd = m.group(1).strip()
     if "--help" in subcmd or subcmd.endswith("-h"):
         return "caw.help", "meta", subcmd
-    clean = re.sub(r"--(?:format|env|profile|timeout|verbose|api-key|api-url)\s*\S*", "", subcmd).strip()
+    clean = re.sub(
+        r"--(?:format|env|profile|timeout|verbose|api-key|api-url)\s*\S*", "", subcmd
+    ).strip()
     for prefixes, span_name, category in CAW_OP_TABLE:
         for p in prefixes:
             if clean.startswith(p):
@@ -298,14 +316,14 @@ def parse_caw_command(command: str) -> Optional[tuple[str, str, str]]:
 def extract_caw_flags(subcmd: str) -> dict:
     flags = {}
     for flag, key in [
-        (r"--to\s+(\S+)",          "to_address"),
-        (r"--token-id\s+(\S+)",    "token_id"),
-        (r"--amount\s+(\S+)",      "amount"),
-        (r"--chain\s+(\S+)",       "chain"),
-        (r"--request-id\s+(\S+)",  "request_id"),
-        (r"--wallet-id\s+(\S+)",   "wallet_id"),
-        (r"--env\s+(\S+)",         "env"),
-        (r"--contract\s+(\S+)",    "contract"),
+        (r"--to\s+(\S+)", "to_address"),
+        (r"--token-id\s+(\S+)", "token_id"),
+        (r"--amount\s+(\S+)", "amount"),
+        (r"--chain\s+(\S+)", "chain"),
+        (r"--request-id\s+(\S+)", "request_id"),
+        (r"--wallet-id\s+(\S+)", "wallet_id"),
+        (r"--env\s+(\S+)", "env"),
+        (r"--contract\s+(\S+)", "contract"),
         (r"--context\s+'([^']+)'", "context"),
     ]:
         hit = re.search(flag, subcmd)
@@ -327,13 +345,14 @@ def parse_tx_result(text: str) -> dict:
     except Exception:
         m = POLICY_DENIAL_PATTERN.search(text)
         if m:
-            result["policy_denial"] = m.group(0)[:200]
+            result["policy_denial"] = m.group(0)
         if UPDATE_SIGNAL.search(text):
             result["caw_update_available"] = "true"
     return result
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
+
 
 def ts_to_ns(ts: Optional[str]) -> Optional[int]:
     if not ts:
@@ -353,22 +372,25 @@ def safe_str(obj: object, limit: int = 2000) -> str:
 
 
 def extract_user_text(msg: dict) -> str:
+    content = msg.get("content", [])
+    # Claude Code native format: content 是 string
+    if isinstance(content, str):
+        return content.strip()
+    # OpenClaw / standard format: content 是 list of blocks
     parts = []
-    for block in msg.get("content", []):
-        if block.get("type") != "text":
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "text":
             continue
         text = block.get("text", "")
         text = re.sub(
-            r"Conversation info \(untrusted metadata\):.*?(?=\n\n|\Z)",
-            "", text, flags=re.DOTALL
+            r"Conversation info \(untrusted metadata\):.*?(?=\n\n|\Z)", "", text, flags=re.DOTALL
         ).strip()
         text = re.sub(r"^System:.*", "", text, flags=re.MULTILINE).strip()
         text = re.sub(
-            r"Sender \(untrusted metadata\):\s*```json\s*\{.*?\}\s*```",
-            "", text, flags=re.DOTALL
+            r"Sender \(untrusted metadata\):\s*```json\s*\{.*?\}\s*```", "", text, flags=re.DOTALL
         ).strip()
         if text:
-            parts.append(text[:400])
+            parts.append(text)
     return " | ".join(parts)
 
 
@@ -399,6 +421,7 @@ _DEFAULT_LF_HOST = "https://langfuse.1cobo.com"
 
 def _get_langfuse_config() -> dict[str, str]:
     """从环境变量读取 Langfuse 配置（支持 LANGFUSE_DATASET_* 或 LANGFUSE_* 前缀）。"""
+
     def _pick(specific: str, generic: str) -> str:
         return os.environ.get(specific) or os.environ.get(generic) or ""
 
@@ -411,14 +434,14 @@ def _get_langfuse_config() -> dict[str, str]:
 
 def _make_langfuse():
     from langfuse import Langfuse
+
     cfg = _get_langfuse_config()
     if not cfg["public_key"] or not cfg["secret_key"]:
         raise RuntimeError(
             "Missing Langfuse credentials. "
             "Set LANGFUSE_PUBLIC_KEY + LANGFUSE_SECRET_KEY in environment or .env."
         )
-    return Langfuse(public_key=cfg["public_key"], secret_key=cfg["secret_key"],
-                    host=cfg["host"])
+    return Langfuse(public_key=cfg["public_key"], secret_key=cfg["secret_key"], host=cfg["host"])
 
 
 def _ns_to_iso(ns: Optional[int], fallback: str) -> str:
@@ -443,9 +466,9 @@ def _attrs_to_fields(attrs: dict) -> dict:
         elif k == "langfuse.observation.model.name":
             fields["model"] = v
         elif k.startswith("langfuse.observation.metadata."):
-            metadata[k[len("langfuse.observation.metadata."):]] = v
+            metadata[k[len("langfuse.observation.metadata.") :]] = v
         elif k.startswith("langfuse.trace.metadata."):
-            metadata[k[len("langfuse.trace.metadata."):]] = v
+            metadata[k[len("langfuse.trace.metadata.") :]] = v
         elif k.startswith("gen_ai."):
             metadata[k] = v
     if metadata:
@@ -462,8 +485,10 @@ def _build_events_from_node(
     """Recursively convert a span/generation record (+ children) to Langfuse ingestion events."""
     import uuid as _uuid
     from langfuse.api import (
-        CreateSpanBody, IngestionEvent_SpanCreate,
-        CreateGenerationBody, IngestionEvent_GenerationCreate,
+        CreateSpanBody,
+        IngestionEvent_SpanCreate,
+        CreateGenerationBody,
+        IngestionEvent_GenerationCreate,
     )
 
     events = []
@@ -487,11 +512,17 @@ def _build_events_from_node(
             input=fields.get("input"),
             output=fields.get("output"),
             metadata=meta or None,
-            usage={"input": input_tokens, "output": output_tokens} if (input_tokens or output_tokens) else None,
+            usage={"input": input_tokens, "output": output_tokens}
+            if (input_tokens or output_tokens)
+            else None,
         )
-        events.append(IngestionEvent_GenerationCreate(
-            id=str(_uuid.uuid4()), timestamp=now_iso, body=body,
-        ))
+        events.append(
+            IngestionEvent_GenerationCreate(
+                id=str(_uuid.uuid4()),
+                timestamp=now_iso,
+                body=body,
+            )
+        )
     else:
         body = CreateSpanBody(
             id=node_id,
@@ -504,21 +535,23 @@ def _build_events_from_node(
             output=fields.get("output"),
             metadata=fields.get("metadata"),
         )
-        events.append(IngestionEvent_SpanCreate(
-            id=str(_uuid.uuid4()), timestamp=now_iso, body=body,
-        ))
+        events.append(
+            IngestionEvent_SpanCreate(
+                id=str(_uuid.uuid4()),
+                timestamp=now_iso,
+                body=body,
+            )
+        )
 
-    for child in (node.get("children") or []):
+    for child in node.get("children") or []:
         events.extend(_build_events_from_node(child, trace_id, node_id, now_iso))
     return events
-
 
 
 class SessionUploader:
     """解析 session.jsonl，构造 SessionRecord 树，直接上报 Langfuse。"""
 
-    def __init__(self, skill_name: str = "cobo-agentic-wallet-sandbox",
-                 trace_name: str = ""):
+    def __init__(self, skill_name: str = "cobo-agentic-wallet-sandbox", trace_name: str = ""):
         self.skill = skill_name
         self.trace_name = trace_name
 
@@ -535,9 +568,7 @@ class SessionUploader:
         model = session["model"]
         prov = session["provider"]
 
-        first_user = next(
-            (e for e in evts if e.get("message", {}).get("role") == "user"), None
-        )
+        first_user = next((e for e in evts if e.get("message", {}).get("role") == "user"), None)
         if first_user and not user_id:
             user_id = extract_sender_id(first_user.get("message", {})) or "unknown"
 
@@ -554,8 +585,7 @@ class SessionUploader:
         now_iso = now_cn.isoformat()
 
         turn_children = [
-            self._build_turn_record(turn, i, model, prov, tr_idx)
-            for i, turn in enumerate(turns)
+            self._build_turn_record(turn, i, model, prov, tr_idx) for i, turn in enumerate(turns)
         ]
 
         # ── Build Langfuse ingestion events ─────────────────────────────
@@ -567,7 +597,7 @@ class SessionUploader:
                 name=trace_display_name,
                 session_id=sid,
                 user_id=user_id,
-                timestamp=_ns_to_iso(start_ns, now_iso),
+                timestamp=now_iso,
                 tags=["openclaw", "caw-eval"],
                 input=safe_str({"session_id": sid, "model": model, "turns": len(turns)}),
                 metadata={
@@ -578,6 +608,8 @@ class SessionUploader:
                     "session_id": sid,
                     "telemetry_source": "caw-eval",
                     "uploaded_at": now_iso,
+                    "session_started_at": _ns_to_iso(start_ns, now_iso),
+                    "session_ended_at": _ns_to_iso(last_ns, now_iso),
                     "host": f"{getpass.getuser()}@{socket.gethostname()}",
                 },
             ),
@@ -590,7 +622,7 @@ class SessionUploader:
         _BATCH_SIZE = 15
         try:
             for i in range(0, len(all_events_list), _BATCH_SIZE):
-                chunk = all_events_list[i:i + _BATCH_SIZE]
+                chunk = all_events_list[i : i + _BATCH_SIZE]
                 lf.api.ingestion.batch(batch=chunk)
             lf.flush()
         except Exception as e:
@@ -599,8 +631,8 @@ class SessionUploader:
 
         total_children = sum(len(t.get("children") or []) for t in turn_children)
         cfg = _get_langfuse_config()
-        print(f"\n{'='*60}")
-        print(f"  Status:      OK")
+        print(f"\n{'=' * 60}")
+        print("  Status:      OK")
         print(f"  Trace Name:  {trace_display_name}")
         print(f"  Session ID:  {sid}")
         print(f"  User ID:     {user_id}")
@@ -608,12 +640,12 @@ class SessionUploader:
         print(f"  Turns:       {len(turn_children)}")
         print(f"  Spans:       {total_children}")
         print(f"  Langfuse:    {cfg['host']}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         return sid
 
-
-    def _build_turn_record(self, turn: list, idx: int, model: str, provider: str,
-                            tr_idx: dict) -> dict:
+    def _build_turn_record(
+        self, turn: list, idx: int, model: str, provider: str, tr_idx: dict
+    ) -> dict:
         user_ev = turn[0]
         user_msg = user_ev.get("message", {})
         user_text_raw = extract_user_text(user_msg)
@@ -635,9 +667,11 @@ class SessionUploader:
                 children.extend(llm_children)
                 for b in msg.get("content", []):
                     if b.get("type") == "text":
-                        final_text = b.get("text", "")[:500]
+                        final_text = b.get("text", "")
 
-        input_preview = user_text_raw[:10].rstrip() + ".." if len(user_text_raw) > 10 else user_text_raw
+        input_preview = (
+            user_text_raw[:50].rstrip() + ".." if len(user_text_raw) > 50 else user_text_raw
+        )
         turn_name = f'turn:{idx} ("{input_preview}")' if input_preview else f"turn:{idx}"
 
         return {
@@ -656,8 +690,9 @@ class SessionUploader:
             "children": children if children else None,
         }
 
-    def _build_assistant_children(self, ev: dict, model: str, provider: str,
-                                   tr_idx: dict, next_ev_ts: Optional[int] = None) -> list:
+    def _build_assistant_children(
+        self, ev: dict, model: str, provider: str, tr_idx: dict, next_ev_ts: Optional[int] = None
+    ) -> list:
         children: list = []
         msg = ev.get("message", {})
         content = msg.get("content", [])
@@ -674,27 +709,35 @@ class SessionUploader:
             llm_start = ts_ns
             llm_end = next_ev_ts or ts_ns
 
-        children.append({
-            "name": "OpenAI-generation",
-            "record_type": "generation",
-            "status_code": "OK",
-            "start_time_unix_nano": llm_start,
-            "end_time_unix_nano": llm_end,
-            "attributes": {
-                "gen_ai.request.model": msg.get("model", model),
-                "langfuse.observation.model.name": msg.get("model", model),
-                "gen_ai.usage.input_tokens": usage.get("input", 0),
-                "gen_ai.usage.output_tokens": usage.get("output", 0),
-                "langfuse.observation.output": safe_str(
-                    [b.get("name") or b.get("text", "")[:80] for b in content[:5]]
-                ),
-                "langfuse.trace.metadata.provider": provider,
-                "langfuse.trace.metadata.api": msg.get("api", ""),
-                "langfuse.trace.metadata.stop_reason": msg.get("stopReason", ""),
-                "langfuse.trace.metadata.response_id": msg.get("responseId", ""),
-                "langfuse.observation.metadata.tool_calls_count": str(len(tool_calls)),
-            },
-        })
+        children.append(
+            {
+                "name": "OpenAI-generation",
+                "record_type": "generation",
+                "status_code": "OK",
+                "start_time_unix_nano": llm_start,
+                "end_time_unix_nano": llm_end,
+                "attributes": {
+                    "gen_ai.request.model": msg.get("model", model),
+                    "langfuse.observation.model.name": msg.get("model", model),
+                    "gen_ai.usage.input_tokens": (
+                        usage.get("input_tokens")  # Claude Code native format
+                        or usage.get("input", 0)  # OpenClaw / standard format
+                    ),
+                    "gen_ai.usage.output_tokens": (
+                        usage.get("output_tokens")  # Claude Code native format
+                        or usage.get("output", 0)  # OpenClaw / standard format
+                    ),
+                    "langfuse.observation.output": safe_str(
+                        [b.get("name") or b.get("text", "") for b in content]
+                    ),
+                    "langfuse.trace.metadata.provider": provider,
+                    "langfuse.trace.metadata.api": msg.get("api", ""),
+                    "langfuse.trace.metadata.stop_reason": msg.get("stopReason", ""),
+                    "langfuse.trace.metadata.response_id": msg.get("responseId", ""),
+                    "langfuse.observation.metadata.tool_calls_count": str(len(tool_calls)),
+                },
+            }
+        )
 
         for tc in tool_calls:
             child = self._build_tool_child(tc, tr_idx, ts_ns)
@@ -703,8 +746,9 @@ class SessionUploader:
 
         return children
 
-    def _build_tool_child(self, tc: dict, tr_idx: dict,
-                           fallback_ts_ns: Optional[int]) -> Optional[dict]:
+    def _build_tool_child(
+        self, tc: dict, tr_idx: dict, fallback_ts_ns: Optional[int]
+    ) -> Optional[dict]:
         call_id = tc.get("id", "")
         name = tc.get("name", "")
         args = tc.get("arguments", {})
@@ -732,8 +776,15 @@ class SessionUploader:
             if caw_info:
                 span_name, category, subcmd = caw_info
                 return self._build_caw_child(
-                    span_name, category, subcmd, result_text,
-                    dur_ms, ts_ns, result_ts_ns, status_ok, exit_code
+                    span_name,
+                    category,
+                    subcmd,
+                    result_text,
+                    dur_ms,
+                    ts_ns,
+                    result_ts_ns,
+                    status_ok,
+                    exit_code,
                 )
             if SKILL_INSTALL_PATTERN.search(cmd):
                 category = "skill_install"
@@ -752,7 +803,7 @@ class SessionUploader:
 
         attrs: dict = {
             "langfuse.observation.input": safe_str(args, 800),
-            "langfuse.observation.output": result_text[:800],
+            "langfuse.observation.output": result_text,
             "langfuse.observation.metadata.tool_call_id": call_id,
             "langfuse.observation.metadata.tool_name": name,
             "langfuse.observation.metadata.category": category,
@@ -771,19 +822,27 @@ class SessionUploader:
             "start_time_unix_nano": ts_ns,
             "end_time_unix_nano": end_ns,
             "status_code": "OK" if status_ok else "ERROR",
-            "status_message": "" if status_ok else result_text[:200],
+            "status_message": "" if status_ok else result_text,
             "attributes": attrs,
         }
 
-    def _build_caw_child(self, span_name: str, category: str, subcmd: str,
-                          result_text: str, dur_ms: int, ts_ns: Optional[int],
-                          result_ts_ns: Optional[int], status_ok: bool,
-                          exit_code: Optional[int]) -> dict:
+    def _build_caw_child(
+        self,
+        span_name: str,
+        category: str,
+        subcmd: str,
+        result_text: str,
+        dur_ms: int,
+        ts_ns: Optional[int],
+        result_ts_ns: Optional[int],
+        status_ok: bool,
+        exit_code: Optional[int],
+    ) -> dict:
         flags = extract_caw_flags(subcmd)
 
         attrs: dict = {
-            "langfuse.observation.input": safe_str({"subcmd": subcmd[:300]}),
-            "langfuse.observation.output": result_text[:1000],
+            "langfuse.observation.input": safe_str({"subcmd": subcmd}),
+            "langfuse.observation.output": result_text,
             "langfuse.observation.metadata.caw_op": span_name,
             "langfuse.observation.metadata.category": category,
             "langfuse.observation.metadata.duration_ms": str(dur_ms),
@@ -824,12 +883,13 @@ class SessionUploader:
             "start_time_unix_nano": ts_ns,
             "end_time_unix_nano": end_ns,
             "status_code": status,
-            "status_message": "" if status == "OK" else result_text[:200],
+            "status_message": "" if status == "OK" else result_text,
             "attributes": attrs,
         }
 
 
 # ── 公开 API ──────────────────────────────────────────────────────────────────
+
 
 def extract_session_id(jsonl_path: str) -> str:
     """从 JSONL 文件提取 session_id。"""
@@ -862,8 +922,7 @@ def upload_session_file(
 
     session = parse_session(jsonl_path)
     evts = extract_message_events(session)
-    print(f"[INFO] Parsed {session['session_id']}  model={session['model']}  "
-          f"events={len(evts)}")
+    print(f"[INFO] Parsed {session['session_id']}  model={session['model']}  events={len(evts)}")
 
     uploader = SessionUploader(skill_name, trace_name=trace_name)
     return uploader.upload(session, lf, user_id=user_id)
@@ -871,17 +930,18 @@ def upload_session_file(
 
 # ── dry-run 打印 span 树 ───────────────────────────────────────────────────────
 
+
 def dry_run_session(jsonl_path: str) -> None:
     session = parse_session(jsonl_path)
     evts = extract_message_events(session)
     turns = build_turns(evts)
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"Session: {session['session_id']}")
     print(f"Model:   {session['model']}")
     print(f"Started: {session['started_at']}")
     print(f"Turns:   {len(turns)}")
     print(f"Events:  {len(evts)}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     for i, turn in enumerate(turns):
         user_ev = turn[0]
         user_text = extract_user_text(user_ev.get("message", {}))
@@ -893,8 +953,10 @@ def dry_run_session(jsonl_path: str) -> None:
                 content = msg.get("content", [])
                 tool_calls = [b for b in content if b.get("type") == "toolCall"]
                 usage = msg.get("usage", {})
-                print(f"  +- generation  tokens={usage.get('input',0)}+{usage.get('output',0)}"
-                      f"  tools={len(tool_calls)}")
+                print(
+                    f"  +- generation  tokens={usage.get('input', 0)}+{usage.get('output', 0)}"
+                    f"  tools={len(tool_calls)}"
+                )
         print()
 
 
@@ -907,30 +969,35 @@ if __name__ == "__main__":
         prog="upload_session.py",
         description="Upload openclaw session.jsonl directly to Langfuse",
     )
-    parser.add_argument("paths", nargs="+",
-                        help="Session .jsonl file(s) or directory containing .jsonl files")
-    parser.add_argument("--skill", default="cobo-agentic-wallet-sandbox",
-                        help="Skill name tag (default: cobo-agentic-wallet-sandbox)")
-    parser.add_argument("--trace-name", default="",
-                        help="Override Langfuse trace display name")
-    parser.add_argument("--user-id", default="",
-                        help="Override user ID in trace metadata")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Parse and print span tree without uploading")
+    parser.add_argument(
+        "paths", nargs="+", help="Session .jsonl file(s) or directory containing .jsonl files"
+    )
+    parser.add_argument(
+        "--skill",
+        default="cobo-agentic-wallet-sandbox",
+        help="Skill name tag (default: cobo-agentic-wallet-sandbox)",
+    )
+    parser.add_argument("--trace-name", default="", help="Override Langfuse trace display name")
+    parser.add_argument("--user-id", default="", help="Override user ID in trace metadata")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Parse and print span tree without uploading"
+    )
     args = parser.parse_args()
 
     # Collect all .jsonl files from paths
     jsonl_files: list[str] = []
     for p in args.paths:
         if os.path.isdir(p):
-            jsonl_files.extend(sorted(f for f in glob.glob(os.path.join(p, "*.jsonl"))
-                                       if not f.endswith(".lock")))
+            jsonl_files.extend(
+                sorted(f for f in glob.glob(os.path.join(p, "*.jsonl")) if not f.endswith(".lock"))
+            )
         elif p.endswith(".jsonl") and os.path.isfile(p):
             jsonl_files.append(p)
         else:
             expanded = glob.glob(p)
-            jsonl_files.extend(f for f in expanded
-                                if f.endswith(".jsonl") and not f.endswith(".lock"))
+            jsonl_files.extend(
+                f for f in expanded if f.endswith(".jsonl") and not f.endswith(".lock")
+            )
 
     if not jsonl_files:
         print("[ERROR] No .jsonl files found", file=sys.stderr)

@@ -11,6 +11,11 @@ Any task that uses `caw tx transfer`, `caw tx call`, or `caw tx sign-message` re
 ### Submit & Track
 
 - Submit: `caw pact submit ...` → returns `pact_id`.
+  - **If submit fails (`.success = false`)**:
+    - **Validation error** (missing flags, malformed JSON in `--policies` or `--completion-conditions`) → read `.message` and `.suggestions`, fix the field, and resubmit.
+    - **Auth failure** (exit code 4) → verify API key and wallet pairing status, then retry.
+    - **Network error** (exit code 7) → wait and retry once; if still fails, report to the user.
+    - **Do not resubmit** without fixing the root cause — duplicate submits create duplicate pacts.
 - Inform the user the pact has been submitted.
   - If **not paired**: tell the user the pact will be automatically approved and execution will begin once active.
   - If **paired**: remind the user to approve in the **Cobo Agentic Wallet app**.
@@ -97,7 +102,7 @@ You write 4–8 steps covering: preconditions, main operations, monitoring, erro
 
 Your job: Derive `--policies` and `--completion-conditions` from the intent and execution plan.
 
-**Policy** — grant only what the execution plan needs, nothing more. Use the recipe from Step 2 as a guide. The policy engine will block anything not explicitly allowed. See [Policy Reference](#policy-reference---policies) for supported fields and schema.
+**Policy** — grant only what the execution plan needs, nothing more. Use the recipe from Step 2 as a guide. Anything not explicitly matched by a `when` condition will be denied — there is no implicit pass-through. See [Policy Reference](#policy-reference---policies) for supported fields and schema.
 
 **Completion conditions** — when should the pact be considered done? Derive from the intent (e.g. one-time → `tx_count: 1`, monthly DCA for 6 months → `time_elapsed: 15552000` or `tx_count: 6`). See [Completion Conditions](#completion-conditions---completion-conditions) for supported types.
 
@@ -239,7 +244,7 @@ Transfer 1000 USDC to 0xABC...123 on Base.
 # Risk Controls
 - Per-tx cap: $1001
 - One-time transfer only" \
-  --context '{"channel": "<channel>", "target": "<target>", "session": "<session id>"}'
+  --context '{"channel": "<channel>", "target": "<target>", "session_id": "<session-id>"}'
 ```
 
 ### Execution Plan (`--execution-plan`)
@@ -411,7 +416,7 @@ Matching operations require owner approval before execution.
 
 ### USD Pricing Note
 
-> ⚠️ **Important**: USD-based policy conditions (`amount_usd_gt`, `usage_limits.rolling_24h.amount_usd_gt`) only apply to tokens with available price data. **Tokens without price data will NOT be affected by USD-based policies** — they will bypass these thresholds entirely. Combine with explicit `token_in` allowlists to ensure only priced tokens are permitted.
+> ⚠️ **Important**: USD-based policy conditions (`amount_usd_gt`, `usage_limits.rolling_24h.amount_usd_gt`) only apply to tokens with available price data. **Tokens without price data will NOT be affected by USD-based policies** — they will bypass these thresholds entirely. Always combine USD limits with explicit `token_in` allowlists: this ensures unpriced tokens cannot slip through by bypassing USD checks.
 
 ## Policy Construction Patterns
 
@@ -483,8 +488,8 @@ Get lifecycle event history for a pact.
 
 ### `caw pact revoke <pact-id>`
 
-Revoke an active pact. **Wallet owner only.**
+Revoke an **active** pact. **Wallet owner only.**
 
 ### `caw pact withdraw <pact-id>`
 
-Withdraw a pending pact. **Operator only.**
+Withdraw a **pending_approval** pact before the owner acts on it. **The agent that submitted the pact can call this.** Use when the user wants to cancel a pact that has not yet been approved. This action cannot be undone — the associated approval request is also rejected.

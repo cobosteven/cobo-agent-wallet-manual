@@ -1,6 +1,6 @@
 # Pending Approval
 
-How to handle transactions that return `status=pending_approval` — the required approval flow depends on whether the wallet has an owner linked.
+How to handle transactions that return `status=PendingApproval` — the required approval flow depends on whether the wallet has an owner linked.
 
 ## Check owner_linked
 
@@ -24,15 +24,17 @@ The wallet has no linked owner yet. Approval happens directly in this conversati
 
 Once the user replies:
 - **approve** → call `caw pending approve <pending_operation_id>`
+  - If this call fails (`.success = false`), surface the error to the user and do not retry — the operation may have already expired or been processed.
 - **reject** → call `caw pending reject <pending_operation_id> --reason "<reason>"`
+- **no reply / user unreachable** → do not approve. Wait and notify when the user returns.
 
 The `pending_operation_id` is returned in the original `caw tx transfer` / `caw tx call` response as `result.pending_operation_id`.
 
 ## owner_linked = true — approve in Cobo Agentic Wallet app
 
-The wallet owner must approve via the Cobo Cobo Agentic Wallet app (mobile). Inform the user:
+The wallet owner must approve via the Cobo Agentic Wallet app (mobile). Inform the user:
 
-> "This transaction requires approval from the wallet owner in the Cobo Cobo Agentic Wallet app.
+> "This transaction requires approval from the wallet owner in the Cobo Agentic Wallet app.
 > Transaction ID: `<request_id>`
 > Amount: `<amount>` `<token>` → `<recipient>`
 >
@@ -42,8 +44,21 @@ Do NOT call `caw pending approve` — that requires the owner's credentials. Pol
 
 ```bash
 caw pending get <pending_operation_id>
-# Check .status: pending → approved → (transaction executes) / rejected
+# Check .status field
 ```
+
+Poll every ~10 seconds. Act on `.status`:
+
+| Status | Action |
+|---|---|
+| `pending` | Still waiting — continue polling |
+| `approved` | Transaction will execute automatically — stop polling pending approval, then switch to polling transaction status via `caw tx get --request-id <request-id>` until `Success` |
+| `rejected` | Tell the user the owner declined; ask how to proceed |
+
+**If the owner has not responded after several minutes:** remind the user once:
+> "The transaction is still pending approval in the Cobo Agentic Wallet app. Please check your app when you get a chance."
+
+Then continue polling. Do not resubmit the operation.
 
 ## Getting pending_operation_id
 

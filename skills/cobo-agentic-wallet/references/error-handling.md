@@ -39,7 +39,7 @@ All `caw` commands return JSON on stdout. The envelope shape is consistent acros
 
 ## Exit codes
 
-`caw` distinguishes failure categories via exit code so scripts can branch without parsing JSON:
+Use the exit code to branch without parsing JSON — failure categories map as follows:
 
 | Code | Meaning | Action |
 |------|---------|--------|
@@ -92,7 +92,7 @@ Results are wrapped under `.result` with a `meta` object carrying pagination cur
 
 ## Policy denial (403)
 
-The response includes structured fields:
+When denied, you'll receive structured fields:
 
 ```json
 {
@@ -130,7 +130,7 @@ User asked to send $80; suggestion says "Retry with amount <= 60." The reduced a
 > "Transfer blocked: the per-transaction limit is $60. I can retry with $60 — would you like that, or should the spending limit be raised?"
 
 **Example — daily cumulative limit (do NOT retry):**
-User asked to send 0.005 SETH; denied by daily cumulative limit. Do NOT try smaller amounts or additional transactions. Automatically create a [pact](../SKILL.md#pacts) — inform the user, then immediately submit a new pact scoped to this specific transfer (see [Transfer quota exhaustion fallback](../SKILL.md#transfer-quota-exhaustion-fallback)):
+User asked to send 0.005 SETH; denied by daily cumulative limit. Do NOT try smaller amounts or additional transactions. Automatically create a [pact](./pact.md) — inform the user, then immediately submit a new pact scoped to this specific transfer:
 > "The current spending limit has been reached. I'm submitting a pact for this transfer to the wallet owner."
 
 **Example — owner action required:**
@@ -139,7 +139,7 @@ Suggestion says "Ask the wallet owner to whitelist contract 0xUniswap..." → te
 
 ## Validation error (422)
 
-Missing or invalid parameters. The response includes field-level details:
+Missing or invalid parameters — you'll receive field-level details:
 
 ```json
 {

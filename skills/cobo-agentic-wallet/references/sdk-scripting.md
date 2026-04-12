@@ -218,6 +218,28 @@ console.log(wallets.data.result);
 - **`gasless`**: `false` by default (wallet pays own gas). Set `true` for Cobo Gasless (paired wallets only).
 - **SDK returns unwrapped data**: Python SDK methods return the `result` payload directly. TypeScript SDK responses are in `response.data.result`.
 - **Exceptions on failure**: SDK raises exceptions on HTTP/API errors — catch and report; do not silently retry.
+
+  **Python:**
+  ```python
+  try:
+      result = await client.transfer_tokens(WALLET_UUID, ...)
+  except Exception as e:
+      # Surface the error to the user; do not retry automatically
+      print(f"Transfer failed: {e}")
+      raise
+  ```
+
+  **TypeScript:**
+  ```typescript
+  try {
+      const result = await txApi.transferTokens(WALLET_UUID, { ... });
+      console.log(result.data.result);
+  } catch (e) {
+      // Surface the error to the user; do not retry automatically
+      console.error("Transfer failed:", e);
+      throw e;
+  }
+  ```
 - **Sequential nonce ordering**: On EVM chains, each transaction from the same address must use an incrementing nonce. Submitting a new transaction before the previous one is confirmed on-chain causes nonce conflicts and failures. **Poll and wait for `Success` status (tx confirmed on-chain) before submitting the next transaction.**
 
 ```python
@@ -256,6 +278,34 @@ await wait_for_onchain(client, WALLET_UUID, "batch-002")
 # tx2 = await client.transfer_tokens(...)  # also nonce=5 — conflict!
 ```
 
+When calling `wait_for_onchain`, handle both exception types:
+- **`RuntimeError`** (terminal failure: `Failed`, `Rejected`, `Cancelled`) → stop the sequence and report the failure to the user. Do not submit the next transaction.
+- **`TimeoutError`** (no on-chain confirmation within timeout) → report to the user, then check `caw tx get --request-id <id>` to see the current status before deciding whether to retry or wait longer.
+
+**TypeScript equivalent:**
+
+```typescript
+const ONCHAIN_STATUSES = new Set(["Success"]);
+const TERMINAL_STATUSES = new Set(["Failed", "Rejected", "Cancelled"]);
+
+async function waitForOnchain(
+  txApi: TransactionsApi,
+  requestId: string,
+  timeoutMs = 120_000,
+  intervalMs = 1500,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const resp = await txApi.getTransactionByRequestId(requestId);
+    const status = resp.data.result?.status ?? "";
+    if (ONCHAIN_STATUSES.has(status)) return;
+    if (TERMINAL_STATUSES.has(status)) throw new Error(`Transaction ${requestId} failed: ${status}`);
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new Error(`Transaction ${requestId} not on-chain within ${timeoutMs}ms`);
+}
+```
+
 The same rule applies to CLI scripts — poll with `caw tx get --tx-id <record-uuid>` or `caw tx get --request-id <request-id>` and wait for `status` to be `Success` before firing the next `caw tx transfer` or `caw tx call`.
 
 ## DeFi Operations
@@ -267,14 +317,20 @@ For DeFi protocols (Uniswap V3, Aave V3, Jupiter, DCA, grid trading, Polymarket,
 
 For Solana: build instruction JSON and pass via the `instructions` param instead of `calldata`.
 
-For additional protocol recipes, search the skill repo:
+For additional protocol recipes, use one of two mechanisms:
 
+**1. Built-in recipe knowledge base** (server-side, no install needed):
 ```bash
-npx skills find cobosteven/cobo-agent-wallet-manual "<protocol-name> <chain>"
+caw recipe search "<protocol-name> <chain>"
 # e.g. "uniswap base", "aave arbitrum", "jupiter solana"
 ```
 
-Alternative: `npx clawhub@latest search "cobo <protocol>"`. If a matching recipe is found, install it and follow its instructions.
+**2. External skill packages** (clawhub registry, requires install):
+```bash
+npx skills find cobosteven/cobo-agent-wallet-manual "<protocol-name> <chain>"
+# or: npx clawhub@latest search "cobo <protocol>"
+```
+If a matching skill package is found, install it and follow its instructions. Use this when `caw recipe search` returns no results.
 
 ## Framework Integrations
 

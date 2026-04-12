@@ -1,5 +1,7 @@
 # Onboarding
 
+Covers installation, the `caw onboard` interactive loop, environment configuration, and wallet pairing.
+
 ## 1. Install caw
 
 Run `./scripts/bootstrap-env.sh --env sandbox --only caw` to install caw. caw → `~/.cobo-agentic-wallet/bin/caw`; add that dir to PATH. TSS Node is downloaded automatically during onboard when needed.
@@ -44,9 +46,6 @@ Use `phase` + `bootstrap_stage` + `wallet_status` to track progress.
 
 When `needs_input` is false, **immediately show the `message` to the user** and follow `next_action` (for wallet activation, the CLI usually suggests polling about every 10 seconds — use the exact interval in `next_action` if it differs). Do not analyze or deliberate on the response — just relay the message and execute the next action.
 
-Without `--session-id`, starts a new onboarding. With `--session-id <SESSION_ID>`, resumes that session.
-If the provided `--session-id` does not exist, the CLI creates a new session automatically.
-
 See [Error Handling](./error-handling.md#onboarding-errors) for common onboarding errors.
 
 ## Environment
@@ -79,8 +78,13 @@ The user completes the pairing in the **Cobo Agentic Wallet app** by entering th
 - Agent becomes a delegate, authorized to operate within the owner's configured rules
 - Operations outside those rules require the agent to submit a pact for human approval
 
-Use `pair-status` to check state: `not_found`, `valid` (pending, waiting for user), `expired`, or `claimed` (complete).
+Use `pair-status` to check state and act accordingly:
 
-If the code expires before the user pairs, re-run `caw wallet pair` to generate a new code.
+| Status | Meaning | Action |
+|---|---|---|
+| `valid` | Code issued, waiting for user | Share the code with the user; keep polling |
+| `claimed` | Pairing complete | Proceed — ownership transferred |
+| `expired` | Code timed out (30 min) | Re-run `caw wallet pair` to generate a new code |
+| `not_found` | No pairing request on record | Re-run `caw wallet pair` to start a new pairing |
 
 **Pair status tracking**: `--context` is **required** for `caw wallet pair`. In an openclaw environment, pass `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<session-id>"}'` — `session_id` is a string from `openclaw sessions --json --agent <agent>`. If not running in openclaw or notification context is unavailable, pass `--context '{"openclaw": false}'`. When the terminal notification is delivered (claimed/expired), continue any established next steps from the conversation context.

@@ -155,6 +155,21 @@ Recipes **inform** pact generation; they do not replace owner approval or policy
 
 After onboarding, the owner can pair the wallet to transfer ownership from agent to human. Run `caw wallet pair` to generate a code; tell the owner to enter it in the Cobo Agentic Wallet app. After pairing, the agent becomes a delegate — on-chain operations require a pact approved by the human owner.
 
+#### Session Recovery (Agent Restart)
+
+When you restart (new session), check for in-progress work from the previous session:
+
+```
+caw pact list --status active
+```
+
+This returns all active pacts awaiting execution. For each one:
+1. **Read the pact**: `caw pact get <pact-id>` to understand the intent and execution plan
+2. **Check execution progress**: `caw tx get` to see which steps are complete and which remain
+3. **Resume execution**: Execute remaining steps in the program
+
+This ensures that interrupted work is not lost and deadlines are met.
+
 ---
 
 ### Fulfilling a Goal
@@ -191,7 +206,7 @@ First check `caw pact list` — if an existing pact already covers this goal, re
 
 After submit, track with `caw track --watch`.
 
-- **When `active` notification arrives**: reply immediately, then execute as a background task — do not synchronously wait for the transaction result before replying.
+- **When `active` notification arrives**: reply immediately, then execute as a background task — do not synchronously wait for the transaction result before replying. See [Act on Result](./references/pact.md#act-on-result).
 - **Rejected** → tell the owner, offer to revise with narrower scope and resubmit.
 - **Revoked / expired / completed** → stop immediately, notify the owner, offer a new pact if the goal is unmet.
 
@@ -201,14 +216,14 @@ All transactions (transfers, contract calls, message signing) run inside a pact.
 
 - **`--request-id` idempotency**: Always set a unique, deterministic request ID per logical transaction (e.g. `invoice-001`, `swap-20240318-1`). Retrying with the same `--request-id` is safe — the server deduplicates.
 - **`<pact-id>` (required positional arg)**: `caw tx transfer`, `caw tx call`, and `caw tx sign-message` all take `<pact-id>` as the first positional argument. The CLI resolves the wallet UUID and API key from the pact automatically — do not pass `--wallet-id` separately.
-- **`--context` (required)**: Required for `caw tx transfer`, `caw tx call`, `caw tx sign-message`, `caw pact submit`, and `caw wallet pair`. Identifies the caller environment so approval notifications can be routed back to the right conversation. Two forms:
-  - **Running under openclaw**: openclaw provides `channel` (e.g. `discord`, `telegram`) and `target` (user/chat identifier) as notification context when it invokes you; pass them through as-is. Look up `session_id` via `openclaw sessions --json --agent <agent>`. Pass:
-    `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<session-id>"}'`
-  - **Not running under openclaw** (Claude Code CLI, scripts, local shell): `--context '{"openclaw": false}'`
+- **`--context` (required)**: Required for `caw tx transfer`, `caw tx call`, `caw tx sign-message`, `caw pact submit`, and `caw wallet pair`. Identifies the caller environment so status notifications are routed back to the right conversation. Two forms:
+  - **Running under openclaw**: `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<session-id>"}'` — `session_id` is a string from `openclaw sessions --json --agent <agent>`. This enables status notifications back to the user.
+  - **Not running under openclaw** (Claude Code CLI, scripts, local shell): `--context '{"openclaw": false}'` — skips notification dispatch.
 - **Sequential execution for same-address transactions (nonce ordering)**: On EVM chains, each transaction from the same address must use an incrementing nonce. **Wait for each transaction to reach `Success` status (tx is confirmed on-chain) before submitting the next one.** Poll with `caw tx get --request-id <request-id>` and check `.status` — the lifecycle is `Initiated → PendingApproval → Approved → Processing → Pending → Success`. `.status` is a literal string field — match it with exact string equality against one of: `Initiated`, `PendingApproval`, `Approved`, `Processing`, `Pending`, `Success`, `Failed`, `Rejected`, `Cancelled`. Do not do substring or prefix matching.
 - **Never use a contract address from memory**. Token addresses: query `caw meta tokens --token-ids <id>`. Protocol addresses: source from the protocol's official documentation or from the user's input. If the source is unclear, ask the user to provide or verify the address before submitting.
 - **Multi-step operations** (DeFi strategies, loops, conditional logic, automation): write a script using the SDK, then run it. Store in `./scripts/` and reuse existing scripts over creating new ones. See [sdk-scripting.md](./references/sdk-scripting.md).
 - **`status=PendingApproval`**: The transaction requires owner approval before it executes. Follow [pending-approval.md](./references/pending-approval.md).
+- **After submitting a transaction** (`caw tx transfer` / `caw tx call` / `caw tx sign-message`): reply with a brief summary — tx ID, status, amount/token, and original intent if applicable.
 
 **When an operation is denied**: Report the denial and the `suggestion` field to the user. If the suggestion offers a parameter adjustment (e.g. "Retry with amount <= 60") that still fulfills the user's intent, you may retry with the adjusted value. If the denial is a cumulative limit, submit a new pact scoped to this transfer. See [error-handling.md](./references/error-handling.md).
 
@@ -413,49 +428,49 @@ Full list: `caw meta chains`.
 
 *Native tokens — mainnet*
 
-| Chain | token_id        |
-|---|-----------------|
-| Ethereum | `ETH`           |
-| Base | `BASE_ETH`      |
-| Arbitrum | `ARBITRUM_ETH`  |
-| Optimism | `OPT_ETH`       |
-| Polygon | `MATIC`         |
-| BNB Chain | `BSC_BNB`       |
-| Avalanche | `AVAXC`         |
-| Solana | `SOL`           |
-| Tempo | `TEMPO_PATHUSD` |
+| Chain | token_id | chain_id |
+|---|---|---|
+| Ethereum | `ETH` | `ETH` |
+| Base | `BASE_ETH` | `BASE_ETH` |
+| Arbitrum | `ARBITRUM_ETH` | `ARBITRUM_ETH` |
+| Optimism | `OPT_ETH` | `OPT_ETH` |
+| Polygon | `MATIC` | `MATIC` |
+| BNB Chain | `BSC_BNB` | `BSC_BNB` |
+| Avalanche | `AVAXC` | `AVAXC` |
+| Solana | `SOL` | `SOL` |
+| Tempo | `TEMPO_PATHUSD` | `TEMPO_TEMPO` |
 
 *Native tokens — testnet*
 
-| Chain | token_id |
-|---|---|
-| Ethereum Sepolia | `SETH` |
-| Base Sepolia | `TBASE_SETH` |
-| Solana Devnet | `SOLDEV_SOL` |
-| Tempo Testnet | `TTEMPO_PATHUSD` |
+| Chain | token_id | chain_id |
+|---|---|---|
+| Ethereum Sepolia | `SETH` | `SETH` |
+| Base Sepolia | `TBASE_SETH` | `TBASE_SETH` |
+| Solana Devnet | `SOLDEV_SOL` | `SOLDEV_SOL` |
+| Tempo Testnet | `TTEMPO_PATHUSD` | `TTEMPO_TEMPO` |
 
 *Stablecoins — mainnet*
 
-| Token | Chain | Token ID |
-|---|---|---|
-| USDT | Arbitrum | `ARBITRUM_USDT` |
-| USDT | Avalanche | `AVAXC_USDT` |
-| USDT | Base | `BASE_USDT` |
-| USDT | BNB Chain | `BSC_USDT` |
-| USDT | Solana | `SOL_USDT` |
-| USDC | Arbitrum | `ARBITRUM_USDCOIN` |
-| USDC | Avalanche | `AVAXC_USDC` |
-| USDC | Base | `BASE_USDC` |
-| USDC | BNB Chain | `BSC_USDC` |
-| USDC | Solana | `SOL_USDC` |
+| Token | Chain | token_id | chain_id |
+|---|---|---|---|
+| USDT | Arbitrum | `ARBITRUM_USDT` | `ARBITRUM_ETH` |
+| USDT | Avalanche | `AVAXC_USDT` | `AVAXC` |
+| USDT | Base | `BASE_USDT` | `BASE_ETH` |
+| USDT | BNB Chain | `BSC_USDT` | `BSC_BNB` |
+| USDT | Solana | `SOL_USDT` | `SOL` |
+| USDC | Arbitrum | `ARBITRUM_USDCOIN` | `ARBITRUM_ETH` |
+| USDC | Avalanche | `AVAXC_USDC` | `AVAXC` |
+| USDC | Base | `BASE_USDC` | `BASE_ETH` |
+| USDC | BNB Chain | `BSC_USDC` | `BSC_BNB` |
+| USDC | Solana | `SOL_USDC` | `SOL` |
 
 *Stablecoins — testnet*
 
-| Token | Chain | Token ID |
-|---|---|---|
-| USDC | Ethereum Sepolia | `SETH_USDC` |
-| USDT | Ethereum Sepolia | `SETH_USDT` |
-| USDC | Solana Devnet | `SOLDEV_SOL_USDC` |
+| Token | Chain | token_id | chain_id |
+|---|---|---|---|
+| USDC | Ethereum Sepolia | `SETH_USDC` | `SETH` |
+| USDT | Ethereum Sepolia | `SETH_USDT` | `SETH` |
+| USDC | Solana Devnet | `SOLDEV_SOL_USDC` | `SOLDEV_SOL` |
 
 Full list: `caw meta tokens`. Filter by chain: `caw meta tokens --chain-ids BASE_ETH`. Filter by token ID: `caw meta tokens --token-ids ARBITRUM_USDT,BASE_USDC`.
 

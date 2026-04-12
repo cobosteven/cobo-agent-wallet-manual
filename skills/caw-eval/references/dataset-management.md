@@ -1,6 +1,6 @@
-# Dataset Management
+# 数据集管理
 
-How to create, select, and update the CAW eval test dataset in Langfuse.
+创建、选择、更新 CAW 评测数据集。当用户需要创建新数据集或修改测试用例时，按以下步骤操作。
 
 ---
 
@@ -41,28 +41,24 @@ How to create, select, and update the CAW eval test dataset in Langfuse.
 
 ---
 
-## Option A — 使用内置数据集
+## 已有数据集
 
-默认数据集 `caw-agent-eval-v1` 已上传到 Langfuse，包含 22 个测试用例覆盖 9 类场景。
+| 数据集 | case 数 | 说明 |
+|--------|:-------:|------|
+| `caw-agent-eval-seth-v2` | 14 | **默认**，SETH 测试链，含完整 expected_output |
+| `caw-agent-eval-seth-v1` | 14 | 旧版，expected_output 不完整 |
+| `caw-agent-eval-v1` | 22 | 主网场景，sandbox 环境无法执行大部分 case |
 
 ```bash
 # 验证数据集可访问
 cd <repo>/cobo-agent-wallet
-.venv/bin/python - <<'EOF'
-from langfuse import Langfuse
-lf = Langfuse()
-ds = lf.get_dataset("caw-agent-eval-v1")
-print(f"Found {len(ds.items)} items")
-for item in ds.items[:5]:
-    print(f"  {item.id}: {item.input['user_message'][:60]}")
-EOF
+.venv/bin/python sdk/skills/caw-eval/scripts/run_eval_cc.py prepare \
+  --dataset-name caw-agent-eval-seth-v2
 ```
-
-如果输出 items 列表，数据集已就绪，直接进入执行阶段。
 
 ---
 
-## Option B — 创建 / 重新上传数据集
+## 创建 / 重新上传数据集
 
 当需要创建新数据集或重置现有数据集时：
 
@@ -88,7 +84,7 @@ cd <repo>/cobo-agent-wallet
 
 ---
 
-## Option C — 修改测试场景
+## 修改测试场景
 
 测试场景定义在 `scripts/generate_dataset.py` 的 `SCENARIO_RULES` 列表中。每条规则对应一类场景，包含多个难度变体（L1/L2/L3）。
 
@@ -146,7 +142,7 @@ from langfuse import Langfuse
 
 lf = Langfuse()
 lf.create_dataset_item(
-    dataset_name="caw-agent-eval-v1",
+    dataset_name="caw-agent-eval-seth-v2",
     id="E2E-10L1",
     input={"user_message": "..."},
     expected_output={"pact_hints": {...}, "success_criteria": "..."},
