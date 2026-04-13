@@ -72,7 +72,7 @@ pip install langfuse python-dotenv
 
 弱模型读 `caw-eval-openclaw` skill 后，自动执行：
 1. 运行 `prepare` 生成所有 task prompt
-2. 逐个调 `task subagent` 执行 14 个 case
+2. 并行调 `task subagent` 执行 14 个 case（保持 3 个并发）
 3. 运行 `collect` + `pack` 收集并打包 session
 
 完成后会输出打包文件路径和下载命令。

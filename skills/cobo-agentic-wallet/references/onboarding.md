@@ -21,6 +21,8 @@ If the user **already has** an invitation code before starting, pass it on the *
 caw onboard --env sandbox --invitation-code <CODE>
 ```
 
+**Agent name (optional):** Pass `--agent-name <NAME>` on an onboard call (for example together with `--invitation-code`). This sets the agent display name when provisioning and, when present, the new MPC wallet is created with display name `<NAME>'s Wallet` (e.g. `Lobster's Wallet`). After you have a `session_id`, keep passing the same `--session-id` on follow-up calls.
+
 > **CRITICAL:** The shortcut commands above are for the **first call only**. Once you have called `caw onboard` and received a `session_id`, you **MUST** include `--session-id <SESSION_ID>` on **every** subsequent call — even when adding `--invitation-code`. Omitting `--session-id` starts a brand-new session, discarding prior progress and TSS prewarm work.
 
 **How the interactive loop works:**
@@ -82,4 +84,4 @@ Use `pair-status` to check state and act accordingly. Poll every **10 seconds**:
 
 If the user is unreachable before the code expires, stop polling and notify when they return.
 
-**Pair status tracking**: `--context` is **required** for `caw wallet pair`. In an openclaw environment, pass `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<session-id>"}'` — `session_id` is a string from `openclaw sessions --json --agent <agent>`. If not running in openclaw or notification context is unavailable, pass `--context '{"openclaw": false}'`. When the terminal notification is delivered (claimed/expired), continue any established next steps from the conversation context.
+**Pair status tracking**: `--context` is **required** for `caw wallet pair`. In an openclaw environment, pass `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<session-id>"}'` — `session_id` is a string from `openclaw sessions --json --agent <agent>`. If not running in openclaw or notification context is unavailable, pass `--context '{"notification": false}'`. When the terminal notification is delivered (claimed/expired), continue any established next steps from the conversation context.

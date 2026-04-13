@@ -617,9 +617,17 @@ class SessionUploader:
                         "session_id": sid,
                         "model": model,
                         "turns": len(turns),
+                        # 面向展示：用户指令和 case 信息（从 extra_metadata 提取）
+                        **{
+                            k: v
+                            for k, v in (extra_metadata or {}).items()
+                            if k in ("item_id", "user_message", "operation_type", "difficulty")
+                            and v
+                        },
                     }
                 ),
                 metadata={
+                    # 结构化查询字段（供 ClickHouse JSONExtract 使用）
                     "skill": self.skill,
                     "model": model,
                     "provider": prov,
@@ -630,7 +638,11 @@ class SessionUploader:
                     "session_started_at": _ns_to_iso(start_ns, now_iso),
                     "session_ended_at": _ns_to_iso(last_ns, now_iso),
                     "host": f"{getpass.getuser()}@{socket.gethostname()}",
-                    **(extra_metadata or {}),
+                    **{
+                        k: v
+                        for k, v in (extra_metadata or {}).items()
+                        if k in ("item_id", "operation_type", "difficulty") and v
+                    },
                 },
             ),
         )
