@@ -193,7 +193,7 @@ The provided code is invalid or has already been consumed.
 
 TSS Node connected to the wrong environment. Check `--env` parameter matches the setup token's environment (sandbox/dev).
 
-**Recovery:** Stop TSS Node, clean up state (see SKILL.md Reset/Cleanup), then re-run `caw onboard` with the correct `--env` and same `--session-id` / `--invitation-code` as needed.
+**Recovery:** Stop TSS Node, clean up state, then re-run `caw onboard` with the correct `--env` and same `--session-id` / `--invitation-code` as needed.
 
 ### `Timed out waiting for wallet activation`
 

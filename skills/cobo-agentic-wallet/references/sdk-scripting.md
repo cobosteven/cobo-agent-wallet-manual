@@ -28,6 +28,12 @@ The SDK is available in **Python** and **TypeScript**. Choose whichever fits you
    - Design for reuse: parameterize all inputs via CLI args or env vars
    - Include docstring/JSDoc explaining usage and parameters
 
+## Prerequisites
+
+- `python3` — required for the Python SDK
+- `node` / `npm` — required for the TypeScript SDK and DeFi calldata encoding. Install from https://nodejs.org if absent.
+- `ethers` — required by several DeFi recipes: `npm install ethers`
+
 ## Install
 
 **Python:**
@@ -116,6 +122,7 @@ balances = await client.list_balances(WALLET_UUID)
 
 result = await client.transfer_tokens(
     WALLET_UUID,
+    pact_id="<pact-id>",
     dst_addr="0x1234...abcd",
     token_id="ETH_USDC",
     amount="10",
@@ -125,21 +132,13 @@ result = await client.transfer_tokens(
 
 **Contract call (EVM):**
 
-Encode calldata with the CLI, then call the contract in your script:
-
-```bash
-# Step 1: encode calldata
-caw util abi encode --method "transfer(address,uint256)" --args '["0x...", "1000000"]'
-# -> 0xa9059cbb...
-```
-
 ```python
-# Step 2: submit in script
 result = await client.contract_call(
     WALLET_UUID,
+    pact_id="<pact-id>",
     chain_id="ETH",
     contract_addr="0x...",
-    calldata="0xa9059cbb...",  # from step 1
+    calldata="0xa9059cbb...",  # ABI-encoded calldata
     request_id="call-001",
 )
 ```
@@ -170,6 +169,7 @@ console.log(balances.data.result);
 
 ```typescript
 const result = await txApi.transferTokens(WALLET_UUID, {
+  pact_id: "<pact-id>",
   dst_addr: "0x1234...abcd",
   token_id: "ETH_USDC",
   amount: "10",
@@ -180,18 +180,12 @@ console.log(result.data.result);
 
 **Contract call (EVM):**
 
-```bash
-# Step 1: encode calldata
-caw util abi encode --method "transfer(address,uint256)" --args '["0x...", "1000000"]'
-# -> 0xa9059cbb...
-```
-
 ```typescript
-// Step 2: submit in script
 const result = await txApi.contractCall(WALLET_UUID, {
+  pact_id: "<pact-id>",
   chain_id: "ETH",
   contract_addr: "0x...",
-  calldata: "0xa9059cbb...",
+  calldata: "0xa9059cbb...",  // ABI-encoded calldata
   request_id: "call-001",
 });
 console.log(result.data.result);
@@ -267,10 +261,10 @@ async def wait_for_onchain(client: WalletAPIClient, wallet_uuid: str, request_id
     raise TimeoutError(f"Transaction {request_id} not on-chain within {timeout}s")
 
 # Correct: wait for each tx to be on-chain before sending the next
-tx1 = await client.transfer_tokens(WALLET_UUID, dst_addr="0xA...", token_id="ETH_USDC", amount="10", request_id="batch-001")
+tx1 = await client.transfer_tokens(WALLET_UUID, pact_id="<pact-id>", dst_addr="0xA...", token_id="ETH_USDC", amount="10", request_id="batch-001")
 await wait_for_onchain(client, WALLET_UUID, "batch-001")
 
-tx2 = await client.transfer_tokens(WALLET_UUID, dst_addr="0xB...", token_id="ETH_USDC", amount="20", request_id="batch-002")
+tx2 = await client.transfer_tokens(WALLET_UUID, pact_id="<pact-id>", dst_addr="0xB...", token_id="ETH_USDC", amount="20", request_id="batch-002")
 await wait_for_onchain(client, WALLET_UUID, "batch-002")
 
 # Wrong: fire-and-forget causes nonce conflicts
@@ -312,7 +306,7 @@ The same rule applies to CLI scripts — poll with `caw tx get --tx-id <record-u
 
 For DeFi protocols (Uniswap V3, Aave V3, Jupiter, DCA, grid trading, Polymarket, Drift perps):
 
-1. Encode calldata using `caw util abi encode`
+1. Encode calldata using the protocol's ABI (e.g. via `ethers.js` or `web3.py`)
 2. Submit via `client.contract_call()` (Python) or `txApi.contractCall()` (TypeScript) in your script
 
 For Solana: build instruction JSON and pass via the `instructions` param instead of `calldata`.
@@ -344,3 +338,7 @@ Drop the Python SDK as a toolkit into any agent framework:
 | CrewAI | `pip install cobo-agentic-wallet[crewai]` | `from cobo_agentic_wallet.integrations.crewai import CoboAgentWalletCrewAIToolkit` |
 | MCP | `pip install cobo-agentic-wallet[mcp]` | `python -m cobo_agentic_wallet.mcp` |
 
+
+---
+
+After writing and running a script, return to the main execution flow in SKILL.md. For transaction status polling and error handling, see [error-handling.md](./error-handling.md).

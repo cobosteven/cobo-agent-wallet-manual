@@ -17,7 +17,7 @@ Any task that uses `caw tx transfer`, `caw tx call`, or `caw tx sign-message` re
     - **Network error** (exit code 7) → wait and retry once; if still fails, report to the user.
     - **Do not resubmit** without fixing the root cause — duplicate submits create duplicate pacts.
 - Inform the user the pact has been submitted.
-  - If **not paired**: tell the user the pact will be automatically approved and execution will begin once active.
+  - If **not paired**: tell the user the pact is automatically activated — no owner approval required since the wallet has no linked owner yet.
   - If **paired**: remind the user to approve in the **Cobo Agentic Wallet app**.
 - Start tracking: `caw track --watch` polls pact status and sends a notification when the status changes.
 
@@ -27,9 +27,19 @@ Any task that uses `caw tx transfer`, `caw tx call`, or `caw tx sign-message` re
   - Reply: "Pact approved — executing now."
   - Execute as a background task — do not synchronously wait for the transaction result before replying to the user. Pass `<pact_id>` as the first argument.
     ```bash
-    caw tx transfer <pact_id> --token-id USDC --to 0x... --amount 10 ...
-    caw tx call <pact_id> --chain-id BASE_ETH --contract 0x... --calldata 0x...
-    caw tx sign-message <pact_id> --chain-id ETH --destination-type eip712 --eip712-typed-data '{...}'
+    caw tx transfer <pact_id> \
+      --token-id BASE_USDC --to 0xRecipient... --amount 10 \
+      --request-id pay-001 \
+      --context '{"channel":"<channel>","target":"<target>","session_id":"<session-id>"}'
+
+    caw tx call <pact_id> \
+      --chain-id BASE_ETH --contract 0xContract... --calldata 0x... \
+      --request-id call-001 \
+      --context '{"channel":"<channel>","target":"<target>","session_id":"<session-id>"}'
+
+    caw tx sign-message <pact_id> \
+      --chain-id ETH --destination-type eip712 --eip712-typed-data '{...}' \
+      --context '{"channel":"<channel>","target":"<target>","session_id":"<session-id>"}'
     ```
   - Return the transaction result.
 
@@ -102,7 +112,7 @@ You write 4–8 steps covering: preconditions, main operations, monitoring, erro
 
 Your job: Derive `--policies` and `--completion-conditions` from the intent and execution plan.
 
-**Policy** — grant only what the execution plan needs, nothing more. Use the recipe from Step 2 as a guide. Anything not explicitly matched by a `when` condition will be denied — there is no implicit pass-through. See [Policy Reference](#policy-reference---policies) for supported fields and schema.
+**Policy** — use the recipe from Step 2 as a guide. Anything not explicitly matched by a `when` condition will be denied — there is no implicit pass-through. See [Policy Reference](#policy-reference---policies) for supported fields and schema.
 
 **Completion conditions** — when should the pact be considered done? Derive from the intent (e.g. one-time → `tx_count: 1`, monthly DCA for 6 months → `time_elapsed: 15552000` or `tx_count: 6`). See [Completion Conditions](#completion-conditions---completion-conditions) for supported types.
 
@@ -418,56 +428,6 @@ Matching operations require owner approval before execution.
 
 > ⚠️ **Important**: USD-based policy conditions (`amount_usd_gt`, `usage_limits.rolling_24h.amount_usd_gt`) only apply to tokens with available price data. **Tokens without price data will NOT be affected by USD-based policies** — they will bypass these thresholds entirely. Always combine USD limits with explicit `token_in` allowlists: this ensures unpriced tokens cannot slip through by bypassing USD checks.
 
-## Policy Construction Patterns
-
-### Pattern: Allow with Inline Limits
-
-"Allow Uniswap V3 swaps on Base, max 5 txs/day":
-
-```json
-[
-  {
-    "name": "dca-uniswap-allow",
-    "type": "contract_call",
-    "rules": {
-      "effect": "allow",
-      "when": {
-        "chain_in": ["BASE_ETH"],
-        "target_in": [{ "chain_id": "BASE_ETH", "contract_addr": "0x2626664c2603336E57B271c5C0b26F421741e481" }]
-      },
-      "deny_if": {
-        "usage_limits": { "rolling_24h": { "tx_count_gt": 5 } }
-      }
-    }
-  }
-]
-```
-
-### Pattern: Transfer with Allowlist + Limits
-
-"Allow USDC transfers on Base to a specific address, deny above $1000/tx or $5000/day":
-
-```json
-[
-  {
-    "name": "usdc-transfer-allow",
-    "type": "transfer",
-    "rules": {
-      "effect": "allow",
-      "when": {
-        "chain_in": ["BASE_ETH"],
-        "token_in": [{ "chain_id": "BASE_ETH", "token_id": "BASE_USDC" }],
-        "destination_address_in": [{ "chain_id": "BASE_ETH", "address": "0xRecipientAddress..." }]
-      },
-      "deny_if": {
-        "amount_usd_gt": "1000",
-        "usage_limits": { "rolling_24h": { "amount_usd_gt": "5000" } }
-      }
-    }
-  }
-]
-```
-
 ## CLI Command Reference
 
 ### `caw pact submit`
@@ -480,7 +440,7 @@ Show full details of a specific pact. Triggers lazy activation if approved.
 
 ### `caw pact list`
 
-List pacts with optional filters: `--status`, `--wallet-id`, `--limit`, `--offset`.
+List pacts with optional filters: `--status`, `--wallet-id`, `--limit`. Use `--after`/`--before` for cursor pagination.
 
 ### `caw pact events <pact-id>`
 
@@ -493,3 +453,7 @@ Revoke an **active** pact. **Wallet owner only.**
 ### `caw pact withdraw <pact-id>`
 
 Withdraw a **pending_approval** pact before the owner acts on it. **The agent that submitted the pact can call this.** Use when the user wants to cancel a pact that has not yet been approved. This action cannot be undone — the associated approval request is also rejected.
+
+---
+
+After reading: execute transactions under the active pact via `caw tx transfer`, `caw tx call`, or `caw tx sign-message`. If a transaction returns `status=PendingApproval`, see [pending-approval.md](./pending-approval.md).

@@ -16,6 +16,8 @@ Or read it from the response of any `caw status` call earlier in the conversatio
 
 The wallet has no linked owner yet. Approval happens directly in this conversation — the user decides, and the agent executes their decision. Ask the user to reply with their decision directly in the chat:
 
+> Note: pending operations expire after a period of inactivity. If the user is unreachable, do not approve. Wait for the user to return before proceeding.
+
 > "This transaction requires your approval before it can proceed.
 > Transaction ID: `<request_id>`
 > Amount: `<amount>` `<token>` → `<recipient>`
@@ -52,8 +54,22 @@ Poll every ~10 seconds. Act on `.status`:
 | Status | Action |
 |---|---|
 | `pending` | Still waiting — continue polling |
-| `approved` | Transaction will execute automatically — stop polling pending approval, then switch to polling transaction status via `caw tx get --request-id <request-id>` until `Success` |
+| `approved` | See **After approval** below |
 | `rejected` | Tell the user the owner declined; ask how to proceed |
+
+**After approval:**
+
+Stop polling pending status. Switch to polling transaction status:
+
+```bash
+caw tx get --request-id <request-id>
+# Poll until terminal state
+```
+
+| TX Status | Action |
+|---|---|
+| `Success` | Report completion to the user |
+| `Failed` / `Rejected` / `Cancelled` | Report the failure; ask how to proceed |
 
 **If the owner has not responded after several minutes:** remind the user once:
 > "The transaction is still pending approval in the Cobo Agentic Wallet app. Please check your app when you get a chance."
@@ -73,3 +89,7 @@ If the transfer was submitted earlier and you no longer have the response, list 
 ```bash
 caw pending list | jq '.result.items[] | select(.request_id == "<request_id>")'
 ```
+
+---
+
+Once the approval flow completes (approved or rejected), return to the transaction execution flow in SKILL.md.
