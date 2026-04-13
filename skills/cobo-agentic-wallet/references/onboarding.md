@@ -13,7 +13,7 @@ export PATH="$HOME/.cobo-agentic-wallet/bin:$PATH"
 caw onboard --env sandbox
 ```
 
-If the user already has an invitation code **before starting**, pass it directly on the **first call** to skip the waitlist and credential prompts:
+If the user **already has** an invitation code before starting, pass it on the **first call** so provisioning runs immediately — you skip the “get an invitation code” step below.
 
 ```bash
 # Invitation code from Cobo — you own the wallet initially, with limited functionality.
@@ -33,14 +33,10 @@ caw onboard --env sandbox --invitation-code <CODE>
 Example follow-up call:
 
 ```bash
-caw onboard --session-id <SESSION_ID> --env sandbox --answers '{"security_ack":true}'
+caw onboard --session-id <SESSION_ID> --env sandbox
 ```
 
 Use `phase` + `bootstrap_stage` + `wallet_status` to track progress.
-
-**Assistants / LLM agents:** When `needs_input` is true, read `prompts` and present each question to the **user**; only pass `--answers` with keys matching the current prompt `id` values after you have their input. **Do not** pass `{"skip_phase":true}` unless the user explicitly asks to skip that optional step—`skip_phase` completes the pending phase without collecting those answers, which is only for explicit opt-out.
-
-When `needs_input` is false, **immediately show the `message` to the user** and follow `next_action` (for wallet activation, the CLI usually suggests polling about every 10 seconds — use the exact interval in `next_action` if it differs). Do not analyze or deliberate on the response — just relay the message and execute the next action.
 
 See [Error Handling](./error-handling.md#onboarding-errors) for common onboarding errors.
 

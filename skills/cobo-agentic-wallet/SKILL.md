@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.04.13.1"
+  version: "2026.04.13.2"
 description: |
   Create and manage agentic wallets with Cobo. Use for autonomous onchain
   operations via the caw CLI: token transfers, contract calls, pact creation
