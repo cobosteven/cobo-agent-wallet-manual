@@ -97,7 +97,7 @@ tar xzf ~/Downloads/eval-oc-*.tar.gz -C /tmp/oc-sessions/
 
 ```
 读 cobo-agent-wallet/sdk/skills/caw-eval/SKILL.md
-导入 /tmp/oc-sessions/ 的 openclaw session，run name 为 eval-oc-weak-YYYYMMDD，然后评分出报告
+导入 /tmp/oc-sessions/ 的 openclaw session，run name 为 eval-oc-weak-YYYYMMDD-HHMM，然后评分出报告
 ```
 
 Claude Code 自动执行：import-sessions → LLM Judge 评分 → 上传 Langfuse → 生成报告。

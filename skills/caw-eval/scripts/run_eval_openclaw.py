@@ -33,7 +33,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from eval_utils import get_dataset_items, get_langfuse_client, link_to_dataset_run, upload_session
+from eval_utils import batch_upload_sessions, get_dataset_items
 
 _SCRIPTS_DIR = Path(__file__).parent
 
@@ -230,31 +230,7 @@ def cmd_upload(
         print(f"[ERROR] Run 目录不存在: {run_dir}")
         sys.exit(1)
 
-    session_files = sorted(run_dir.glob("E2E-*.jsonl"))
-    if item_ids:
-        session_files = [f for f in session_files if f.stem in item_ids]
-
-    if not session_files:
-        print("[ERROR] 没有找到 session 文件")
-        sys.exit(1)
-
-    lf = get_langfuse_client()
-
-    print(f"=== 上传 {len(session_files)} 个 session (run: {run_name}) ===\n")
-
-    for session_file in session_files:
-        item_id = session_file.stem
-        print(f"  [{item_id}] uploading...")
-
-        trace_id = upload_session(str(session_file), skill)
-        if trace_id:
-            print(f"    [INFO] trace_id: {trace_id}")
-            link_to_dataset_run(lf, dataset_name, item_id, run_name, trace_id)
-        else:
-            print(f"    [ERROR] Upload failed for {item_id}")
-
-    lf.flush()
-    print("\n上传完成")
+    batch_upload_sessions(run_dir, run_name, dataset_name, skill, item_ids)
 
 
 # ── pack 子命令 ────────────────────────────────────────────────────────────────
@@ -285,7 +261,7 @@ def cmd_pack(run_name: str) -> None:
 
 
 def main() -> None:
-    ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d")
+    ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d-%H%M")
 
     parser = argparse.ArgumentParser(
         description="Openclaw 弱模型评测脚本（三层分离方案的服务器端）",

@@ -555,8 +555,21 @@ class SessionUploader:
         self.skill = skill_name
         self.trace_name = trace_name
 
-    def upload(self, session: dict, lf, user_id: str = "") -> str | None:
-        """上传 session 到 Langfuse，返回 trace_id（即 session_id）或 None。"""
+    def upload(
+        self,
+        session: dict,
+        lf,
+        user_id: str = "",
+        trace_id: str = "",
+        extra_metadata: dict | None = None,
+    ) -> str | None:
+        """上传 session 到 Langfuse，返回 trace_id 或 None。
+
+        Args:
+            trace_id: 外部指定的 Langfuse trace ID。为空时使用 session_id。
+            extra_metadata: 额外的上下文信息（如 item_id、user_message 等），
+                           合并到 trace 的 input 和 metadata 中。
+        """
         import uuid as _uuid
         from langfuse.api import TraceBody, IngestionEvent_TraceCreate
 
@@ -564,7 +577,7 @@ class SessionUploader:
         turns = build_turns(evts)
         tr_idx = build_tool_result_index(evts)
 
-        sid = session["session_id"]
+        sid = trace_id or session["session_id"]
         model = session["model"]
         prov = session["provider"]
 
@@ -599,7 +612,13 @@ class SessionUploader:
                 user_id=user_id,
                 timestamp=now_iso,
                 tags=["openclaw", "caw-eval"],
-                input=safe_str({"session_id": sid, "model": model, "turns": len(turns)}),
+                input=safe_str(
+                    {
+                        "session_id": sid,
+                        "model": model,
+                        "turns": len(turns),
+                    }
+                ),
                 metadata={
                     "skill": self.skill,
                     "model": model,
@@ -611,6 +630,7 @@ class SessionUploader:
                     "session_started_at": _ns_to_iso(start_ns, now_iso),
                     "session_ended_at": _ns_to_iso(last_ns, now_iso),
                     "host": f"{getpass.getuser()}@{socket.gethostname()}",
+                    **(extra_metadata or {}),
                 },
             ),
         )
@@ -912,8 +932,10 @@ def upload_session_file(
     user_id: str = "",
     skill_name: str = "cobo-agentic-wallet-sandbox",
     trace_name: str = "",
+    trace_id: str = "",
+    extra_metadata: dict | None = None,
 ) -> str | None:
-    """上传单个 session.jsonl 直接到 Langfuse。返回 session_id 或 None。"""
+    """上传单个 session.jsonl 直接到 Langfuse。返回实际使用的 trace_id 或 None。"""
     try:
         lf = _make_langfuse()
     except RuntimeError as e:
@@ -925,7 +947,9 @@ def upload_session_file(
     print(f"[INFO] Parsed {session['session_id']}  model={session['model']}  events={len(evts)}")
 
     uploader = SessionUploader(skill_name, trace_name=trace_name)
-    return uploader.upload(session, lf, user_id=user_id)
+    return uploader.upload(
+        session, lf, user_id=user_id, trace_id=trace_id, extra_metadata=extra_metadata
+    )
 
 
 # ── dry-run 打印 span 树 ───────────────────────────────────────────────────────

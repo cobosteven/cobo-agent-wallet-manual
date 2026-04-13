@@ -707,6 +707,7 @@ def score_session_file(
     judge_result: dict[str, Any] | None = None,
     skip_llm_judge: bool = False,
     judge_model: str = "claude-sonnet-4-20250514",
+    trace_id: str = "",
 ) -> dict[str, Any]:
     """
     评分管线：代码断言 + LLM Judge。
@@ -717,13 +718,18 @@ def score_session_file(
       3. LLM Judge 评判语义维度（或使用预计算结果）
       4. 合并分数 → 综合分
       5. 上传到 Langfuse（含 reasoning comment）
+
+    Args:
+        trace_id: 外部指定的 Langfuse trace ID（来自 trace_map.json）。
+                  为空时回退到 session_id。
     """
     import pathlib
 
     session = _parse_session_file(session_path)
-    trace_id = session["session_id"]
     if not trace_id:
-        raise ValueError(f"No session_id found in {session_path}")
+        trace_id = session["session_id"] or pathlib.Path(session_path).stem
+    if not trace_id:
+        raise ValueError(f"No trace_id found in {session_path}")
 
     print(f"  → session {trace_id[:16]}... ({pathlib.Path(session_path).name})")
 
@@ -1240,13 +1246,23 @@ def session_main() -> None:
     mode_str = "assertion_only" if skip_judge else "assertion+judge"
     print(f"[INFO] Scoring mode: {mode_str}")
 
+    # ── Load trace_map.json（upload 阶段生成的 item_id → Langfuse trace UUID 映射）
+    trace_map: dict[str, str] = {}
+    session_dir = pathlib.Path(args.session)
+    if session_dir.is_dir():
+        trace_map_path = session_dir / "trace_map.json"
+        if trace_map_path.exists():
+            trace_map = json.loads(trace_map_path.read_text())
+            print(f"[INFO] Loaded trace_map.json ({len(trace_map)} entries)")
+
     print(f"[INFO] Scoring {len(session_files)} session file(s)...")
     results: list[dict] = []
     for sf in session_files:
         try:
             sf_input, sf_expected, sf_metadata = _get_item_context(sf)
-            session = _parse_session_file(str(sf))
-            trace_id = session.get("session_id") or sf.stem
+
+            # trace_id 优先从 trace_map 获取（与 upload 创建的 Langfuse trace 一致）
+            mapped_trace_id = trace_map.get(sf.stem, "")
 
             result = score_session_file(
                 str(sf),
@@ -1255,9 +1271,11 @@ def session_main() -> None:
                 item_metadata=sf_metadata or {"session_file": sf.name},
                 dry_run=args.dry_run,
                 lf=lf,
-                judge_result=judge_results_map.get(trace_id) or judge_results_map.get(sf.stem),
+                judge_result=judge_results_map.get(mapped_trace_id)
+                or judge_results_map.get(sf.stem),
                 skip_llm_judge=skip_judge,
                 judge_model=getattr(args, "judge_model", "claude-sonnet-4-20250514"),
+                trace_id=mapped_trace_id,
             )
             results.append(result)
         except Exception as e:
