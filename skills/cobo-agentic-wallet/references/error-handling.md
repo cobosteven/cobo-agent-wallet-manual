@@ -48,7 +48,7 @@ Use the exit code to branch without parsing JSON — failure categories map as f
 | `4`  | Auth / permission failure | Verify credentials and wallet pairing status (`caw status` → `wallet_paired`) |
 | `5`  | Policy denied | Read `.error.code` and `.error.suggestion` |
 | `6`  | Insufficient balance | Check balance with `caw wallet balance` |
-| `7`  | Network error (retryable) | Wait and retry; check backend with `caw onboard --env sandbox health` |
+| `7`  | Network error (retryable) | Wait and retry; check backend with `caw onboard health` |
 
 ## Command-specific response fields
 
@@ -193,7 +193,7 @@ The provided code is invalid or has already been consumed.
 
 TSS Node connected to the wrong environment. Check `--env` parameter matches the setup token's environment (sandbox/dev).
 
-**Recovery:** Stop TSS Node, clean up state, then re-run `caw onboard --env sandbox` with the correct `--env` and same `--session-id` / `--invitation-code` as needed.
+**Recovery:** Stop TSS Node, clean up state, then re-run `caw onboard` with the correct `--env` and same `--session-id` / `--invitation-code` as needed.
 
 ### `Timed out waiting for wallet activation`
 
