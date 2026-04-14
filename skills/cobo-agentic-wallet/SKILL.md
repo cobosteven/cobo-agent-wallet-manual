@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.04.13.4"
+  version: "2026.04.14.1"
 description: |
   Create and manage agentic wallets with Cobo. Use for autonomous onchain
   operations via the caw CLI: token transfers, contract calls, pact creation
@@ -113,7 +113,7 @@ When expired or frozen: stop all operations and notify the owner immediately. Do
 
 ### Pact
 
-A pact scopes your authority: allowed chains, tokens, and operations; spending limits per transaction and over time; expiry. **Infrastructure-enforced — you cannot exceed them**, even if prompted or compromised.
+A pact scopes your authority: allowed chains, tokens, and operations; spending limits per transaction and over time (`amount_gt` for coin-denominated limits, `amount_usd_gt` for USD-denominated limits); expiry. **Infrastructure-enforced — you cannot exceed them**, even if prompted or compromised.
 
 Three principles:
 
@@ -166,7 +166,7 @@ caw pact list --status active
 ```
 
 This returns all active pacts awaiting execution. For each one:
-1. **Read the pact**: `caw pact get <pact-id>` to understand the intent and execution plan
+1. **Read the pact**: `caw pact show <pact-id>` to understand the intent and execution plan
 2. **Check execution progress**: `caw tx get` to see which steps are complete and which remain
 3. **Resume execution**: Execute remaining steps in the program
 
@@ -198,7 +198,8 @@ First check `caw pact list` — if an existing pact already covers this goal, re
 
 - **Execution plan** — concrete on-chain steps, monitoring, recovery paths
 - **Policy** — least privilege chains/tokens/contracts and caps
-- **Completion conditions** — observable and testable (tx count, USD spend, or time elapsed)
+- **Policy thresholds** — use canonical fields: `amount_gt` (coin-denominated) and `amount_usd_gt` (USD-denominated), including `usage_limits` windows when needed
+- **Completion conditions** — observable and testable (`tx_count`, `amount_spent`, `amount_spent_usd`, or `time_elapsed`).
 - **Alignment** — intent, plan, policy, and completion conditions must be coherent
 
 - **If the wallet is not paired**: present a 4-item preview (Intent, Execution Plan, Policies, Completion Conditions) and wait for an explicit "yes" before calling `caw pact submit`. The preview must match what the command will receive — do not summarize or reformulate.
@@ -249,7 +250,7 @@ Do not declare success until on-chain confirmation. Report the tx ID and final s
 Lightweight operations that do not require a pact — use `caw` directly:
 
 - **Read state**: balances, status, transaction history, pact list, pending operations
-- **Manage pacts**: check status, revoke (owner only), withdraw (operator only)
+- **Manage pacts**: check status, revoke (owner only)
 - **Wallet metadata**: rename, view current profile, list addresses
 
 After a read, always surface next steps (per Principle 3) — do not just dump data. Check the `suggestions` field in the response first; the server may return it on reads too.
@@ -272,7 +273,8 @@ caw wallet rename --name <NAME>
 
 # Pair the wallet — transfer ownership from the agent to a human.
 # Returns an 8-digit code — give it to the user to enter in the Cobo Agentic Wallet app.
-# Use `caw wallet pair-status` to check if pairing completed.
+# After pairing, caw track --watch delivers a notification when pairing completes.
+# To verify pairing completion at any time, run caw status and check wallet_paired (boolean).
 caw wallet pair --context '{"channel":"<channel>","target":"<target>","session_id":"<session-id>"}'
 
 # List all on-chain addresses. Run before `address create` to check if one already exists.

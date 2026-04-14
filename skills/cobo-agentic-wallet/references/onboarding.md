@@ -1,6 +1,6 @@
 # Onboarding
 
-Covers installation, the `caw onboard` interactive loop, environment configuration, and wallet pairing.
+Covers installation, the `caw onboard --env sandbox` interactive loop, environment configuration, and wallet pairing.
 
 ## 1. Install caw
 
@@ -23,36 +23,24 @@ caw onboard --env sandbox --invitation-code <CODE>
 
 **Agent name (optional):** Pass `--agent-name <NAME>` on an onboard call (for example together with `--invitation-code`). This sets the agent display name when provisioning and, when present, the new MPC wallet is created with display name `<NAME>'s Wallet` (e.g. `Lobster's Wallet`). After you have a `session_id`, keep passing the same `--session-id` on follow-up calls.
 
-> **CRITICAL:** The shortcut commands above are for the **first call only**. Once you have called `caw onboard` and received a `session_id`, you **MUST** include `--session-id <SESSION_ID>` on **every** subsequent call — even when adding `--invitation-code`. Omitting `--session-id` starts a brand-new session, discarding prior progress and TSS prewarm work.
+> **CRITICAL:** The shortcut commands above are for the **first call only**. Once you have called `caw onboard --env sandbox` and received a `session_id`, you **MUST** include `--session-id <SESSION_ID>` on **every** subsequent call — even when adding `--invitation-code`. Omitting `--session-id` starts a brand-new session, discarding prior progress and TSS prewarm work.
 
 **How the interactive loop works:**
-1. Call `caw onboard` — read `phase`, `prompts`, `needs_input`, `next_action`, and `session_id`.
-2. On each follow-up, pass `--session-id` with the **latest** `session_id` from the previous response, and keep the same **`--env`** as the initial call (and `--api-url` if you used it). If the response says the session was not found and a new one was created, use that **new** `session_id`.
+1. Call `caw onboard --env sandbox` — read `phase`, `prompts`, `needs_input`, `next_action`, and `session_id`.
+2. On each follow-up, pass `--session-id` with the **latest** `session_id` from the previous response (and `--api-url` if you used it). If the response says the session was not found and a new one was created, use that **new** `session_id`.
 3. When `needs_input` is true, pass `--answers` as JSON whose keys match `prompts[].id` (etc., depending on phase).
 4. Repeat until onboarding finishes — typically `wallet_status` is `active` and/or `phase` is `wallet_active`. If input is invalid, use `last_error` and resubmit with corrected `--answers`.
-5. When bootstrap fails or stops (`phase` is `error`), run the command from `next_action` as given — same `--session-id`, `--env`, and `--api-url` (if any) as your previous calls.
+5. When bootstrap fails or stops (`phase` is `error`), run the command from `next_action` as given — same `--session-id` and `--api-url` (if any) as your previous calls.
 
 Example follow-up call:
 
 ```bash
-caw onboard --session-id <SESSION_ID> --env sandbox
+caw onboard --env sandbox --session-id <SESSION_ID>
 ```
 
 Use `phase` + `bootstrap_stage` + `wallet_status` to track progress.
 
 See [Error Handling](./error-handling.md#onboarding-errors) for common onboarding errors.
-
-## Environment
-
-| Environment | `--env` value | API URL                                          |
-|-------------|---------------|--------------------------------------------------|
-| Sandbox | `sandbox` | `https://api-core.agenticwallet.sandbox.cobo.com` |
-
-Set the API URL before any command:
-
-```bash
-export AGENT_WALLET_API_URL=https://api-core.agenticwallet.sandbox.cobo.com
-```
 
 ## Pairing — Transfer Ownership to a Human
 
@@ -61,7 +49,6 @@ Pairing is initiated manually. When the user decides to transfer wallet ownershi
 ```bash
 caw wallet pair \
   --context '{"channel":"<channel>","target":"<target>","session_id":"<session-id>"}'
-caw wallet pair-status              # check pairing status
 ```
 
 `pair` returns a **numeric code** (valid 30 minutes). Tell the user:
@@ -73,15 +60,22 @@ The user completes the pairing in the **Cobo Agentic Wallet app** by entering th
 - Agent becomes a delegate, authorized to operate within the owner's configured rules
 - Operations outside those rules require the agent to submit a pact for human approval
 
-Use `pair-status` to check state and act accordingly. Poll every **10 seconds**:
+To check pairing completion without waiting for a notification, run `caw wallet pair-status` — it returns the `token_status` field directly:
+
+```bash
+caw wallet pair-status
+```
+
+Alternatively, run `caw status` and read the `wallet_paired` field (boolean). `true` means pairing has been completed.
+
+Act on the status:
 
 | Status | Meaning | Action |
-|---|---|---|
-| `valid` | Code issued, waiting for user | Share the code with the user; keep polling |
-| `claimed` | Pairing complete | Proceed — ownership transferred |
+| --- | --- | --- |
+| `paired` | Pairing complete | Proceed — ownership transferred |
 | `expired` | Code timed out (30 min) | Re-run `caw wallet pair` to generate a new code |
 | `not_found` | No pairing request on record | Re-run `caw wallet pair` to start a new pairing |
 
 If the user is unreachable before the code expires, stop polling and notify when they return.
 
-**Pair status tracking**: `--context` is **required** for `caw wallet pair`. In an openclaw environment, pass `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<session-id>"}'` — `session_id` is a string from `openclaw sessions --json --agent <agent>`. If not running in openclaw or notification context is unavailable, pass `--context '{"notification": false}'`. When the terminal notification is delivered (claimed/expired), continue any established next steps from the conversation context.
+**Pair status tracking**: `--context` is **required** for `caw wallet pair`. In an openclaw environment, pass `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<session-id>"}'` — `session_id` is a string from `openclaw sessions --json --agent <agent>`. If not running in openclaw or notification context is unavailable, pass `--context '{"notification": false}'`. When the terminal notification is delivered (paired/expired), continue any established next steps from the conversation context.

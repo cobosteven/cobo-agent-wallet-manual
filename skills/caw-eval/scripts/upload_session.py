@@ -68,7 +68,6 @@ CAW_OP_TABLE = [
     (["pact events"], "caw.pact.events", "auth"),
     (["pact list"], "caw.pact.list", "auth"),
     (["pact revoke"], "caw.pact.revoke", "auth"),
-    (["pact withdraw"], "caw.pact.withdraw", "auth"),
     (["pact update-conditions"], "caw.pact.update_conditions", "auth"),
     (["pact update-policies"], "caw.pact.update_policies", "auth"),
     (["approval create"], "caw.approval.create", "auth"),
