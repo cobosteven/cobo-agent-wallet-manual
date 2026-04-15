@@ -42,6 +42,9 @@ ehthumbs.db
 *.temp
 .cache/
 
+# Eval reports (local output, not distributed)
+skills/caw-eval/reports/
+
 # Sync script (local tool, not distributed)
 sync-skill.sh
 .claude
