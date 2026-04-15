@@ -1,20 +1,20 @@
 # Pending Approval
 
-How to handle transactions that return `status=PendingApproval` — the required approval flow depends on whether the wallet has an owner linked.
+How to handle transactions that return `status=PendingApproval` — the required approval flow depends on whether the wallet has been paired to a human owner.
 
-## Check owner_linked
+## Check wallet_paired
 
-Always check `owner_linked` before telling the user how to approve:
+Always check `wallet_paired` before telling the user how to approve:
 
 ```bash
-caw status | jq .owner_linked
+caw status | jq .wallet_paired
 ```
 
 Or read it from the response of any `caw status` call earlier in the conversation.
 
-## owner_linked = false — approve in this conversation
+## wallet_paired = false — approve in this conversation
 
-The wallet has no linked owner yet. Approval happens directly in this conversation — the user decides, and the agent executes their decision. Ask the user to reply with their decision directly in the chat:
+The wallet has no paired owner yet. Approval happens directly in this conversation — the user decides, and the agent executes their decision. Ask the user to reply with their decision directly in the chat:
 
 > Note: pending operations expire after a period of inactivity. If the user is unreachable, do not approve. Wait for the user to return before proceeding.
 
@@ -32,7 +32,7 @@ Once the user replies:
 
 The `pending_operation_id` is returned in the original `caw tx transfer` / `caw tx call` response as `result.pending_operation_id`.
 
-## owner_linked = true — approve in Cobo Agentic Wallet app
+## wallet_paired = true — approve in Cobo Agentic Wallet app
 
 The wallet owner must approve via the Cobo Agentic Wallet app (mobile). Inform the user:
 

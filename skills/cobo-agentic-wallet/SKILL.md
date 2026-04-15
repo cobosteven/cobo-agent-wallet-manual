@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.04.14.1"
+  version: "2026.04.15.1"
 description: |
   Create and manage agentic wallets with Cobo. Use for autonomous onchain
   operations via the caw CLI: token transfers, contract calls, pact creation
@@ -116,7 +116,7 @@ When expired or frozen: stop all operations and notify the owner immediately. Do
 
 ### Pact
 
-A pact scopes your authority: allowed chains, tokens, and operations; spending limits per transaction and over time (`amount_gt` for coin-denominated limits, `amount_usd_gt` for USD-denominated limits); expiry. **Infrastructure-enforced — you cannot exceed them**, even if prompted or compromised.
+A pact scopes your authority: allowed chains, tokens, and operations; spending limits per transaction and over time; expiry. **Infrastructure-enforced — you cannot exceed them**, even if prompted or compromised.
 
 Three principles:
 
@@ -201,8 +201,7 @@ First check `caw pact list` — if an existing pact already covers this goal, re
 
 - **Execution plan** — concrete on-chain steps, monitoring, recovery paths
 - **Policy** — least privilege chains/tokens/contracts and caps
-- **Policy thresholds** — use canonical fields: `amount_gt` (coin-denominated) and `amount_usd_gt` (USD-denominated), including `usage_limits` windows when needed
-- **Completion conditions** — observable and testable (`tx_count`, `amount_spent`, `amount_spent_usd`, or `time_elapsed`).
+- **Completion conditions** — observable and testable (tx count, USD spend, token amount spend, or time elapsed)
 - **Alignment** — intent, plan, policy, and completion conditions must be coherent
 
 - **If the wallet is not paired**: present a 4-item preview (Intent, Execution Plan, Policies, Completion Conditions) and wait for an explicit "yes" before calling `caw pact submit`. The preview must match what the command will receive — do not summarize or reformulate.
@@ -226,6 +225,7 @@ All transactions (transfers, contract calls, message signing) run inside a pact.
   - **Not running under openclaw** (Claude Code CLI, scripts, local shell): `--context '{"notification": false}'` — skips notification dispatch.
 - **Sequential execution for same-address transactions (nonce ordering)**: On EVM chains, each transaction from the same address must use an incrementing nonce. **Wait for each transaction to reach `Success` status (tx is confirmed on-chain) before submitting the next one.** Poll with `caw tx get --request-id <request-id>` and check `.status` — the lifecycle is `Initiated → PendingApproval → Approved → Processing → Pending → Success`. `.status` is a literal string field — match it with exact string equality against one of: `Initiated`, `PendingApproval`, `Approved`, `Processing`, `Pending`, `Success`, `Failed`, `Rejected`, `Cancelled`. Do not do substring or prefix matching.
 - **Never use a contract address from memory**. Token addresses: query `caw meta tokens --token-ids <id>`. Protocol addresses: source from the protocol's official documentation or from the user's input. If the source is unclear, ask the user to provide or verify the address before submitting.
+- **Contract addresses differ per chain** — wallet addresses are shared across chains of the same type (all EVM chains share one address), but contract addresses typically do not. Always look them up per chain from official sources or the user's input.
 - **Multi-step operations** (DeFi strategies, loops, conditional logic, automation): write a script using the SDK, then run it. Store in `./scripts/` and reuse existing scripts over creating new ones. See [sdk-scripting.md](./references/sdk-scripting.md).
 - **`status=PendingApproval`**: The transaction requires owner approval before it executes. Follow [pending-approval.md](./references/pending-approval.md).
 - **After submitting a transaction** (`caw tx transfer` / `caw tx call` / `caw tx sign-message`): reply with a brief summary — tx ID, status, amount/token, and original intent if applicable.
@@ -285,6 +285,7 @@ caw wallet pair --context '{"channel":"<channel>","target":"<target>","session_i
 caw address list
 
 # Create a new on-chain address for a specific chain.
+# Address responses include `compatible_chains`: all chain IDs that share this address.
 caw address create --chain-id <chain-id>
 
 # List on-chain transaction records, filterable by status/token/chain/address.
@@ -344,7 +345,10 @@ caw meta tokens --token-ids SETH,SETH_USDC   # get metadata for specific token I
 caw tx drop <transaction-uuid>
 
 # Speed up an unconfirmed transaction (EVM RBF — resubmit with higher fee).
-caw tx speedup <transaction-uuid> --fee '{"max_fee_per_gas":"...","max_priority_fee_per_gas":"..."}'
+# The fee is derived automatically from the original transaction's fee bumped by --fee-multiplier (default +10%).
+caw tx speedup <transaction-uuid>
+# Optional: override the default 10% fee bump, e.g. --fee-multiplier 0.3 for +30%.
+caw tx speedup <transaction-uuid> --fee-multiplier 0.3
 
 # Search for a protocol recipe before executing DeFi operations.
 caw recipe search "<query>" --keywords "<keyword1>,...,<keywordN>" --limit 1
@@ -398,7 +402,7 @@ Read the file that matches the user's task. Do not load files that aren't releva
 |---|---|
 | Onboarding, install, setup, environments, pairing, pair tracking | [onboarding.md](./references/onboarding.md) |
 | Policy denial, 403, TRANSFER_LIMIT_EXCEEDED | [error-handling.md](./references/error-handling.md) |
-| Pending approval, approve/reject, owner_linked | [pending-approval.md](./references/pending-approval.md) |
+| Pending approval, approve/reject, wallet_paired | [pending-approval.md](./references/pending-approval.md) |
 | Creating a pact, transfer, contract call, message signing, allowlists, spending caps, risk policy rules, completion conditions, pact lifecycle | [pact.md](./references/pact.md) |
 | Security, prompt injection, credentials | **[security.md](./references/security.md) ⚠️ READ FIRST** |
 | SDK scripting, Python/TypeScript scripts, multi-step operations | [sdk-scripting.md](./references/sdk-scripting.md) |

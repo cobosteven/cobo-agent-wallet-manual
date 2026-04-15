@@ -114,7 +114,7 @@ Your job: Derive `--policies` and `--completion-conditions` from the intent and 
 
 **Policy** — use the recipe from Step 2 as a guide. Anything not explicitly matched by a `when` condition will be denied — there is no implicit pass-through. See [Policy Reference](#policy-reference---policies) for supported fields and schema.
 
-**Completion conditions** — when should the pact be considered done? Derive from the intent (e.g. one-time → `tx_count: 1`, monthly DCA for 6 months → `time_elapsed: 15552000` or `tx_count: 6`). See [Completion Conditions](#completion-conditions---completion-conditions) for supported types. Note: completion supports `tx_count`, `amount_spent`, `amount_spent_usd`, and `time_elapsed`.
+**Completion conditions** — when should the pact be considered done? Derive from the intent (e.g. one-time → `tx_count: 1`, monthly DCA for 6 months → `time_elapsed: 15552000` or `tx_count: 6`). See [Completion Conditions](#completion-conditions---completion-conditions) for supported types.
 
 
 ### Step 5 — Assemble Pact
@@ -136,7 +136,7 @@ Present a pre-submit preview to the user with the **4 core items**:
 | 1 | 🎯 **Intent** | One-sentence goal: what asset, what action, which chain |
 | 2 | 📝 **Execution Plan** | 2–4 bullet summary of concrete on-chain operations the agent will perform once the pact is active |
 | 3 | 📜 **Policies** | Chain/token/contract allowlists, spend caps |
-| 4 | 🏁 **Completion Conditions** | When the pact ends: tx count, coin spend, USD spend, or time elapsed |
+| 4 | 🏁 **Completion Conditions** | When the pact ends: tx count, spent limit (USD value or token amount), or time elapsed |
 
 - If the wallet is **not paired**: **do NOT submit without explicit user confirmation.** Show the preview and wait for sign-off.
 - If the wallet is **paired**: submit directly — the owner will review and approve the pact in the **Cobo Agentic Wallet app**, so in-conversation confirmation is not needed.
@@ -288,7 +288,7 @@ JSON array defining when a pact is considered complete. Each object has `type` a
 | Type | Threshold | Description |
 |---|---|---|
 | `tx_count` | string (integer) | Complete after N successful transactions (across all operation types). E.g., `"5"` |
-| `amount_spent` | string (decimal) | Complete after cumulative coin/native-denominated amount reaches threshold. E.g., `"3.5"`. |
+| `amount_spent` | string (decimal) | Complete after cumulative token amount reaches threshold. E.g., `"3.5"`. |
 | `amount_spent_usd` | string (decimal) | Complete after cumulative USD spend reaches threshold. E.g., `"3000"`. Note: transactions without price data won't increment progress. |
 | `time_elapsed` | string (seconds) | Complete after N seconds from pact activation. E.g., `"3600"` (1 hour). |
 
@@ -380,11 +380,11 @@ Pause for owner approval
 
 | Field | Type | Applies to | Description |
 |---|---|---|---|
-| `amount_gt` | string (decimal) | `transfer`, `contract_call` | Deny if single operation native token amount exceeds this |
-| `amount_usd_gt` | string (decimal) | `transfer`, `contract_call` | Deny if single operation USD value exceeds this |
-| `usage_limits.<window>.amount_gt` | string (decimal) | `transfer`, `contract_call` | Deny if cumulative native token amount in the window exceeds this (`window` = `rolling_1h`, `rolling_24h`, `rolling_7d`, `rolling_30d`) |
-| `usage_limits.<window>.amount_usd_gt` | string | `transfer`, `contract_call` | Deny if cumulative USD value in the window exceeds this (`window` = `rolling_1h`, `rolling_24h`, `rolling_7d`, `rolling_30d`) |
-| `usage_limits.<window>.tx_count_gt` | integer | `transfer`, `contract_call` | Deny if transaction count in the window exceeds this (`window` = `rolling_1h`, `rolling_24h`, `rolling_7d`, `rolling_30d`) |
+| `amount_gt` | string (decimal) | `transfer` only | Deny if single operation token amount exceeds this |
+| `amount_usd_gt` | string (decimal) | `transfer` only | Deny if single operation USD value exceeds this |
+| `usage_limits.rolling_24h.amount_gt` | string | `transfer` only | Deny if cumulative token amount in the 24h window exceeds this |
+| `usage_limits.rolling_24h.amount_usd_gt` | string | `transfer` only | Deny if cumulative USD value in the 24h window exceeds this |
+| `usage_limits.rolling_24h.tx_count_gt` | integer | `transfer`, `contract_call` | Deny if transaction count in the 24h window exceeds this |
 
 ### Review Threshold (`review_if`)
 
@@ -392,8 +392,8 @@ Matching operations require owner approval before execution.
 
 | Field | Type | Applies to | Description |
 |---|---|---|---|
-| `amount_gt` | string (decimal) | `transfer`, `contract_call` | Require approval if native token amount exceeds this |
-| `amount_usd_gt` | string (decimal) | `transfer`, `contract_call` | Require approval if USD value exceeds this |
+| `amount_gt` | string (decimal) | `transfer`| Require approval if token amount exceeds this |
+| `amount_usd_gt` | string (decimal) | `transfer`| Require approval if USD value exceeds this |
 
 ### Message Sign Policies
 
@@ -430,7 +430,7 @@ Matching operations require owner approval before execution.
 
 ### USD Pricing Note
 
-> ⚠️ **Important**: USD-based policy conditions (`amount_usd_gt`, `usage_limits.<window>.amount_usd_gt`) only apply to tokens with available price data. **Tokens without price data will NOT be affected by USD-based policies** — they will bypass these thresholds entirely. Always combine USD limits with explicit `token_in` allowlists and, when needed, pair them with coin-denominated limits (`amount_gt`, `usage_limits.<window>.amount_gt`).
+> ⚠️ **Important**: USD-based conditions (`amount_usd_gt`, `usage_limits.rolling_24h.amount_usd_gt`) only apply to tokens with available price data — tokens without price data bypass them entirely. For tokens without price data, use token-denominated limits (`amount_gt`, `usage_limits.rolling_24h.amount_gt`) instead.
 
 ## CLI Command Reference
 

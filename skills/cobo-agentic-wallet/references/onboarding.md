@@ -63,9 +63,13 @@ caw wallet pair \
   --context '{"channel":"<channel>","target":"<target>","session_id":"<session-id>"}'
 ```
 
-`pair` returns a **numeric code** (valid 30 minutes). Tell the user:
+`pair` returns a **numeric code** (valid 30 minutes) along with local wallet metadata: `wallet_name`, `agent_name`, `wallet_uuid`, `agent_id`. Present all of these to the user so they can verify the correct wallet is shown in the App before entering the code:
 
-> "To pair this wallet, open the Cobo Agentic Wallet app and enter the pairing code."
+> "To pair this wallet, open the Cobo Agentic Wallet app and confirm the wallet shown matches the following information before entering the pairing code:
+> - Wallet name: **\<wallet_name\>**
+> - Agent name: **\<agent_name\>**
+> - Wallet UUID: **\<wallet_uuid\>**
+> - Agent ID: **\<agent_id\>**"
 
 The user completes the pairing in the **Cobo Agentic Wallet app** by entering the code. Once paired:
 - Ownership transfers from Agent → Human

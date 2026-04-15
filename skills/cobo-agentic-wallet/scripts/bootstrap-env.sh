@@ -7,7 +7,7 @@ set -euo pipefail
 # caw: Cobo Agentic Wallet binary release (tar.gz). Package: caw-{version}-{os}-{arch}.tar.gz
 # Bucket: cobo-agenticwallet, path: /binary-release/0.1.0/ (linux-amd64, linux-arm64; darwin when published)
 CAW_BASE_URL="${CAW_BASE_URL:-https://download.agenticwallet.cobo.com/binary-release}"
-CAW_VERSION="${CAW_VERSION:-v0.2.60}"
+CAW_VERSION="${CAW_VERSION:-v0.2.62}"
 # TSS Node: Cobo download (tar.gz)
 TSS_BASE_URL="${TSS_BASE_URL:-https://download.tss.cobo.com/binary-release/latest}"
 ENV_NAME="${ENV_NAME:-sandbox}"
@@ -26,12 +26,13 @@ Usage:
 Options:
   --env               Cobo environment (sandbox/dev/prod), default: sandbox
   --base-url          TSS Node base URL (default: https://download.tss.cobo.com/binary-release/latest)
-  --caw-version       caw package version (default: 0.1.0). Path: {base}/{ver}/caw-{ver}-{os}-{arch}.tar.gz
+  --caw-version       caw version to install (default: latest). Use 'latest' for the latest release or a specific version like v0.2.30.
   --only              Download scope: all (default), caw, tss
   --force-download    Always download (ignore existing caw and tss-node)
 
 Download sources:
-  caw:  https://cobo-agenticwallet.s3.us-west-2.amazonaws.com/binary-release/{ver}/caw-{ver}-{os}-{arch}.tar.gz
+  caw:  https://download.agenticwallet.cobo.com/binary-release/latest/caw-{os}-{arch}.tar.gz  (latest)
+        https://download.agenticwallet.cobo.com/binary-release/{ver}/caw-{os}-{arch}-{ver}.tar.gz  (specific version)
   TSS:  https://download.tss.cobo.com/binary-release/latest/cobo-tss-node-{os}-{arch}.tar.gz
 
 Examples:
@@ -166,10 +167,12 @@ should_download_artifact() {
     return 0
   fi
   if [[ "$label" == "caw" ]]; then
-    if local_caw_version_matches "$target_path" "$CAW_VERSION"; then
-      return 1
+    if [[ "$CAW_VERSION" == "latest" ]]; then
+      # For latest, just check the binary exists (version is unknown before download)
+      [[ -x "$target_path" ]] && return 1 || return 0
+    else
+      local_caw_version_matches "$target_path" "$CAW_VERSION" && return 1 || return 0
     fi
-    return 0
   fi
   if [[ -f "$target_path" ]]; then
     return 1
@@ -249,17 +252,34 @@ main() {
   read -r os arch < <(detect_platform)
   mkdir -p "$BIN_DIR" "$LOG_DIR" "$CACHE_TSS_DIR"
 
+  # Build caw download URL: latest uses bare filename, specific version includes version suffix
+  local caw_url
+  if [[ "$CAW_VERSION" == "latest" ]]; then
+    caw_url="${CAW_BASE_URL}/latest/caw-${os}-${arch}.tar.gz"
+  else
+    caw_url="${CAW_BASE_URL}/${CAW_VERSION}/caw-${os}-${arch}-${CAW_VERSION}.tar.gz"
+  fi
+  echo "caw url: ${caw_url}"
+
+  # caw_ready: true when existing binary satisfies the version requirement
+  local caw_ready=false
+  if [[ "$CAW_VERSION" == "latest" ]]; then
+    [[ -x "$BIN_DIR/caw" ]] && caw_ready=true
+  else
+    local_caw_version_matches "$BIN_DIR/caw" "$CAW_VERSION" && caw_ready=true || true
+  fi
+
   # Early exit: required assets already present, no force-download.
   if [[ "$FORCE_DOWNLOAD" != "true" ]]; then
     case "$DOWNLOAD_ONLY" in
       all)
-        if local_caw_version_matches "$BIN_DIR/caw" "$CAW_VERSION" && [[ -x "$CACHE_TSS_DIR/cobo-tss-node" ]]; then
+        if [[ "$caw_ready" == "true" ]] && [[ -x "$CACHE_TSS_DIR/cobo-tss-node" ]]; then
           echo "ready"
           exit 0
         fi
         ;;
       caw)
-        if local_caw_version_matches "$BIN_DIR/caw" "$CAW_VERSION"; then
+        if [[ "$caw_ready" == "true" ]]; then
           echo "ready"
           exit 0
         fi
@@ -272,9 +292,6 @@ main() {
         ;;
     esac
   fi
-
-  local caw_url="${CAW_BASE_URL}/${CAW_VERSION}/caw-${os}-${arch}-${CAW_VERSION}.tar.gz"
-  echo "caw url: ${caw_url}"
   local tss_url="${TSS_BASE_URL}/cobo-tss-node-${os}-${arch}.tar.gz"
 
   local caw_log="$LOG_DIR/caw-download.log"
