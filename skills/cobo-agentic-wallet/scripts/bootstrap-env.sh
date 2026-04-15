@@ -10,7 +10,6 @@ CAW_BASE_URL="${CAW_BASE_URL:-https://download.agenticwallet.cobo.com/binary-rel
 CAW_VERSION="${CAW_VERSION:-v0.2.62}"
 # TSS Node: Cobo download (tar.gz)
 TSS_BASE_URL="${TSS_BASE_URL:-https://download.tss.cobo.com/binary-release/latest}"
-ENV_NAME="${ENV_NAME:-sandbox}"
 INSTALL_ROOT="${INSTALL_ROOT:-$HOME/.cobo-agentic-wallet}"
 BIN_DIR="${BIN_DIR:-$INSTALL_ROOT/bin}"
 CACHE_TSS_DIR="${CACHE_TSS_DIR:-$INSTALL_ROOT/cache/tss-node}"
@@ -21,10 +20,9 @@ DOWNLOAD_ONLY="all"
 usage() {
   cat <<'EOF'
 Usage:
-  bootstrap-env.sh [--env sandbox] [--base-url URL] [--caw-version VER] [--only all|caw|tss] [--force-download]
+  bootstrap-env.sh [--base-url URL] [--caw-version VER] [--only all|caw|tss] [--force-download]
 
 Options:
-  --env               Cobo environment (sandbox/dev/prod), default: sandbox
   --base-url          TSS Node base URL (default: https://download.tss.cobo.com/binary-release/latest)
   --caw-version       caw version to install (default: latest). Use 'latest' for the latest release or a specific version like v0.2.30.
   --only              Download scope: all (default), caw, tss
@@ -36,18 +34,14 @@ Download sources:
   TSS:  https://download.tss.cobo.com/binary-release/latest/cobo-tss-node-{os}-{arch}.tar.gz
 
 Examples:
-  bootstrap-env.sh --env sandbox
-  bootstrap-env.sh --env sandbox --caw-version 0.1.0
-  bootstrap-env.sh --env sandbox --only caw
+  bootstrap-env.sh
+  bootstrap-env.sh --caw-version v0.2.14
+  bootstrap-env.sh --only caw
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --env)
-      ENV_NAME="$2"
-      shift 2
-      ;;
     --base-url)
       TSS_BASE_URL="$2"
       shift 2
@@ -122,33 +116,6 @@ download_with_resume() {
   curl --fail --location --silent --show-error --continue-at - --output "$dest" "$url"
 }
 
-fetch_remote_meta() {
-  local url="$1"
-  local headers
-  headers="$(curl --fail --silent --show-error --location --head "$url" 2>/dev/null | tr -d '\r')" || return 1
-
-  local etag last_modified content_length
-  etag="$(printf '%s\n' "$headers" | awk 'BEGIN{IGNORECASE=1} /^etag:/ {sub(/^[^:]*:[[:space:]]*/, "", $0); v=$0} END{print v}')"
-  last_modified="$(printf '%s\n' "$headers" | awk 'BEGIN{IGNORECASE=1} /^last-modified:/ {sub(/^[^:]*:[[:space:]]*/, "", $0); v=$0} END{print v}')"
-  content_length="$(printf '%s\n' "$headers" | awk 'BEGIN{IGNORECASE=1} /^content-length:/ {sub(/^[^:]*:[[:space:]]*/, "", $0); v=$0} END{print v}')"
-  printf '%s\t%s\t%s\n' "$etag" "$last_modified" "$content_length"
-}
-
-write_meta_file() {
-  local meta_file="$1"
-  local source_url="$2"
-  local etag="$3"
-  local last_modified="$4"
-  local content_length="$5"
-  mkdir -p "$(dirname "$meta_file")"
-  cat >"$meta_file" <<EOF
-SOURCE_URL=$source_url
-ETAG=$etag
-LAST_MODIFIED=$last_modified
-CONTENT_LENGTH=$content_length
-EOF
-}
-
 local_caw_version_matches() {
   local caw_bin="$1"
   local want="$2"
@@ -174,10 +141,7 @@ should_download_artifact() {
       local_caw_version_matches "$target_path" "$CAW_VERSION" && return 1 || return 0
     fi
   fi
-  if [[ -f "$target_path" ]]; then
-    return 1
-  fi
-  return 0
+  [[ -f "$target_path" ]] && return 1 || return 0
 }
 
 extract_caw_assets() {
@@ -296,8 +260,6 @@ main() {
 
   local caw_log="$LOG_DIR/caw-download.log"
   local tss_log="$LOG_DIR/tss-prewarm.log"
-  local caw_meta="$BIN_DIR/caw.meta"
-  local tss_meta="$CACHE_TSS_DIR/tss.meta"
 
   echo "      force=${FORCE_DOWNLOAD}, only=${DOWNLOAD_ONLY}"
 
@@ -309,14 +271,11 @@ main() {
     (
       set -euo pipefail
       if should_download_artifact "$BIN_DIR/caw" "caw"; then
-        local caw_tmp_tar caw_remote_meta caw_etag caw_last_modified caw_content_length
-        caw_remote_meta="$(fetch_remote_meta "$caw_url" || true)"
-        IFS=$'\t' read -r caw_etag caw_last_modified caw_content_length <<<"${caw_remote_meta:-}"
+        local caw_tmp_tar
         caw_tmp_tar="$(mktemp)"
         trap 'rm -f "$caw_tmp_tar"' EXIT
         download_with_resume "$caw_url" "$caw_tmp_tar"
         extract_caw_assets "$caw_tmp_tar" "$BIN_DIR"
-        write_meta_file "$caw_meta" "$caw_url" "${caw_etag:-}" "${caw_last_modified:-}" "${caw_content_length:-}"
         echo "[DONE] caw downloaded to $BIN_DIR/caw"
       else
         echo "[DONE] caw reuse local binary at $BIN_DIR/caw"
@@ -333,14 +292,10 @@ main() {
       set -euo pipefail
       if should_download_artifact "$CACHE_TSS_DIR/cobo-tss-node" "tss"; then
         local tss_tmp_tar
-        local tss_remote_meta tss_etag tss_last_modified tss_content_length
-        tss_remote_meta="$(fetch_remote_meta "$tss_url" || true)"
-        IFS=$'\t' read -r tss_etag tss_last_modified tss_content_length <<<"${tss_remote_meta:-}"
         tss_tmp_tar="$(mktemp)"
         trap 'rm -f "$tss_tmp_tar"' EXIT
         download_with_resume "$tss_url" "$tss_tmp_tar"
         extract_tss_assets "$tss_tmp_tar"
-        write_meta_file "$tss_meta" "$tss_url" "${tss_etag:-}" "${tss_last_modified:-}" "${tss_content_length:-}"
         echo "[DONE] Shared TSS cache downloaded at $CACHE_TSS_DIR"
       else
         echo "[DONE] Shared TSS cache reuse local assets at $CACHE_TSS_DIR"
