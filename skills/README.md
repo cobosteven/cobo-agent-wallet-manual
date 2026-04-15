@@ -6,6 +6,11 @@ A Claude Code skill that enables AI agents to operate Cobo Agentic Wallets, aka 
 
 This skill is relevant if your agent needs to do any of the following:
 
+**Wallet setup & onboarding**
+- Provision an MPC wallet for an AI agent via `caw onboard`
+- Transfer wallet ownership to a human owner via the pairing flow
+- Manage wallets across sandbox, dev, and production environments
+
 **Token transfers & payments**
 - Send stablecoins (USDC, USDT, DAI) or tokens (ETH, SOL, WBTC, …) to an address
 - Pay other agents or services autonomously
@@ -15,24 +20,17 @@ This skill is relevant if your agent needs to do any of the following:
 - Swap tokens on DEXs (Uniswap V3 on EVM, Jupiter V6 on Solana)
 - Lend and borrow on Aave V3
 - Run DCA strategies or grid trading loops
-- Execute prediction market positions (Drift, Polymarket)
 
 **On-chain automation**
 - Call arbitrary smart contracts on a schedule or in response to conditions
 - Monitor balances and trigger actions when thresholds are crossed
 
-**Policy-enforced agent wallets**
-- Operate within owner-set spending limits and approval workflows
-- Let a human owner approve high-value or out-of-policy transactions
-- Audit all agent activity with a full transaction history
+**Human-in-the-loop approval (pact workflow)**
+- Submit out-of-policy operations as pacts for the owner to approve in the Cobo app
+- Track pact status and resume execution automatically after approval
+- Operate within owner-configured spending limits without interrupting the agent
 
 If none of the above apply, this skill is probably not what you need.
-
-## Additional skills
-
-| Workflow | Skill |
-|---|---|
-| Pact: Hire client-agent operations with `caw-hire` | [pact-hire-client](./pact-hire-client/SKILL.md) |
 
 ## Install
 
@@ -58,7 +56,6 @@ After installation, try these prompts:
 "Set up a Cobo Agentic Wallet for my AI agent on sandbox"
 "Send 10 USDC to 0xABC...123 on Base from my agent wallet"
 "DCA 0.01 SOL into USDC every hour for 24 hours on Solana devnet"
-"My transfer got TRANSFER_LIMIT_EXCEEDED, how do I fix it?"
 ```
 
 ## Use with AI agents
@@ -69,21 +66,22 @@ If you are building an AI agent that manages crypto wallets, add the following t
 
 ```
 You have access to a Cobo Agentic Wallet for managing crypto assets with policy enforcement.
-
-Environment:
-- API URL: https://api-agent-wallet-core.sandbox.cobo.com
-- API Key: (stored in AGENT_WALLET_API_KEY)
-- CLI tool: caw
+The CLI tool is `caw`. Credentials are stored locally — no API key needed in the prompt.
 
 Core capabilities:
-- Transfer tokens: caw tx transfer <wallet_uuid> --to <addr> --token <id> --amount <n>
-- Contract call: caw tx call <wallet_uuid> --contract <addr> --calldata <hex> --chain <id>
-- Check balance: caw wallet balance <wallet_uuid>
-- List transactions: caw tx list <wallet_uuid>
+- Onboard a new wallet:    caw onboard [--invitation-code <code>]
+- Check active wallet:     caw wallet current
+- Check balance:           caw wallet balance
+- Submit a pact:           caw pact submit --program '<json>'
+- Execute a transfer:      caw tx transfer <pact-id> --to <addr> --token <id> --amount <n>
+- Execute a contract call: caw tx call <pact-id> --contract <addr> --calldata <hex> --chain <id>
+- List transactions:       caw tx list
+- Pair wallet to owner:    caw wallet pair --context '<json>'
 
-Always use --format json for programmatic output. Check exit code and stderr on failure.
-If a transfer is denied by policy, parse the error's "suggestion" field for the corrected parameters.
-See error-handling.md for common error codes and recovery steps.
+All on-chain operations (transfers, contract calls) run inside a pact.
+Submit the pact first with `caw pact submit`, then execute its steps.
+Always check balance before spending operations.
+Check exit code and stderr on failure. See error-handling.md for common error codes.
 
 For DeFi operations (Uniswap swaps, Aave lending, Jupiter swaps on Solana), use caw tx call
 with the appropriate contract address and calldata.
@@ -100,9 +98,9 @@ This project uses Cobo Agentic Wallet for crypto operations.
 The cobo-agentic-wallet skill is installed at ./skills/cobo-agentic-wallet/.
 
 When asked to perform wallet operations:
-1. Use `caw` CLI with `--format json` for all commands
-2. Always check transaction status after submission
-3. Handle policy denials by parsing the suggestion field — see [Error Handling](./skills/cobo-agentic-wallet/references/error-handling.md)
+1. Use `caw` CLI for all commands
+2. All on-chain operations go through pacts — submit with `caw pact submit`, then execute
+3. Always check transaction status after submission
 4. For DeFi operations, refer to the skill's recipe files
 ```
 
@@ -110,90 +108,44 @@ When asked to perform wallet operations:
 
 After completing wallet setup, the agent should save the following to its memory or config file:
 
-| Field | Source | Purpose |
-|-------|--------|---------|
-| `wallet_uuid` | `caw wallet current` | Identify the wallet |
-| `api_key` | onboard output | Authenticate API calls |
-| `addresses` | `caw address list` | Per-chain addresses |
-| `env` | setup parameter | sandbox/dev/prod |
-| `policy_limits` | `caw policy list` (if available) | Know spending constraints |
+| Field         | Source               | Purpose               |
+|---------------|----------------------|-----------------------|
+| `wallet_uuid` | `caw wallet current` | Identify the wallet   |
+| `addresses`   | `caw address list`   | Per-chain addresses   |
+| `env`         | setup parameter      | sandbox / dev / prod  |
 
 Without this, the agent loses wallet context on restart and must re-onboard or re-discover.
-
-## DeFi skills
-
-DeFi strategies are published as standalone skills. Use `caw schema` or `npx skills add cobosteven/cobo-agent-wallet-manual --list` to discover available skills.
-
-| Strategy | Skill |
-|----------|-------|
-| DEX Swap (EVM) | [evm-defi-dex-swap](./evm-defi-dex-swap/SKILL.md) |
-
-More DeFi skills (Aave, DCA, grid trading, Jupiter, Polymarket, etc.) will be published as standalone skills — search with `npx skills find cobo-agentic-wallet "<protocol>"`.
-
-Also see: [Policy Management](./cobo-agentic-wallet/references/policy-management.md) | [Error Handling](./cobo-agentic-wallet/references/error-handling.md)
 
 ## Supported Chains
 
 Common chain IDs for `--chain` and `--chain-id` flags:
 
-| Chain | Chain ID | Type |
-|---|---|---|
-| Ethereum | `ETH` | EVM |
-| Base | `BASE_ETH` | EVM |
-| Arbitrum | `ARBITRUM_ETH` | EVM |
-| Optimism | `OPT_ETH` | EVM |
-| Polygon | `MATIC` | EVM |
-| Solana | `SOL` | Solana |
-| Sepolia (testnet) | `SETH` | EVM |
-| Solana Devnet | `SOLDEV_SOL` | Solana |
+| Chain             | Chain ID       | Type   |
+|-------------------|----------------|--------|
+| Ethereum          | `ETH`          | EVM    |
+| Base              | `BASE_ETH`     | EVM    |
+| Arbitrum          | `ARBITRUM_ETH` | EVM    |
+| Optimism          | `OPT_ETH`      | EVM    |
+| Polygon           | `MATIC`        | EVM    |
+| Solana            | `SOL`          | Solana |
+| Sepolia (testnet) | `SETH`         | EVM    |
+| Solana Devnet     | `SOLDEV_SOL`   | Solana |
 
 For the full list of supported chains and tokens, run:
 
 ```bash
-caw --format json chain list
-caw --format json token list --chain <CHAIN>
+caw chain list
+caw token list --chain <CHAIN>
 ```
-
-## Evals
-
-Validate the skill works correctly:
-
-```bash
-cd cobo-agentic-wallet/evals/
-
-./run_evals.sh trigger   # 20 tests: does the skill trigger correctly?
-./run_evals.sh quality   # 6 tests: does the output contain correct commands?
-./run_evals.sh all       # Run both (~5 min, requires claude CLI)
-```
-
-## Updating the skill
-
-The skill has three versions: a canonical source and two environment-specific variants.
-
-1. **Edit the canonical source** — modify files under `cobo-agentic-wallet/` (SKILL.md, references, etc.)
-2. **Run the sync script** — propagate changes to the sandbox and dev versions:
-
-```bash
-cd skills/
-python3 sync_env_skills.py
-```
-
-The script auto-generates the full contents of `cobo-agentic-wallet-sandbox/` and `cobo-agentic-wallet-dev/` (SKILL.md + references) from the canonical source, substituting environment-specific fields (name, URL, `--env` value) automatically.
-
-> **Do not edit** `cobo-agentic-wallet-sandbox/` or `cobo-agentic-wallet-dev/` directly — they will be overwritten the next time the sync script runs.
 
 ## File structure
 
 ```
 skills/
 ├── README.md                            # This file
-├── pact-hire-client/                    # Pact: Hire client-agent skill
-│   └── SKILL.md                         # Client workflow instructions for `caw-hire`
-├── cobo-agentic-wallet/                 # Core wallet skill (edit here)
+├── cobo-agentic-wallet/                 # Core wallet skill — edit here
 │   ├── SKILL.md                         # Main instructions (loaded on trigger)
 │   ├── references/                      # Operational reference docs
 │   └── scripts/
 │       └── bootstrap-env.sh             # Install caw and TSS Node
-├── evm-defi-dex-swap/                   # Standalone DeFi skill (depends on cobo-agentic-wallet)
-│   └── SKILL.md                         # Uniswap V3 DEX swap instructions
 ```
