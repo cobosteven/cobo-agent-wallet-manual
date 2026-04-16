@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.04.15.2"
+  version: "2026.04.16.1"
 description: |
   Create and manage agentic wallets with Cobo. Use for autonomous onchain
   operations via the caw CLI: token transfers, contract calls, pact creation
@@ -204,7 +204,7 @@ First check `caw pact list` — if an existing pact already covers this goal, re
 - **Completion conditions** — observable and testable (tx count, USD spend, token amount spend, or time elapsed)
 - **Alignment** — intent, plan, policy, and completion conditions must be coherent
 
-- **If the wallet is not paired**: present a 4-item preview (Intent, Execution Plan, Policies, Completion Conditions) and wait for an explicit "yes" before calling `caw pact submit`. The preview must match what the command will receive — do not summarize or reformulate.
+- **If the wallet is not paired**: present a 4-item preview (Intent, Execution Plan, Policies, Completion Conditions) and wait for an explicit "yes" before calling `caw pact submit`. The preview must match what the command will receive — do not summarize or reformulate. If the user requests any change after seeing the preview, apply the change, re-show the full updated preview, and ask again — do not submit until the user explicitly confirms the final spec.
 - **If paired**: submit directly — the owner approves in the Cobo Agentic Wallet app. No in-chat preview needed.
 
 After submit, track with `caw track --watch`.

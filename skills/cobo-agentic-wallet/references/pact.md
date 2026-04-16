@@ -139,6 +139,7 @@ Present a pre-submit preview to the user with the **4 core items**:
 | 4 | 🏁 **Completion Conditions** | When the pact ends: tx count, spent limit (USD value or token amount), or time elapsed |
 
 - If the wallet is **not paired**: **do NOT submit without explicit user confirmation.** Show the preview and wait for sign-off.
+  - If the user requests any change after seeing the preview (e.g. "change the limit to 50"), apply the change, **re-show the full updated preview**, and ask again: "Anything else to change? Confirm to submit." Only submit when the user explicitly confirms the final spec.
 - If the wallet is **paired**: submit directly — the owner will review and approve the pact in the **Cobo Agentic Wallet app**, so in-conversation confirmation is not needed.
 
 Then submit via `caw pact submit` (see [`caw pact submit` Flag Reference](#caw-pact-submit-flag-reference)).
