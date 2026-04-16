@@ -28,7 +28,7 @@ Any task that uses `caw tx transfer`, `caw tx call`, or `caw tx sign-message` re
   - Execute as a background task — do not synchronously wait for the transaction result before replying to the user. Pass `<pact_id>` as the first argument.
     ```bash
     caw tx transfer <pact_id> \
-      --token-id BASE_USDC --to 0xRecipient... --amount 10 \
+      --token-id BASE_USDC --dst-address 0xRecipient... --amount 10 \
       --request-id pay-001 \
       --context '{"channel":"<channel>","target":"<target>","session_id":"<session-id>"}'
 

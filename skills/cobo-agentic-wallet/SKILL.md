@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.04.16.4"
+  version: "2026.04.16.5"
 description: |
   Create and manage agentic wallets with Cobo. Use for autonomous onchain
   operations via the caw CLI: token transfers, contract calls, pact creation
@@ -296,11 +296,11 @@ caw tx list --limit 20
 # Pre-check (policy + fee) runs automatically before submission.
 # If policy denies, the transfer is NOT submitted and the denial is returned.
 # Use --request-id as an idempotency key so retries return the existing record.
-caw tx transfer <pact-id> --to 0x1234...abcd --token-id ETH_USDC --amount 10 --request-id pay-001 \
+caw tx transfer <pact-id> --dst-address 0x1234...abcd --token-id ETH_USDC --amount 10 --request-id pay-001 \
   --context '{"channel":"<channel>","target":"<target>","session_id":"<session-id>"}'
 
 # Estimate the network fee for a transfer without running policy checks.
-caw tx estimate-transfer-fee --to 0x... --token-id ETH_USDC --amount 10
+caw tx estimate-transfer-fee --dst-address 0x... --token-id ETH_USDC --amount 10
 
 # Submit a smart contract call. <pact-id> is required as the first positional argument.
 # Pre-check runs automatically.
