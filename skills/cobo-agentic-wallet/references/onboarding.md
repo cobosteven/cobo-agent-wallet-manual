@@ -4,7 +4,7 @@ Covers installation, the `caw onboard --env sandbox` interactive loop, environme
 
 ## 1. Install caw
 
-Run `./scripts/bootstrap-env.sh --env sandbox --only caw` to install caw. caw → `~/.cobo-agentic-wallet/bin/caw`; add that dir to PATH. TSS Node is downloaded automatically during onboard when needed.
+Run `./scripts/bootstrap-env.sh --only caw` to install caw. caw → `~/.cobo-agentic-wallet/bin/caw`; add that dir to PATH. TSS Node is downloaded automatically during onboard when needed.
 
 ## 2. Onboard
 
@@ -21,7 +21,7 @@ If the user **already has** an invitation code before starting, pass it on the *
 caw onboard --env sandbox --invitation-code <CODE>
 ```
 
-**Agent name (optional):** Pass `--agent-name <NAME>` on an onboard call (for example together with `--invitation-code`). This sets the agent display name when provisioning and, when present, the new MPC wallet is created with display name `<NAME>'s Wallet` (e.g. `Lobster's Wallet`). After you have a `session_id`, keep passing the same `--session-id` on follow-up calls.
+**Agent name (required):** Always pass `--agent-name <NAME>` on the first onboard call (for example together with `--invitation-code`). This sets the agent display name when provisioning and the new wallet is created with display name `<NAME>'s Wallet` (e.g. `Lobster's Wallet`). If you don't know the agent's name, ask the user before calling onboard. After you have a `session_id`, keep passing the same `--session-id` on follow-up calls.
 
 > **CRITICAL:** The shortcut commands above are for the **first call only**. Once you have called `caw onboard --env sandbox` and received a `session_id`, you **MUST** include `--session-id <SESSION_ID>` on **every** subsequent call — even when adding `--invitation-code`. Omitting `--session-id` starts a brand-new session, discarding prior progress and TSS prewarm work.
 

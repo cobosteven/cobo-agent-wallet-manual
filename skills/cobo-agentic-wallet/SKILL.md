@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.04.16.1"
+  version: "2026.04.16.4"
 description: |
   Create and manage agentic wallets with Cobo. Use for autonomous onchain
   operations via the caw CLI: token transfers, contract calls, pact creation
@@ -218,6 +218,7 @@ After submit, track with `caw track --watch`.
 All transactions (transfers, contract calls, message signing) run inside a pact. Shared decision rules:
 
 - **Balance preflight for fund-using intent**: If the user's goal will spend funds, run `caw wallet balance` before execution. Verify the requested token amount is available and that the wallet has enough native token to pay network fees. If balance is insufficient, stop and report the current balance and shortfall instead of attempting the operation.
+- **Recipe preflight for contract interactions**: Before assembling calldata or calling any contract function, search for a matching recipe (`caw recipe search`) to obtain the correct function signature and parameter format. Then use `caw util abi encode` to construct the calldata, and `caw util abi decode` to verify it before submitting. Do not guess function selectors or parameter encoding.
 - **`--request-id` idempotency**: Always set a unique, deterministic request ID per logical transaction (e.g. `invoice-001`, `swap-20240318-1`). Retrying with the same `--request-id` is safe — the server deduplicates.
 - **`<pact-id>` (required positional arg)**: `caw tx transfer`, `caw tx call`, and `caw tx sign-message` all take `<pact-id>` as the first positional argument. The CLI resolves the wallet UUID and API key from the pact automatically — do not pass `--wallet-id` separately.
 - **`--context` (required)**: Required for `caw tx transfer`, `caw tx call`, `caw tx sign-message`, `caw pact submit`, `caw wallet pair`, and `caw faucet deposit`. Identifies the caller environment so status notifications are routed back to the right conversation. Two forms:
@@ -307,6 +308,15 @@ caw tx estimate-transfer-fee --to 0x... --token-id ETH_USDC --amount 10
 # ⚠️ Never use a contract address from memory.
 #    Token addresses: query caw meta tokens --token-ids <id>.
 #    Protocol addresses: source from the protocol's official documentation or from the user's input.
+# Build calldata for a contract call using caw util abi (no API key required, runs offline).
+# 1. Compute selector to verify against known value:
+caw util abi selector "transfer(address,uint256)"
+# 2. Encode calldata (numbers as decimal strings; tuple args as nested JSON arrays):
+caw util abi encode --method "transfer(address,uint256)" --args '["0xRecipient", "1000000"]'
+# 3. Verify by decoding before submitting:
+caw util abi decode --method "transfer(address,uint256)" --calldata <hex>
+# Signature canonical rules: no spaces, no param names, uint→uint256, int→int256, structs as (type1,type2,...).
+
 # Estimate fee before submitting (optional but recommended for large calls):
 caw tx estimate-call-fee --contract 0x... --calldata 0x... --chain-id ETH
 # EVM:

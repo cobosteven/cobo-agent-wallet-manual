@@ -129,6 +129,21 @@ Before you submit, verify:
 - ✅ Policy grants exactly what the execution plan needs — no more, no less
 - ✅ Completion condition is observable and testable ("after 10 txs" ✅, "when safe" ❌)
 
+**Parameter check — addresses and amounts:**
+
+For every address and amount in `--policies` and `--execution-plan`:
+- **Trace the source.** Where did this value come from?
+  - User stated it explicitly → copy character-for-character from the exact message. Do not retype from memory.
+  - Came from a recipe or official docs → re-read the source now. Do not rely on what you wrote earlier.
+  - Source unclear → stop and ask the user before submitting.
+- **Never infer or complete a partial value.** If an address looks truncated or an amount approximate, ask.
+- **Address format check.** For every address in `target_in` / `destination_address_in`:
+  - EVM: exactly 42 characters — `0x` + 40 hex chars. Count them.
+  - Solana: 32–44 Base58 characters.
+  - If the count is off by even one character, re-fetch from source.
+- **Cross-check execution consistency.** The contract address in `target_in` must be the exact same string as `--contract` in `caw tx call`. The destination in `destination_address_in` must match `--to` in `caw tx transfer`.
+- **Cross-document consistency.** Every address must be identical across intent text, execution plan, and policy JSON. The intended amount must fall within the policy's allow limits. Completion conditions must reflect the intended scope (e.g. a fixed-spend operation → `amount_spent` or `amount_spent_usd` matching total intended spend).
+
 Present a pre-submit preview to the user with the **4 core items**:
 
 | # | Item | What to show |
@@ -289,7 +304,7 @@ JSON array defining when a pact is considered complete. Each object has `type` a
 | Type | Threshold | Description |
 |---|---|---|
 | `tx_count` | string (integer) | Complete after N successful transactions (across all operation types). E.g., `"5"` |
-| `amount_spent` | string (decimal) | Complete after cumulative token amount reaches threshold. E.g., `"3.5"`. |
+| `amount_spent` | string (decimal) | Complete after cumulative token amount reaches threshold. E.g., `"3.5"`. Uses the token's transfer unit (e.g., `"1.5"` means 1.5 USDC or 1.5 ETH, not wei). |
 | `amount_spent_usd` | string (decimal) | Complete after cumulative USD spend reaches threshold. E.g., `"3000"`. Note: transactions without price data won't increment progress. |
 | `time_elapsed` | string (seconds) | Complete after N seconds from pact activation. E.g., `"3600"` (1 hour). |
 
@@ -429,9 +444,11 @@ Matching operations require owner approval before execution.
 }
 ```
 
-### USD Pricing Note
+### Amount Units and USD Pricing
 
-> ⚠️ **Important**: USD-based conditions (`amount_usd_gt`, `usage_limits.rolling_24h.amount_usd_gt`) only apply to tokens with available price data — tokens without price data bypass them entirely. For tokens without price data, use token-denominated limits (`amount_gt`, `usage_limits.rolling_24h.amount_gt`) instead.
+**Amount units**: `amount_gt` values are in the token's transfer unit — the same unit used when submitting a transfer. For example, "1.5" means 1.5 USDC for USDC, or 1.5 ETH for ETH/SETH (not wei).
+
+**USD Conditions**: USD-based conditions (`amount_usd_gt`, `usage_limits.rolling_24h.amount_usd_gt`) only apply to tokens with available price data — tokens without price data bypass them entirely. For tokens without price data, use token-denominated limits (`amount_gt`, `usage_limits.rolling_24h.amount_gt`) instead.
 
 ## CLI Command Reference
 
