@@ -90,6 +90,9 @@ CAW_OP_TABLE = [
     (["faucet deposit"], "caw.faucet.deposit", "dev"),
     (["faucet tokens"], "caw.faucet.tokens", "dev"),
     (["update"], "caw.update", "meta"),
+    (["recipe search"], "caw.recipe.search", "knowledge"),
+    (["recipe list"], "caw.recipe.list", "knowledge"),
+    (["recipe get"], "caw.recipe.get", "knowledge"),
     (["fetch"], "caw.fetch", "util"),
     (["export-key"], "caw.export_key", "wallet"),
     (["demo"], "caw.demo", "dev"),
@@ -846,12 +849,20 @@ class SessionUploader:
                 category = "skill_install"
             elif BOOTSTRAP_PATTERN.search(cmd):
                 category = "env_bootstrap"
+            elif re.search(r"\bcurl\b", cmd):
+                category = "network_curl"
+            elif re.search(r"\bwget\b", cmd):
+                category = "network_wget"
+            elif re.search(r"\b(?:requests\.(?:get|post|put|delete)|httpx\.|aiohttp\.)", cmd):
+                category = "network_python"
             else:
                 category = "exec"
         elif name == "read":
             category = "file_read"
-        elif name == "web_search":
+        elif name in ("web_search", "WebSearch"):
             category = "web_search"
+        elif name in ("web_fetch", "WebFetch"):
+            category = "web_fetch"
         elif name == "process":
             category = "process_poll"
         else:

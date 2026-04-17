@@ -48,6 +48,8 @@ def build_judge_prompt(
     is_refuse: bool = False,
     session_path: str = "",
     session_text: str = "",
+    eval_mode: str = "standard",
+    recipe_content: str = "",
 ) -> str:
     """构建 LLM Judge 的评分 prompt。
 
@@ -124,6 +126,62 @@ pact_hints: {json.dumps(hints, ensure_ascii=False)}
   "task_completion": {{"score": 0.0, "reasoning": "..."}}
 }}"""
 
+    # ── Recipe 模式：评估交易构建完整性，不评估链上执行结果 ──────────────
+    if eval_mode == "recipe":
+        recipe_section = ""
+        if recipe_content:
+            recipe_section = f"""
+**期望 Recipe 内容（用于评判 recipe_adherence）**:
+```
+{recipe_content}
+```
+"""
+        recipe_adherence_dim = (
+            "- recipe_adherence: agent 是否遵循了 recipe 中规定的操作流程？"
+            "合约地址、函数签名、参数顺序是否与 recipe 一致？"
+            "是否正确使用了 recipe 提供的 ABI/selector 信息？"
+        )
+        if not recipe_content:
+            recipe_adherence_dim = (
+                "- recipe_adherence: **本次评测未提供 recipe（CC 无 recipe 对照组）**，"
+                "该维度评为 N/A，请给 score=0.0 并在 reasoning 中写明 'N/A: no recipe provided'。"
+            )
+
+        return f"""**评估任务（Recipe 模式 — 仅评估交易构建，不评估链上执行）**
+操作类型: {operation_type} | 难度: {difficulty}
+用户指令: {user_message}
+成功标准: {success_criteria}
+pact_hints: {json.dumps(hints, ensure_ascii=False)}
+
+**断言结果**:
+{assertion_context}
+{pact_section}{recipe_section}{_session_section}
+**评分维度** (各项 0-1 分，附 reasoning)
+
+**重要**：本模式只评估交易是否被正确**构建和提交**，不评估链上执行结果。
+交易成功提交（caw tx 返回 status=Initiated/PendingApproval）即视为构建完成。
+
+S1 意图解析:
+- intent_understanding: agent 是否正确理解了用户想做什么操作、涉及什么资产、在哪条链上？
+
+S2 Pact 协商（基于 agent 实际提交的 pact 参数评分）:
+- policies_correctness: policies JSON 是否与用户意图匹配？chain_in/token_in/contract allowlist 是否正确？deny_if 限额是否合理？scope 是否最小化（不过度授权）？
+- completion_conditions_correctness: completion-conditions 是否与用户意图匹配？type 选择是否正确（tx_count/amount_spent_usd/time_elapsed）？threshold 是否合理？
+
+S3 交易构建完整性（仅评估交易是否被正确构建和提交，不评估链上执行结果）:
+- tx_construction_correctness: 是否用正确的 caw tx 命令（transfer/call）？合约地址是否正确？function selector 和 ABI 编码参数是否正确？calldata 构建逻辑是否合理？
+{recipe_adherence_dim}
+
+以合法 JSON 返回:
+{{
+  "intent_understanding": {{"score": 0.0, "reasoning": "..."}},
+  "policies_correctness": {{"score": 0.0, "reasoning": "..."}},
+  "completion_conditions_correctness": {{"score": 0.0, "reasoning": "..."}},
+  "tx_construction_correctness": {{"score": 0.0, "reasoning": "..."}},
+  "recipe_adherence": {{"score": 0.0, "reasoning": "..."}}
+}}"""
+
+    # ── 标准模式 ────────────────────────────────────────────────────────
     return f"""**评估任务**
 操作类型: {operation_type} | 难度: {difficulty}
 用户指令: {user_message}

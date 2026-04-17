@@ -80,6 +80,7 @@ def get_dataset_items(dataset_name: str) -> list[dict]:
                 "difficulty": meta.get("difficulty", ""),
                 "chain": meta.get("chain", ""),
                 "success_criteria": exp.get("success_criteria", ""),
+                "recipe": meta.get("recipe", ""),
             }
         )
     return result

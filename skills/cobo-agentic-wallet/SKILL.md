@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.04.16.6"
+  version: "2026.04.16.7"
 description: |
   Create and manage agentic wallets with Cobo. Use for autonomous onchain
   operations via the caw CLI: token transfers, contract calls, pact creation
@@ -218,11 +218,11 @@ Poll pact status with `caw pact show <pact-id>` and check `.status` until it cha
 All transactions (transfers, contract calls, message signing) run inside a pact. Shared decision rules:
 
 - **Balance preflight for fund-using intent**: If the user's goal will spend funds, run `caw wallet balance` before execution. Verify the requested token amount is available and that the wallet has enough native token to pay network fees. If balance is insufficient, stop and report the current balance and shortfall instead of attempting the operation.
-- **Recipe preflight for contract interactions**: Before assembling calldata or calling any contract function, search for a matching recipe (`caw recipe search`) to obtain the correct function signature and parameter format. Then use `caw util abi encode` to construct the calldata, and `caw util abi decode` to verify it before submitting. Do not guess function selectors or parameter encoding.
+- **Recipe preflight for contract interactions**: Before calling any contract, search for a matching recipe (`caw recipe search`). From the recipe: take contract addresses from the `Fact` section; build calldata from the `ABI` section using `caw util abi encode`, then verify with `caw util abi decode` before submitting. Do not guess selectors, addresses, or argument encoding. If any parameter or contract detail is not covered by the recipe, consult the URLs in the recipe's `References` section. If still unclear, search the protocol's official documentation or ask the user.
 - **`--request-id` idempotency**: Always set a unique, deterministic request ID per logical transaction (e.g. `invoice-001`, `swap-20240318-1`). Retrying with the same `--request-id` is safe — the server deduplicates.
 - **`<pact-id>` (required positional arg)**: `caw tx transfer`, `caw tx call`, and `caw tx sign-message` all take `<pact-id>` as the first positional argument. The CLI resolves the wallet UUID and API key from the pact automatically — do not pass `--wallet-id` separately.
 - **Sequential execution for same-address transactions (nonce ordering)**: On EVM chains, each transaction from the same address must use an incrementing nonce. **Wait for each transaction to reach `Success` status (tx is confirmed on-chain) before submitting the next one.** Poll with `caw tx get --request-id <request-id>` and check `.status` — the lifecycle is `Initiated → PendingApproval → Approved → Processing → Pending → Success`. `.status` is a literal string field — match it with exact string equality against one of: `Initiated`, `PendingApproval`, `Approved`, `Processing`, `Pending`, `Success`, `Failed`, `Rejected`, `Cancelled`. Do not do substring or prefix matching.
-- **Never use a contract address from memory**. Token addresses: query `caw meta tokens --token-ids <id>`. Protocol addresses: source from the protocol's official documentation or from the user's input. If the source is unclear, ask the user to provide or verify the address before submitting.
+- **Never use a contract address from memory**. Token addresses: query `caw meta tokens --token-ids <id>`. Protocol contract addresses (routers, pools, exchanges): use the recipe; if no recipe matches, use the protocol's official documentation; if still unclear, ask the user. 
 - **Contract addresses differ per chain** — wallet addresses are shared across chains of the same type (all EVM chains share one address), but contract addresses typically do not. Always look them up per chain from official sources or the user's input.
 - **Multi-step operations** (DeFi strategies, loops, conditional logic, automation): write a script using the SDK, then run it. Store in `./scripts/` and reuse existing scripts over creating new ones. See [sdk-scripting.md](./references/sdk-scripting.md).
 - **`status=PendingApproval`**: The transaction requires owner approval before it executes. Follow [pending-approval.md](./references/pending-approval.md).
@@ -298,20 +298,15 @@ caw tx transfer <pact-id> --dst-address 0x1234...abcd --token-id ETH_USDC --amou
 # Estimate the network fee for a transfer without running policy checks.
 caw tx estimate-transfer-fee --dst-address 0x... --token-id ETH_USDC --amount 10
 
+# Build calldata for a contract call using caw util abi
+# 1. Encode calldata (numbers as decimal strings; tuple args as nested JSON arrays):
+caw util abi encode --method "transfer(address,uint256)" --args '["0xRecipient", "1000000"]'
+# 2. Verify by decoding before submitting:
+caw util abi decode --method "transfer(address,uint256)" --calldata <hex>
+
 # Submit a smart contract call. <pact-id> is required as the first positional argument.
 # Pre-check runs automatically.
 # ⚠️ Address format: EVM = exactly 42 chars (0x + 40 hex); Solana = 43-44 chars (Base58).
-# ⚠️ Never use a contract address from memory.
-#    Token addresses: query caw meta tokens --token-ids <id>.
-#    Protocol addresses: source from the protocol's official documentation or from the user's input.
-# Build calldata for a contract call using caw util abi (no API key required, runs offline).
-# 1. Compute selector to verify against known value:
-caw util abi selector "transfer(address,uint256)"
-# 2. Encode calldata (numbers as decimal strings; tuple args as nested JSON arrays):
-caw util abi encode --method "transfer(address,uint256)" --args '["0xRecipient", "1000000"]'
-# 3. Verify by decoding before submitting:
-caw util abi decode --method "transfer(address,uint256)" --calldata <hex>
-# Signature canonical rules: no spaces, no param names, uint→uint256, int→int256, structs as (type1,type2,...).
 
 # Estimate fee before submitting (optional but recommended for large calls):
 caw tx estimate-call-fee --contract 0x... --calldata 0x... --chain-id ETH

@@ -199,3 +199,69 @@ S2 Pact (assertion+judge) | 0.72
 | lend | 0.71 | Aave 操作，受测试网合约限制 |
 | multi_step | 0.95 | 多步骤，表现最佳 |
 | error/edge | 0.72 | 错误处理，≥ 0.70 可接受 |
+
+---
+
+## Recipe 模式评分
+
+### 目的
+
+检验 recipe 内容本身是否好用、是否有问题。通过三种模式对比：
+- **有 recipe（CC/OpenCLAW）**：验证 recipe 内容是否足够、合约地址/函数签名是否正确
+- **无 recipe（CC baseline）**：对照组，量化 recipe 的价值
+
+### 评估边界
+
+只评估**交易构建**，不评估链上执行：
+- **构建结束**：`caw tx transfer/call/sign-message` 成功返回（status=Initiated/PendingApproval）
+- **执行开始**：轮询 `caw tx get`、等待链上确认 — **不评估**
+
+### 综合分计算
+
+```
+综合分 = S1(意图) × 0.20 + S2(Pact) × 0.45 + S3(交易构建) × 0.35
+```
+
+**无 Task Completion**（交易不执行，无法评判任务是否完成）。
+
+### S3 交易构建子维度
+
+| 维度 | 权重 | 方式 | 评判内容 |
+|------|:----:|:----:|---------|
+| tx_construction_correctness | 0.5 | LLM | caw tx 命令是否正确？合约地址、function selector、ABI 编码参数是否正确？ |
+| recipe_adherence | 0.3 | LLM | 是否遵循 recipe 中规定的操作流程？（CC 无 recipe 模式为 N/A，权重转给 tx_construction） |
+| tx_submission_success | 0.2 | 断言 | caw tx 是否成功返回（status=Initiated/PendingApproval）？ |
+
+**CC 无 recipe 模式权重调整**：`S3 = tx_construction_correctness × 0.7 + tx_submission_success × 0.3`
+
+### 三种对比模式
+
+| 模式 | recipe 来源 | recipe search |
+|------|:-----------:|:------------:|
+| OpenCLAW + recipe | dataset metadata 注入 | 禁用 |
+| CC + recipe | dataset metadata 注入 | 禁用 |
+| CC 无 recipe | 不提供 | 禁用 |
+
+所有模式的 recipe 内容来自 dataset item 的 `metadata.recipe` 字段，不需要使用 `caw recipe search`。
+
+### 网络命令诊断指标
+
+不参与评分，用于对比分析 agent 信息获取行为：
+
+| 指标 | 说明 |
+|------|------|
+| `caw.network_call_count` | 网络命令总数 |
+| `caw.curl_count` | curl 命令数 |
+| `caw.web_search_count` | web search 次数 |
+| `caw.web_fetch_count` | web fetch 次数 |
+| `caw.recipe_search_count` | recipe search 次数 |
+
+**预期**：有 recipe 的模式网络命令应接近 0，无 recipe 模式可能出现较多。
+
+### Langfuse Score 格式（Recipe 模式）
+
+```
+评分：caw.s1_intent, caw.s2_pact, caw.s3_tx_construction, caw.e2e_composite
+子维度：caw.s1_intent_understanding, caw.s2_policies_correctness, caw.s2_completion_conditions,
+       caw.s3_tx_construction_correctness, caw.s3_recipe_adherence
+```

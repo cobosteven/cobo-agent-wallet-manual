@@ -33,7 +33,8 @@ description: |
 | 用户说 | 评测方式 | 读取并执行 |
 |--------|---------|-----------|
 | "跑评测"、"测评 CAW"、"eval"、"评分"、"claude code 评测" | **Claude Code 评测**（默认 dataset: `caw-agent-eval-seth-v2`） | → 读 [run-eval-cc.md](./references/run-eval-cc.md) 按步骤执行 |
-| "recipe 评测"、"跑 recipe"、"recipe eval" | **Claude Code 评测**（dataset: `caw-recipe-eval-seth-v1`） | → 读 [run-eval-cc.md](./references/run-eval-cc.md) 按步骤执行，`--dataset-name caw-recipe-eval-seth-v1` |
+| "recipe 评测"、"recipe eval" | **Recipe 评测**（交易构建模式） | → 读 [run-eval-recipe.md](./references/run-eval-recipe.md) 按步骤执行 |
+| "recipe 对比评测"、"recipe 对比" | **Recipe 三模式对比评测** | → 读 [run-eval-recipe.md](./references/run-eval-recipe.md)（跑三次对比） |
 | "弱模型验证"、"openclaw 评测"、"模型兼容性" | **Openclaw 弱模型验证** | → 读 [run-eval-openclaw.md](./references/run-eval-openclaw.md) 按步骤执行（SSH 到服务器跑评测 → 下载 session → 本地评分出报告） |
 
 **默认走 Claude Code 评测**（如果用户没有明确说"弱模型"或"openclaw"）。
@@ -77,10 +78,21 @@ description: |
 
 ## 评分体系
 
+### 标准模式
+
 ```
 综合分 = task_completion × 0.3 + process_quality × 0.7
 process_quality = S1(意图) × 0.15 + S2(Pact) × 0.45 + S3(执行) × 0.4
 ```
+
+### Recipe 模式（交易构建评测）
+
+```
+综合分 = S1(意图) × 0.20 + S2(Pact) × 0.45 + S3(交易构建) × 0.35
+S3 = tx_construction_correctness × 0.5 + recipe_adherence × 0.3 + tx_submission_success × 0.2
+```
+
+无 Task Completion 评分。仅评估交易是否被正确构建和提交，不评估链上执行结果。
 
 所有分数 0-1。详见 [scoring.md](./references/scoring.md)。
 

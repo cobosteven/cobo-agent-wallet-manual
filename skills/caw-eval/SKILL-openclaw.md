@@ -139,6 +139,7 @@ RUN_NAME=eval-oc-${MODEL_SHORT}-$(date +%Y%m%d-%H%M)
 - 默认（无额外 flag）：动态队列，阻塞等待所有 item 完成，适合正式评测
 - `--fire-and-forget`：静态预分配（i % N）+ nohup 后台启动，SSH 立即返回；搭配 `--watch` 轮询进度。适合不想等待、评测时间较长时
 - `--static`：静态预分配但 SSH 阻塞等待；调试用
+- `--eval-mode recipe --recipe-mode openclaw`：Recipe 评测模式（交易构建），recipe 从 dataset metadata 注入，agent 构建并提交交易后即停止
 
 **部分 item 失败**：dispatch 会 `exit 1` 并列出失败 item 和重跑命令，用 `--item-id` 重跑。
 

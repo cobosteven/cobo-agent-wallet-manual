@@ -800,6 +800,9 @@ STAGE_WEIGHTS = {"s1": 0.15, "s2": 0.45, "s3": 0.40}
 _TC_WEIGHT = 0.30
 _PROCESS_WEIGHT = 0.70
 
+# Recipe 模式权重: E2E = S1 x 0.20 + S2 x 0.45 + S3 x 0.35 (无 task_completion)
+RECIPE_STAGE_WEIGHTS = {"s1": 0.20, "s2": 0.45, "s3": 0.35}
+
 
 def build_score_comment(
     stage: str,
@@ -830,6 +833,7 @@ def _upload_scores(
     diagnostics_reasoning: str = "",
     run_metrics: dict | None = None,
     score_metadata: dict | None = None,
+    eval_mode: str = "standard",
 ) -> None:
     """上传评分到 Langfuse，comment 包含 reasoning，metadata 包含上下文信息。
 
@@ -849,56 +853,99 @@ def _upload_scores(
         if k
         in ("pact_structure_valid", "policies_correctness", "completion_conditions_correctness")
     }
-    s3_dims = {
-        k: v for k, v in dimensions.items() if k in ("execution_correctness", "result_reporting")
-    }
+    if eval_mode == "recipe":
+        s3_dims = {
+            k: v
+            for k, v in dimensions.items()
+            if k in ("tx_construction_correctness", "recipe_adherence", "tx_submission_success")
+        }
+    else:
+        s3_dims = {
+            k: v
+            for k, v in dimensions.items()
+            if k in ("execution_correctness", "result_reporting")
+        }
     tc_dims = {k: v for k, v in dimensions.items() if k in ("task_completion",)}
     refuse_dims = {
         k: v for k, v in dimensions.items() if k in ("correctly_refused", "refusal_quality")
     }
 
-    scores_to_upload: list[tuple[str, float, str]] = [
-        (
-            "caw.s1_intent",
-            s1_score,
-            build_score_comment("S1 意图解析", s1_score, s1_dims, scoring_source),
-        ),
-        (
-            "caw.s2_pact",
-            s2_score,
-            build_score_comment("S2 Pact 协商", s2_score, s2_dims, scoring_source),
-        ),
-        (
-            "caw.s3_execution",
-            s3_score,
-            build_score_comment("S3 执行", s3_score, s3_dims, scoring_source),
-        ),
-        (
-            "caw.e2e_composite",
-            composite,
-            f"E2E 综合 ({scoring_source}) | {composite:.2f}\n"
-            f"  = task_completion({task_completion_score:.2f})×{_TC_WEIGHT} "
-            f"+ process(S1={s1_score:.2f}×{STAGE_WEIGHTS['s1']}+"
-            f"S2={s2_score:.2f}×{STAGE_WEIGHTS['s2']}+"
-            f"S3={s3_score:.2f}×{STAGE_WEIGHTS['s3']})×{_PROCESS_WEIGHT}",
-        ),
-        (
-            "caw.task_completion",
-            task_completion_score,
-            build_score_comment("任务完成度", task_completion_score, tc_dims, scoring_source),
-        ),
-        ("caw.scoring_source", 2.0, f"scoring_source={scoring_source}"),
-    ]
-
-    # 子维度作为独立 score 上传，便于 ClickHouse 直接查询
-    _dim_score_names = {
-        "intent_understanding": "caw.s1_intent_understanding",
-        "policies_correctness": "caw.s2_policies_correctness",
-        "completion_conditions_correctness": "caw.s2_completion_conditions",
-        "execution_correctness": "caw.s3_execution_correctness",
-        "result_reporting": "caw.s3_result_reporting",
-        "task_completion": "caw.task_completion_judge",
-    }
+    if eval_mode == "recipe":
+        w = RECIPE_STAGE_WEIGHTS
+        scores_to_upload: list[tuple[str, float, str]] = [
+            (
+                "caw.s1_intent",
+                s1_score,
+                build_score_comment("S1 意图解析", s1_score, s1_dims, scoring_source),
+            ),
+            (
+                "caw.s2_pact",
+                s2_score,
+                build_score_comment("S2 Pact 协商", s2_score, s2_dims, scoring_source),
+            ),
+            (
+                "caw.s3_tx_construction",
+                s3_score,
+                build_score_comment("S3 交易构建", s3_score, s3_dims, scoring_source),
+            ),
+            (
+                "caw.e2e_composite",
+                composite,
+                f"E2E 综合 [recipe] ({scoring_source}) | {composite:.2f}\n"
+                f"  = S1={s1_score:.2f}×{w['s1']}+"
+                f"S2={s2_score:.2f}×{w['s2']}+"
+                f"S3={s3_score:.2f}×{w['s3']}",
+            ),
+            ("caw.scoring_source", 2.0, f"scoring_source={scoring_source}"),
+        ]
+        _dim_score_names = {
+            "intent_understanding": "caw.s1_intent_understanding",
+            "policies_correctness": "caw.s2_policies_correctness",
+            "completion_conditions_correctness": "caw.s2_completion_conditions",
+            "tx_construction_correctness": "caw.s3_tx_construction_correctness",
+            "recipe_adherence": "caw.s3_recipe_adherence",
+        }
+    else:
+        scores_to_upload: list[tuple[str, float, str]] = [
+            (
+                "caw.s1_intent",
+                s1_score,
+                build_score_comment("S1 意图解析", s1_score, s1_dims, scoring_source),
+            ),
+            (
+                "caw.s2_pact",
+                s2_score,
+                build_score_comment("S2 Pact 协商", s2_score, s2_dims, scoring_source),
+            ),
+            (
+                "caw.s3_execution",
+                s3_score,
+                build_score_comment("S3 执行", s3_score, s3_dims, scoring_source),
+            ),
+            (
+                "caw.e2e_composite",
+                composite,
+                f"E2E 综合 ({scoring_source}) | {composite:.2f}\n"
+                f"  = task_completion({task_completion_score:.2f})×{_TC_WEIGHT} "
+                f"+ process(S1={s1_score:.2f}×{STAGE_WEIGHTS['s1']}+"
+                f"S2={s2_score:.2f}×{STAGE_WEIGHTS['s2']}+"
+                f"S3={s3_score:.2f}×{STAGE_WEIGHTS['s3']})×{_PROCESS_WEIGHT}",
+            ),
+            (
+                "caw.task_completion",
+                task_completion_score,
+                build_score_comment("任务完成度", task_completion_score, tc_dims, scoring_source),
+            ),
+            ("caw.scoring_source", 2.0, f"scoring_source={scoring_source}"),
+        ]
+        _dim_score_names = {
+            "intent_understanding": "caw.s1_intent_understanding",
+            "policies_correctness": "caw.s2_policies_correctness",
+            "completion_conditions_correctness": "caw.s2_completion_conditions",
+            "execution_correctness": "caw.s3_execution_correctness",
+            "result_reporting": "caw.s3_result_reporting",
+            "task_completion": "caw.task_completion_judge",
+        }
     for dim_key, score_name in _dim_score_names.items():
         dim = dimensions.get(dim_key)
         if dim is not None:
@@ -982,6 +1029,8 @@ def score_session_file(
     skip_llm_judge: bool = False,
     judge_model: str = "claude-sonnet-4-20250514",
     trace_id: str = "",
+    eval_mode: str = "standard",
+    recipe_mode: str = "",
 ) -> dict[str, Any]:
     """
     评分管线：代码断言 + LLM Judge。
@@ -1107,47 +1156,95 @@ def score_session_file(
             ).score
             s2_score = pc * 0.7 + cc * 0.3
 
-        ec = all_dimensions.get(
-            "execution_correctness",
-            DimensionScore(
-                dimension="execution_correctness",
-                score=0.5,
-                method="default",
-                reasoning="LLM judge 不可用",
-            ),
-        ).score
-        rr = all_dimensions.get(
-            "result_reporting",
-            DimensionScore(
-                dimension="result_reporting",
-                score=0.5,
-                method="default",
-                reasoning="LLM judge 不可用",
-            ),
-        ).score
-        s3_score = ec * 0.6 + rr * 0.4
+        if eval_mode == "recipe":
+            # Recipe 模式：S3 = 交易构建完整性
+            from assertions import check_tx_submission_gate, classify_network_diagnostics
 
-        task_completion_score = all_dimensions.get(
-            "task_completion",
-            DimensionScore(
+            tx_sub_gate = check_tx_submission_gate(extraction)
+            tx_sub_score = 1.0 if tx_sub_gate.passed else 0.0
+            all_dimensions["tx_submission_success"] = DimensionScore(
+                dimension="tx_submission_success",
+                score=tx_sub_score,
+                method="assertion",
+                reasoning=tx_sub_gate.reasoning,
+            )
+            # 网络诊断（不参与评分）
+            classify_network_diagnostics(extraction)
+
+            tcc = all_dimensions.get(
+                "tx_construction_correctness",
+                DimensionScore(
+                    dimension="tx_construction_correctness",
+                    score=0.5,
+                    method="default",
+                    reasoning="LLM judge 不可用",
+                ),
+            ).score
+            ra = all_dimensions.get(
+                "recipe_adherence",
+                DimensionScore(
+                    dimension="recipe_adherence",
+                    score=0.0,
+                    method="default",
+                    reasoning="LLM judge 不可用",
+                ),
+            ).score
+
+            if recipe_mode == "cc_no_recipe":
+                s3_score = tcc * 0.7 + tx_sub_score * 0.3
+            else:
+                s3_score = tcc * 0.5 + ra * 0.3 + tx_sub_score * 0.2
+
+            task_completion_score = DimensionScore(
                 dimension="task_completion",
-                score=0.5,
-                method="default",
-                reasoning="LLM judge 不可用",
-            ),
-        )
+                score=0.0,
+                method="not_evaluated",
+                reasoning="Recipe 模式不评估 task_completion",
+            )
+            w = RECIPE_STAGE_WEIGHTS
+            composite = s1_score * w["s1"] + s2_score * w["s2"] + s3_score * w["s3"]
+        else:
+            ec = all_dimensions.get(
+                "execution_correctness",
+                DimensionScore(
+                    dimension="execution_correctness",
+                    score=0.5,
+                    method="default",
+                    reasoning="LLM judge 不可用",
+                ),
+            ).score
+            rr = all_dimensions.get(
+                "result_reporting",
+                DimensionScore(
+                    dimension="result_reporting",
+                    score=0.5,
+                    method="default",
+                    reasoning="LLM judge 不可用",
+                ),
+            ).score
+            s3_score = ec * 0.6 + rr * 0.4
 
-        process_quality = (
-            s1_score * STAGE_WEIGHTS["s1"]
-            + s2_score * STAGE_WEIGHTS["s2"]
-            + s3_score * STAGE_WEIGHTS["s3"]
-        )
-        tc_val = (
-            task_completion_score.score
-            if isinstance(task_completion_score, DimensionScore)
-            else task_completion_score
-        )
-        composite = tc_val * _TC_WEIGHT + process_quality * _PROCESS_WEIGHT
+            task_completion_score = all_dimensions.get(
+                "task_completion",
+                DimensionScore(
+                    dimension="task_completion",
+                    score=0.5,
+                    method="default",
+                    reasoning="LLM judge 不可用",
+                ),
+            )
+
+            process_quality = (
+                s1_score * STAGE_WEIGHTS["s1"]
+                + s2_score * STAGE_WEIGHTS["s2"]
+                + s3_score * STAGE_WEIGHTS["s3"]
+            )
+            tc_val = (
+                task_completion_score.score
+                if isinstance(task_completion_score, DimensionScore)
+                else task_completion_score
+            )
+            composite = tc_val * _TC_WEIGHT + process_quality * _PROCESS_WEIGHT
 
     # 确保 task_completion 是 float
     tc_float = (
@@ -1204,6 +1301,8 @@ def score_session_file(
         "chain": item_metadata.get("chain", ""),
         "model": item_metadata.get("model", ""),
         "type": _type,
+        "eval_mode": eval_mode,
+        "recipe_mode": recipe_mode,
     }
     # 去除空值
     score_meta = {k: v for k, v in score_meta.items() if v}
@@ -1249,6 +1348,7 @@ def score_session_file(
         diagnostics.reasoning,
         run_metrics=run_metrics,
         score_metadata=score_meta,
+        eval_mode=eval_mode,
     )
     _lf.flush()
     return result
@@ -1275,6 +1375,8 @@ def _score_extraction(
     dry_run: bool = False,
     lf: Any = None,
     extra_run_metrics: dict | None = None,
+    eval_mode: str = "standard",
+    recipe_mode: str = "",
 ) -> dict[str, Any]:
     """评分核心逻辑（不依赖 session 文件）：断言 + LLM Judge → 综合分 → 上传 Langfuse。
 
@@ -1360,47 +1462,93 @@ def _score_extraction(
             ).score
             s2_score = pc * 0.7 + cc * 0.3
 
-        ec = all_dimensions.get(
-            "execution_correctness",
-            DimensionScore(
-                dimension="execution_correctness",
-                score=0.5,
-                method="default",
-                reasoning="LLM judge 不可用",
-            ),
-        ).score
-        rr = all_dimensions.get(
-            "result_reporting",
-            DimensionScore(
-                dimension="result_reporting",
-                score=0.5,
-                method="default",
-                reasoning="LLM judge 不可用",
-            ),
-        ).score
-        s3_score = ec * 0.6 + rr * 0.4
+        if eval_mode == "recipe":
+            from assertions import check_tx_submission_gate, classify_network_diagnostics
 
-        task_completion_score = all_dimensions.get(
-            "task_completion",
-            DimensionScore(
+            tx_sub_gate = check_tx_submission_gate(extraction)
+            tx_sub_score = 1.0 if tx_sub_gate.passed else 0.0
+            all_dimensions["tx_submission_success"] = DimensionScore(
+                dimension="tx_submission_success",
+                score=tx_sub_score,
+                method="assertion",
+                reasoning=tx_sub_gate.reasoning,
+            )
+            classify_network_diagnostics(extraction)
+
+            tcc = all_dimensions.get(
+                "tx_construction_correctness",
+                DimensionScore(
+                    dimension="tx_construction_correctness",
+                    score=0.5,
+                    method="default",
+                    reasoning="LLM judge 不可用",
+                ),
+            ).score
+            ra = all_dimensions.get(
+                "recipe_adherence",
+                DimensionScore(
+                    dimension="recipe_adherence",
+                    score=0.0,
+                    method="default",
+                    reasoning="LLM judge 不可用",
+                ),
+            ).score
+
+            if recipe_mode == "cc_no_recipe":
+                s3_score = tcc * 0.7 + tx_sub_score * 0.3
+            else:
+                s3_score = tcc * 0.5 + ra * 0.3 + tx_sub_score * 0.2
+
+            task_completion_score = DimensionScore(
                 dimension="task_completion",
-                score=0.5,
-                method="default",
-                reasoning="LLM judge 不可用",
-            ),
-        )
+                score=0.0,
+                method="not_evaluated",
+                reasoning="Recipe 模式不评估 task_completion",
+            )
+            w = RECIPE_STAGE_WEIGHTS
+            composite = s1_score * w["s1"] + s2_score * w["s2"] + s3_score * w["s3"]
+        else:
+            ec = all_dimensions.get(
+                "execution_correctness",
+                DimensionScore(
+                    dimension="execution_correctness",
+                    score=0.5,
+                    method="default",
+                    reasoning="LLM judge 不可用",
+                ),
+            ).score
+            rr = all_dimensions.get(
+                "result_reporting",
+                DimensionScore(
+                    dimension="result_reporting",
+                    score=0.5,
+                    method="default",
+                    reasoning="LLM judge 不可用",
+                ),
+            ).score
+            s3_score = ec * 0.6 + rr * 0.4
 
-        process_quality = (
-            s1_score * STAGE_WEIGHTS["s1"]
-            + s2_score * STAGE_WEIGHTS["s2"]
-            + s3_score * STAGE_WEIGHTS["s3"]
-        )
-        tc_val = (
-            task_completion_score.score
-            if isinstance(task_completion_score, DimensionScore)
-            else task_completion_score
-        )
-        composite = tc_val * _TC_WEIGHT + process_quality * _PROCESS_WEIGHT
+            task_completion_score = all_dimensions.get(
+                "task_completion",
+                DimensionScore(
+                    dimension="task_completion",
+                    score=0.5,
+                    method="default",
+                    reasoning="LLM judge 不可用",
+                ),
+            )
+
+            process_quality = (
+                s1_score * STAGE_WEIGHTS["s1"]
+                + s2_score * STAGE_WEIGHTS["s2"]
+                + s3_score * STAGE_WEIGHTS["s3"]
+            )
+            tc_val = (
+                task_completion_score.score
+                if isinstance(task_completion_score, DimensionScore)
+                else task_completion_score
+            )
+            composite = tc_val * _TC_WEIGHT + process_quality * _PROCESS_WEIGHT
 
     tc_float = (
         task_completion_score.score
@@ -1454,6 +1602,8 @@ def _score_extraction(
         "chain": item_metadata.get("chain", ""),
         "model": item_metadata.get("model", ""),
         "type": _type,
+        "eval_mode": eval_mode,
+        "recipe_mode": item_metadata.get("recipe_mode", ""),
     }
     score_meta = {k: v for k, v in score_meta.items() if v}
 
@@ -1486,13 +1636,18 @@ def _score_extraction(
         diagnostics.reasoning,
         run_metrics=run_metrics,
         score_metadata=score_meta,
+        eval_mode=eval_mode,
     )
     _lf.flush()
     return result
 
 
 def _build_judge_req_for_item(
-    lf: Any, item_id: str, trace_id: str, items_cache: dict
+    lf: Any,
+    item_id: str,
+    trace_id: str,
+    items_cache: dict,
+    eval_mode: str = "standard",
 ) -> dict | None:
     """为单个 (item_id, trace_id) 构建 judge request dict。失败返回 None。
 
@@ -1524,6 +1679,8 @@ def _build_judge_req_for_item(
             best_pact_submit=best_pact,
             is_refuse=is_refuse,
             session_text=session_text,
+            eval_mode=eval_mode,
+            recipe_content=meta.get("recipe", ""),
         )
         return {
             "trace_id": trace_id,
@@ -1546,6 +1703,7 @@ async def _watch_and_judge(
     expected_count: int,
     watch_timeout: int,
     watch_interval: int,
+    eval_mode: str = "standard",
 ) -> None:
     """轮询 Langfuse，新 trace 出现即生成 judge request 并追加到 out_path。
 
@@ -1585,7 +1743,13 @@ async def _watch_and_judge(
 
         new_items = [(iid, tid) for iid, tid in run_traces.items() if iid not in seen]
         for item_id, trace_id in sorted(new_items):
-            req = _build_judge_req_for_item(lf, item_id, trace_id, items_cache)
+            req = _build_judge_req_for_item(
+                lf,
+                item_id,
+                trace_id,
+                items_cache,
+                eval_mode=eval_mode,
+            )
             if req:
                 requests.append(req)
                 seen.add(item_id)
@@ -1691,6 +1855,18 @@ def langfuse_main() -> None:
         default=30,
         help="--watch 模式：轮询间隔秒数（默认 30s）",
     )
+    parser.add_argument(
+        "--eval-mode",
+        choices=["standard", "recipe"],
+        default="standard",
+        help="评测模式: standard（默认）或 recipe（交易构建模式）",
+    )
+    parser.add_argument(
+        "--recipe-mode",
+        choices=["cc_with_recipe", "cc_no_recipe", "openclaw"],
+        default="",
+        help="Recipe 对比模式（仅 --eval-mode recipe 时有效）",
+    )
     args = parser.parse_args()
 
     lf = _make_langfuse()
@@ -1782,6 +1958,7 @@ def langfuse_main() -> None:
                     expected_count=expected,
                     watch_timeout=args.watch_timeout,
                     watch_interval=args.watch_interval,
+                    eval_mode=getattr(args, "eval_mode", "standard"),
                 )
             )
             return
@@ -1789,7 +1966,13 @@ def langfuse_main() -> None:
         # 普通一次性模式：对已有 run_traces 全量生成
         requests: list[dict] = []
         for item_id, trace_id in sorted(run_traces.items()):
-            req = _build_judge_req_for_item(lf, item_id, trace_id, items_cache)
+            req = _build_judge_req_for_item(
+                lf,
+                item_id,
+                trace_id,
+                items_cache,
+                eval_mode=getattr(args, "eval_mode", "standard"),
+            )
             if req:
                 requests.append(req)
                 print(f"  [{item_id}] judge req built (trace={trace_id[:8]}...)")
@@ -1840,6 +2023,8 @@ def langfuse_main() -> None:
                 tool_call_count=tool_call_count,
                 dry_run=args.dry_run,
                 lf=lf,
+                eval_mode=getattr(args, "eval_mode", "standard"),
+                recipe_mode=getattr(args, "recipe_mode", ""),
             )
             result["item_id"] = item_id
             results.append(result)
@@ -1917,6 +2102,18 @@ def session_main() -> None:
         "--judge-model",
         default="claude-sonnet-4-20250514",
         help="LLM Judge model (default: claude-sonnet-4-20250514)",
+    )
+    parser.add_argument(
+        "--eval-mode",
+        choices=["standard", "recipe"],
+        default="standard",
+        help="评测模式: standard（默认）或 recipe（交易构建模式）",
+    )
+    parser.add_argument(
+        "--recipe-mode",
+        choices=["cc_with_recipe", "cc_no_recipe", "openclaw"],
+        default="",
+        help="Recipe 对比模式（仅 --eval-mode recipe 时有效）",
     )
     args = parser.parse_args(sys.argv[2:])
 
@@ -2029,6 +2226,8 @@ def session_main() -> None:
                     best_pact_submit=best_pact,
                     is_refuse=is_refuse,
                     session_path=str(sf),
+                    eval_mode=getattr(args, "eval_mode", "standard"),
+                    recipe_content=sf_metadata.get("recipe", ""),
                 )
 
                 req = {
@@ -2102,6 +2301,8 @@ def session_main() -> None:
                 skip_llm_judge=skip_judge,
                 judge_model=getattr(args, "judge_model", "claude-sonnet-4-20250514"),
                 trace_id=mapped_trace_id,
+                eval_mode=getattr(args, "eval_mode", "standard"),
+                recipe_mode=getattr(args, "recipe_mode", ""),
             )
             results.append(result)
         except Exception as e:

@@ -95,12 +95,22 @@ _WORKSPACE_SYSTEM_FILES = frozenset(
 )
 
 
-def build_task_prompt(item: dict) -> str:
-    """构建单个 item 的 task 执行 prompt（由 wrapper subagent 传给 task session）。"""
+def build_task_prompt(
+    item: dict,
+    eval_mode: str = "standard",
+    recipe_mode: str = "",
+) -> str:
+    """构建单个 item 的 task 执行 prompt（由 wrapper subagent 传给 task session）。
+
+    Args:
+        eval_mode: "standard" 标准模式, "recipe" recipe 评测模式
+        recipe_mode: "cc_with_recipe" / "cc_no_recipe" / "openclaw"（仅 recipe 模式有效）
+    """
     item_id = item["id"]
     user_message = item["user_message"]
+    recipe_content = item.get("recipe", "")
 
-    return f"""[EVAL:{item_id}]
+    prompt = f"""[EVAL:{item_id}]
 cobo-agentic-wallet-sandbox skill 已激活。
 
 ## Environment（环境已就绪，无需安装）
@@ -117,10 +127,37 @@ cobo-agentic-wallet-sandbox skill 已激活。
 - 如遇到无法自动化处理的真实阻塞（如 `owner_linked=true` 需要 Human App 审批），记录原因并跳过，继续执行其余步骤
 
 这是自动化评测，无人工实时监控，须完整执行至结束，不得因 skill 内部的交互流程而中断。
+"""
 
+    if eval_mode == "recipe":
+        prompt += """
+**交易构建模式（重要）：**
+- 交易成功提交后（caw tx transfer/call/sign-message 返回 status=Initiated 或 PendingApproval），**立即停止**
+- 不要轮询交易状态（不要 caw tx get）
+- 不要等待链上确认
+- 不要使用 `caw recipe search` 命令
+- 只需报告交易已成功提交（含 transaction_id/request_id），然后结束
+
+- 评测沙盒模式：只评估交易构建正确性，余额为 0 时不得中止，直接继续提交 pact 和构建交易
+"""
+        if recipe_mode in ("openclaw", "cc_with_recipe") and recipe_content:
+            prompt += f"""
+**以下是本操作的 Recipe 参考信息（直接使用，无需搜索）：**
+```
+{recipe_content}
+```
+"""
+        elif recipe_mode == "cc_no_recipe":
+            prompt += """
+**注意：本评测不提供 Recipe 信息，也不允许使用 caw recipe search。请基于自身知识完成交易构建。**
+"""
+
+    prompt += f"""
 按照以下用户指令完成操作：
 
 {user_message}"""
+
+    return prompt
 
 
 def build_wrapper_prompt(item: dict) -> str:
@@ -318,6 +355,8 @@ async def _run_single_task(
     workspace: str,
     run_dir: Path,
     timeout: int,
+    eval_mode: str = "standard",
+    recipe_mode: str = "",
 ) -> str:
     """执行单个评测 task，返回状态字符串 ("ok" | "error:<reason>")。"""
     item_id = item["id"]
@@ -376,7 +415,7 @@ async def _run_single_task(
             actual_agent_id = agent_name.lower()
 
         # 2. 构建 prompt 并发送
-        prompt = build_task_prompt(item)
+        prompt = build_task_prompt(item, eval_mode=eval_mode, recipe_mode=recipe_mode)
         rc, out, err = await _run_openclaw(
             openclaw_bin,
             [
@@ -489,6 +528,8 @@ async def _cmd_run(
     model_full: str,
     description: str,
     skip_link: bool = False,
+    eval_mode: str = "standard",
+    recipe_mode: str = "",
 ) -> None:
     """脚本驱动串行执行评测：为每个 task 创建隔离 agent，通过 CLI 执行，收集 session。
 
@@ -520,7 +561,15 @@ async def _cmd_run(
         op = item["operation_type"]
         diff = item["difficulty"]
         print(f"[{i + 1}/{len(items)}] {item_id} ({op} {diff})")
-        status = await _run_single_task(item, openclaw_bin, workspace, run_dir, timeout)
+        status = await _run_single_task(
+            item,
+            openclaw_bin,
+            workspace,
+            run_dir,
+            timeout,
+            eval_mode=eval_mode,
+            recipe_mode=recipe_mode,
+        )
         results[item_id] = status
 
     # 写 manifest
@@ -913,6 +962,8 @@ def _build_remote_run_cmd(
     *,
     fire_and_forget: bool = False,
     server_name: str = "",
+    eval_mode: str = "standard",
+    recipe_mode: str = "",
 ) -> str:
     """构建要在远端 openclaw 服务器上执行的完整 shell 命令（传给 sudo su - ubuntu -c）。
 
@@ -934,6 +985,10 @@ def _build_remote_run_cmd(
         f"--model-full {shlex.quote(model_full)} "
         "--skip-pack"
     )
+    if eval_mode != "standard":
+        core_cmd += f" --eval-mode {shlex.quote(eval_mode)}"
+    if recipe_mode:
+        core_cmd += f" --recipe-mode {shlex.quote(recipe_mode)}"
     if not fire_and_forget:
         return core_cmd
     # fire-and-forget：nohup 后台运行，echo PID 后 SSH 立即返回
@@ -957,6 +1012,8 @@ async def _ssh_dispatch_one(
     log_dir: Path,
     *,
     fire_and_forget: bool = False,
+    eval_mode: str = "standard",
+    recipe_mode: str = "",
 ) -> tuple[str, int]:
     """SSH 到一台 server 串行执行其分配的 items，stdout/stderr 写入 log_dir/{name}.log。
 
@@ -976,6 +1033,8 @@ async def _ssh_dispatch_one(
         model_full,
         fire_and_forget=fire_and_forget,
         server_name=server["name"],
+        eval_mode=eval_mode,
+        recipe_mode=recipe_mode,
     )
     ssh_cmd = [
         "gcloud",
@@ -1042,6 +1101,8 @@ async def _dynamic_worker(
     model: str,
     model_full: str,
     log_dir: Path,
+    eval_mode: str = "standard",
+    recipe_mode: str = "",
 ) -> str:
     """动态 worker：从队列持续取 item 执行，直到队列空为止。
 
@@ -1064,6 +1125,8 @@ async def _dynamic_worker(
             model_full,
             fire_and_forget=False,
             server_name=server["name"],
+            eval_mode=eval_mode,
+            recipe_mode=recipe_mode,
         )
         ssh_cmd = [
             "gcloud",
@@ -1114,6 +1177,8 @@ async def _cmd_dispatch(
     *,
     fire_and_forget: bool = False,
     static: bool = False,
+    eval_mode: str = "standard",
+    recipe_mode: str = "",
 ) -> None:
     """并行 dispatch 评测任务到多台 openclaw 服务器。
 
@@ -1211,6 +1276,8 @@ async def _cmd_dispatch(
                 model_full,
                 log_dir,
                 fire_and_forget=fire_and_forget,
+                eval_mode=eval_mode,
+                recipe_mode=recipe_mode,
             )
             for srv, chunk in zip(servers, chunks)
         ]
@@ -1269,6 +1336,8 @@ async def _cmd_dispatch(
             model,
             model_full,
             log_dir,
+            eval_mode=eval_mode,
+            recipe_mode=recipe_mode,
         )
         for srv in servers
     ]
@@ -1327,6 +1396,18 @@ def main() -> None:
     p_run.add_argument("--model", default="doubao", help="模型短标识")
     p_run.add_argument("--model-full", default="", help="完整模型 ID")
     p_run.add_argument("--description", default="", help="自定义 run description")
+    p_run.add_argument(
+        "--eval-mode",
+        choices=["standard", "recipe"],
+        default="standard",
+        help="评测模式: standard（默认）或 recipe（交易构建模式）",
+    )
+    p_run.add_argument(
+        "--recipe-mode",
+        choices=["cc_with_recipe", "cc_no_recipe", "openclaw"],
+        default="",
+        help="Recipe 对比模式（仅 --eval-mode recipe 时有效）",
+    )
 
     # ── prepare
     p_prepare = sub.add_parser("prepare", help="生成 task prompt 文件")
@@ -1417,6 +1498,18 @@ def main() -> None:
             "隐含 --static（后台模式无法动态调度）。"
         ),
     )
+    p_dispatch.add_argument(
+        "--eval-mode",
+        choices=["standard", "recipe"],
+        default="standard",
+        help="评测模式: standard（默认）或 recipe（交易构建模式）",
+    )
+    p_dispatch.add_argument(
+        "--recipe-mode",
+        choices=["cc_with_recipe", "cc_no_recipe", "openclaw"],
+        default="",
+        help="Recipe 对比模式（仅 --eval-mode recipe 时有效）",
+    )
 
     args = parser.parse_args()
 
@@ -1436,6 +1529,8 @@ def main() -> None:
                 model_full=args.model_full,
                 description=args.description,
                 skip_link=args.no_link,
+                eval_mode=args.eval_mode,
+                recipe_mode=args.recipe_mode,
             )
         )
     elif args.cmd == "prepare":
@@ -1486,6 +1581,8 @@ def main() -> None:
                 model_full=args.model_full,
                 fire_and_forget=args.fire_and_forget,
                 static=args.static,
+                eval_mode=args.eval_mode,
+                recipe_mode=args.recipe_mode,
             )
         )
     else:

@@ -45,12 +45,22 @@ _CC_SESSION_DIRS = [
 _RUNS_DIR = Path.home() / ".caw-eval" / "runs"
 
 
-def build_eval_prompt(item: dict) -> str:
-    """构建单个 item 的评测 prompt。"""
+def build_eval_prompt(
+    item: dict,
+    eval_mode: str = "standard",
+    recipe_mode: str = "",
+) -> str:
+    """构建单个 item 的评测 prompt。
+
+    Args:
+        eval_mode: "standard" 标准模式, "recipe" recipe 评测模式
+        recipe_mode: "cc_with_recipe" / "cc_no_recipe" / "openclaw"（仅 recipe 模式有效）
+    """
     item_id = item["id"]
     user_message = item["user_message"]
+    recipe_content = item.get("recipe", "")
 
-    return f"""[EVAL:{item_id}]
+    prompt = f"""[EVAL:{item_id}]
 cobo-agentic-wallet-dev skill 已激活。
 
 **评测模式约束 — 仅针对 skill 内部的交互流程，不影响对用户指令本身的响应：**
@@ -61,16 +71,47 @@ cobo-agentic-wallet-dev skill 已激活。
 - 如遇到无法自动化处理的真实阻塞（如 `owner_linked=true` 需要 Human App 审批），记录原因并跳过，继续执行其余步骤
 
 这是自动化评测，无人工实时监控，须完整执行至结束，不得因 skill 内部的交互流程而中断。
+"""
 
+    if eval_mode == "recipe":
+        prompt += """
+**交易构建模式（重要）：**
+- 交易成功提交后（caw tx transfer/call/sign-message 返回 status=Initiated 或 PendingApproval），**立即停止**
+- 不要轮询交易状态（不要 caw tx get）
+- 不要等待链上确认
+- 不要使用 `caw recipe search` 命令
+- 只需报告交易已成功提交（含 transaction_id/request_id），然后结束
+"""
+        if recipe_mode in ("cc_with_recipe", "openclaw") and recipe_content:
+            prompt += f"""
+**以下是本操作的 Recipe 参考信息（直接使用，无需搜索）：**
+```
+{recipe_content}
+```
+"""
+        elif recipe_mode == "cc_no_recipe":
+            prompt += """
+**注意：本评测不提供 Recipe 信息，也不允许使用 caw recipe search。请基于自身知识完成交易构建。**
+"""
+
+    prompt += f"""
 按照以下用户指令完成操作：
 
 {user_message}"""
+
+    return prompt
 
 
 # ── prepare 子命令 ──────────────────────────────────────────────────────────────
 
 
-def cmd_prepare(dataset_name: str, item_ids: list[str] | None, output_dir: str | None) -> None:
+def cmd_prepare(
+    dataset_name: str,
+    item_ids: list[str] | None,
+    output_dir: str | None,
+    eval_mode: str = "standard",
+    recipe_mode: str = "",
+) -> None:
     """生成评测 prompt，输出到终端或文件。"""
     items = get_dataset_items(dataset_name)
     if item_ids:
@@ -84,10 +125,13 @@ def cmd_prepare(dataset_name: str, item_ids: list[str] | None, output_dir: str |
     if out_dir:
         out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"=== 生成 {len(items)} 个评测 prompt ===\n")
+    mode_label = f" [{eval_mode}]" if eval_mode != "standard" else ""
+    if recipe_mode:
+        mode_label += f" [{recipe_mode}]"
+    print(f"=== 生成 {len(items)} 个评测 prompt{mode_label} ===\n")
 
     for item in items:
-        prompt = build_eval_prompt(item)
+        prompt = build_eval_prompt(item, eval_mode=eval_mode, recipe_mode=recipe_mode)
 
         if out_dir:
             # 写到文件
@@ -532,6 +576,18 @@ def main() -> None:
     p_prepare.add_argument("--dataset-name", default="caw-agent-eval-seth-v2")
     p_prepare.add_argument("--item-id", nargs="*", help="只生成指定 item")
     p_prepare.add_argument("--output-dir", help="输出到目录（每个 item 一个 txt 文件）")
+    p_prepare.add_argument(
+        "--eval-mode",
+        choices=["standard", "recipe"],
+        default="standard",
+        help="评测模式: standard（默认）或 recipe（交易构建模式）",
+    )
+    p_prepare.add_argument(
+        "--recipe-mode",
+        choices=["cc_with_recipe", "cc_no_recipe", "openclaw"],
+        default="",
+        help="Recipe 对比模式（仅 --eval-mode recipe 时有效）",
+    )
 
     # ── collect ───────────────────────────────────────────────────────────────
     p_collect = sub.add_parser("collect", help="收集 Claude Code session 文件")
@@ -588,6 +644,8 @@ def main() -> None:
             dataset_name=args.dataset_name,
             item_ids=args.item_id,
             output_dir=args.output_dir,
+            eval_mode=args.eval_mode,
+            recipe_mode=args.recipe_mode,
         )
     elif args.cmd == "collect":
         cmd_collect(
