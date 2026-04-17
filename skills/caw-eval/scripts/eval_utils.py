@@ -20,8 +20,10 @@ from langfuse import Langfuse
 
 from upload_session import upload_session_file
 
-# 自动加载同目录下的 .env（不覆盖已设置的环境变量）
+# 自动加载 .env（不覆盖已设置的环境变量）
+# 优先级：同目录 .env > ~/.caw-eval/.env（备用，skill sync 不会清除）
 load_dotenv(Path(__file__).parent / ".env", override=False)
+load_dotenv(Path.home() / ".caw-eval" / ".env", override=False)
 
 _DEFAULT_HOST = "https://langfuse.1cobo.com"
 
@@ -49,6 +51,7 @@ def get_langfuse_client() -> Langfuse:
         public_key=pub,
         secret_key=sec,
         host=host,
+        timeout=120,
     )
 
 
@@ -140,14 +143,17 @@ def batch_upload_sessions(
     skill: str = "cobo-agentic-wallet-sandbox",
     item_ids: list[str] | None = None,
     run_description: str = "",
+    skip_link: bool = False,
 ) -> dict[str, str]:
-    """批量上传 session 到 Langfuse 并关联 dataset run。
+    """批量上传 session 到 Langfuse 并（可选）关联 dataset run。
 
     为每个 session 生成独立 trace UUID，上传后写 trace_map.json。
     返回 trace_map（item_id → trace UUID）。
 
     Args:
         run_description: 写入 Langfuse dataset run 的描述，建议包含 model/dataset/env 等信息。
+        skip_link: True 时跳过 dataset_run_items 关联（trace 仍上传），适合调试少量 case 时
+                   不污染 dataset run 列表。
     """
     session_files = sorted(run_dir.glob("E2E-*.jsonl"))
     if item_ids:
@@ -192,13 +198,16 @@ def batch_upload_sessions(
         if result_trace_id:
             trace_map[item_id] = result_trace_id
             print(f"    [INFO] trace_id: {result_trace_id}")
-            langfuse_item_id = meta_to_langfuse.get(item_id)
-            if langfuse_item_id:
-                link_to_dataset_run(
-                    lf, langfuse_item_id, run_name, result_trace_id, run_description
-                )
+            if skip_link:
+                print("    [SKIP LINK] --no-link: trace 已上传，未关联 dataset run")
             else:
-                print(f"    [WARN] Dataset item not found for {item_id}, skipping link")
+                langfuse_item_id = meta_to_langfuse.get(item_id)
+                if langfuse_item_id:
+                    link_to_dataset_run(
+                        lf, langfuse_item_id, run_name, result_trace_id, run_description
+                    )
+                else:
+                    print(f"    [WARN] Dataset item not found for {item_id}, skipping link")
         else:
             print(f"    [ERROR] Upload failed for {item_id}")
 

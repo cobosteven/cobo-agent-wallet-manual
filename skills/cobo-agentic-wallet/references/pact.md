@@ -19,7 +19,7 @@ Any task that uses `caw tx transfer`, `caw tx call`, or `caw tx sign-message` re
 - Inform the user the pact has been submitted.
   - If **not paired**: tell the user the pact is automatically activated — no owner approval required since the wallet has no linked owner yet.
   - If **paired**: remind the user to approve in the **Cobo Agentic Wallet app**.
-- Start tracking: `caw track --watch` polls pact status and sends a notification when the status changes.
+- Poll pact status with `caw pact show <pact-id>` and check `.status` until it changes from `PendingApproval`.
 
 ### Act on Result
 
@@ -29,17 +29,14 @@ Any task that uses `caw tx transfer`, `caw tx call`, or `caw tx sign-message` re
     ```bash
     caw tx transfer <pact_id> \
       --token-id BASE_USDC --dst-address 0xRecipient... --amount 10 \
-      --request-id pay-001 \
-      --context '{"channel":"<channel>","target":"<target>","session_id":"<session-id>"}'
+      --request-id pay-001
 
     caw tx call <pact_id> \
       --chain-id BASE_ETH --contract 0xContract... --calldata 0x... \
-      --request-id call-001 \
-      --context '{"channel":"<channel>","target":"<target>","session_id":"<session-id>"}'
+      --request-id call-001
 
     caw tx sign-message <pact_id> \
-      --chain-id ETH --destination-type eip712 --eip712-typed-data '{...}' \
-      --context '{"channel":"<channel>","target":"<target>","session_id":"<session-id>"}'
+      --chain-id ETH --destination-type eip712 --eip712-typed-data '{...}'
     ```
   - Return the transaction result.
 
@@ -232,7 +229,6 @@ Translate the user's request into `caw pact submit` flags. Each row maps one asp
 | `--policies <json>` | yes | JSON array of detailed risk control policy definitions: chain/token/contract allowlists, per-tx caps, rolling limits, review thresholds. | See [Policy Reference](#policy-reference---policies). |
 | `--completion-conditions <json>` | yes | JSON array of completion conditions. | See [Completion Conditions](#completion-conditions---completion-conditions). |
 | `--execution-plan <text>` | yes | Concrete on-chain steps the agent will perform post-approval. | See [Execution Plan](#execution-plan---execution-plan). |
-| `--context <json>` | yes | In openclaw: `{"channel":"<>", "target":"<>", "session_id":"<string>"}`. Not in openclaw: `{"notification": false}`. | `session_id` is a string from `openclaw sessions --json --agent <agent>`. Must include all three fields when openclaw is active; use `{"notification": false}` otherwise. |
 
 
 ### Complete Example
@@ -269,8 +265,7 @@ Transfer 1000 USDC to 0xABC...123 on Base.
 
 # Risk Controls
 - Per-tx cap: $1001
-- One-time transfer only" \
-  --context '{"channel": "<channel>", "target": "<target>", "session_id": "<session-id>"}'
+- One-time transfer only"
 ```
 
 ### Execution Plan (`--execution-plan`)

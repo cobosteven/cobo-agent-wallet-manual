@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.04.16.5"
+  version: "2026.04.16.6"
 description: |
   Create and manage agentic wallets with Cobo. Use for autonomous onchain
   operations via the caw CLI: token transfers, contract calls, pact creation
@@ -207,9 +207,9 @@ First check `caw pact list` — if an existing pact already covers this goal, re
 - **If the wallet is not paired**: present a 4-item preview (Intent, Execution Plan, Policies, Completion Conditions) and wait for an explicit "yes" before calling `caw pact submit`. The preview must match what the command will receive — do not summarize or reformulate. If the user requests any change after seeing the preview, apply the change, re-show the full updated preview, and ask again — do not submit until the user explicitly confirms the final spec.
 - **If paired**: submit directly — the owner approves in the Cobo Agentic Wallet app. No in-chat preview needed.
 
-After submit, track with `caw track --watch`.
+Poll pact status with `caw pact show <pact-id>` and check `.status` until it changes from `PendingApproval`.
 
-- **When `active` notification arrives**: reply immediately, then execute as a background task — do not synchronously wait for the transaction result before replying. See [Act on Result](./references/pact.md#act-on-result).
+- **When status becomes `active`**: reply immediately, then execute as a background task — do not synchronously wait for the transaction result before replying. See [Act on Result](./references/pact.md#act-on-result).
 - **Rejected** → tell the owner, offer to revise with narrower scope and resubmit.
 - **Revoked / expired / completed** → stop immediately, notify the owner, offer a new pact if the goal is unmet.
 
@@ -221,9 +221,6 @@ All transactions (transfers, contract calls, message signing) run inside a pact.
 - **Recipe preflight for contract interactions**: Before assembling calldata or calling any contract function, search for a matching recipe (`caw recipe search`) to obtain the correct function signature and parameter format. Then use `caw util abi encode` to construct the calldata, and `caw util abi decode` to verify it before submitting. Do not guess function selectors or parameter encoding.
 - **`--request-id` idempotency**: Always set a unique, deterministic request ID per logical transaction (e.g. `invoice-001`, `swap-20240318-1`). Retrying with the same `--request-id` is safe — the server deduplicates.
 - **`<pact-id>` (required positional arg)**: `caw tx transfer`, `caw tx call`, and `caw tx sign-message` all take `<pact-id>` as the first positional argument. The CLI resolves the wallet UUID and API key from the pact automatically — do not pass `--wallet-id` separately.
-- **`--context` (required)**: Required for `caw tx transfer`, `caw tx call`, `caw tx sign-message`, `caw pact submit`, `caw wallet pair`, and `caw faucet deposit`. Identifies the caller environment so status notifications are routed back to the right conversation. Two forms:
-  - **Running under openclaw**: `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<session-id>"}'` — `session_id` is a string from `openclaw sessions --json --agent <agent>`. This enables status notifications back to the user.
-  - **Not running under openclaw** (Claude Code CLI, scripts, local shell): `--context '{"notification": false}'` — skips notification dispatch.
 - **Sequential execution for same-address transactions (nonce ordering)**: On EVM chains, each transaction from the same address must use an incrementing nonce. **Wait for each transaction to reach `Success` status (tx is confirmed on-chain) before submitting the next one.** Poll with `caw tx get --request-id <request-id>` and check `.status` — the lifecycle is `Initiated → PendingApproval → Approved → Processing → Pending → Success`. `.status` is a literal string field — match it with exact string equality against one of: `Initiated`, `PendingApproval`, `Approved`, `Processing`, `Pending`, `Success`, `Failed`, `Rejected`, `Cancelled`. Do not do substring or prefix matching.
 - **Never use a contract address from memory**. Token addresses: query `caw meta tokens --token-ids <id>`. Protocol addresses: source from the protocol's official documentation or from the user's input. If the source is unclear, ask the user to provide or verify the address before submitting.
 - **Contract addresses differ per chain** — wallet addresses are shared across chains of the same type (all EVM chains share one address), but contract addresses typically do not. Always look them up per chain from official sources or the user's input.
@@ -278,9 +275,9 @@ caw wallet rename --name <NAME>
 
 # Pair the wallet — transfer ownership from the agent to a human.
 # Returns an 8-digit code — give it to the user to enter in the Cobo Agentic Wallet app.
-# After pairing, caw track --watch delivers a notification when pairing completes.
+# After pairing, poll with caw wallet pair-status to check when pairing completes.
 # To verify pairing completion at any time, run caw status and check wallet_paired (boolean).
-caw wallet pair --context '{"channel":"<channel>","target":"<target>","session_id":"<session-id>"}'
+caw wallet pair
 
 # List all on-chain addresses. Run before `address create` to check if one already exists.
 caw address list
@@ -296,8 +293,7 @@ caw tx list --limit 20
 # Pre-check (policy + fee) runs automatically before submission.
 # If policy denies, the transfer is NOT submitted and the denial is returned.
 # Use --request-id as an idempotency key so retries return the existing record.
-caw tx transfer <pact-id> --dst-address 0x1234...abcd --token-id ETH_USDC --amount 10 --request-id pay-001 \
-  --context '{"channel":"<channel>","target":"<target>","session_id":"<session-id>"}'
+caw tx transfer <pact-id> --dst-address 0x1234...abcd --token-id ETH_USDC --amount 10 --request-id pay-001
 
 # Estimate the network fee for a transfer without running policy checks.
 caw tx estimate-transfer-fee --dst-address 0x... --token-id ETH_USDC --amount 10
@@ -320,22 +316,16 @@ caw util abi decode --method "transfer(address,uint256)" --calldata <hex>
 # Estimate fee before submitting (optional but recommended for large calls):
 caw tx estimate-call-fee --contract 0x... --calldata 0x... --chain-id ETH
 # EVM:
-caw tx call <pact-id> --contract 0x... --calldata 0x... --chain-id ETH \
-  --request-id call-001 --context '{"channel":"<channel>","target":"<target>","session_id":"<session-id>"}'
+caw tx call <pact-id> --contract 0x... --calldata 0x... --chain-id ETH --request-id call-001
 # Solana (use --instructions instead of --contract):
-caw tx call <pact-id> --instructions '[{"program_id":"<Base58_addr>","data":"...","accounts":[...]}]' --chain-id SOL \
-  --request-id call-001 --context '{"channel":"<channel>","target":"<target>","session_id":"<session-id>"}'
+caw tx call <pact-id> --instructions '[{"program_id":"<Base58_addr>","data":"...","accounts":[...]}]' --chain-id SOL --request-id call-001
 
 # Sign a typed message (EIP-712).
-caw tx sign-message <pact-id> --chain-id ETH --destination-type eip712 --eip712-typed-data '{"types":...}' \
-  --context '{"channel":"<channel>","target":"<target>","session_id":"<session-id>"}'
+caw tx sign-message <pact-id> --chain-id ETH --destination-type eip712 --eip712-typed-data '{"types":...}'
 
 # Get details of a specific pending operation (transfers/calls awaiting owner approval).
 # Use `caw pending list` to see all pending operations.
 caw pending get <operation_id>
-
-# Watch pact status — polls and sends a notification when status changes.
-caw track --watch
 
 # List pacts with optional filters.
 caw pact list --status active

@@ -47,8 +47,7 @@ See [Error Handling](./error-handling.md#onboarding-errors) for common onboardin
 Pairing is initiated manually. When the user decides to transfer wallet ownership:
 
 ```bash
-caw wallet pair \
-  --context '{"channel":"<channel>","target":"<target>","session_id":"<session-id>"}'
+caw wallet pair
 ```
 
 `pair` returns a **numeric code** (valid 30 minutes) along with local wallet metadata: `wallet_name`, `agent_name`, `wallet_uuid`, `agent_id`. Present all of these to the user so they can verify the correct wallet is shown in the App before entering the code:
@@ -82,4 +81,4 @@ Act on the status:
 
 If the user is unreachable before the code expires, stop polling and notify when they return.
 
-**Pair status tracking**: `--context` is **required** for `caw wallet pair`. In an openclaw environment, pass `--context '{"channel":"<channel>", "target":"<target>", "session_id":"<session-id>"}'` — `session_id` is a string from `openclaw sessions --json --agent <agent>`. If not running in openclaw or notification context is unavailable, pass `--context '{"notification": false}'`. When the terminal notification is delivered (paired/expired), continue any established next steps from the conversation context.
+**Pair status tracking**: After running `caw wallet pair`, poll with `caw wallet pair-status` to detect when pairing completes. When status is `paired` or `expired`, continue any established next steps from the conversation context.

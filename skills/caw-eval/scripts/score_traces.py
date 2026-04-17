@@ -41,10 +41,12 @@ Script 3: 对本地 session .jsonl 文件进行 S1-S3 各阶段评分（代码�
 """
 
 import argparse
+import asyncio
 import hashlib
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -98,11 +100,281 @@ def _make_langfuse() -> Any:
             "(or LANGFUSE_DATASET_PUBLIC_KEY + LANGFUSE_DATASET_SECRET_KEY)."
         )
 
-    return Langfuse(public_key=public_key, secret_key=secret_key, host=host)
+    return Langfuse(public_key=public_key, secret_key=secret_key, host=host, timeout=120)
 
 
 # Alias for dataset reads — same project
 _make_dataset_langfuse = _make_langfuse
+
+
+# ── Langfuse-based extraction (openclaw 评分用) ──────────────────────────────
+#
+# 当 session JSONL 不在本地时，从 Langfuse API 拉取 trace + observations，
+# 重建 StructuredExtraction 用于断言评分；同时构造 session_text 嵌入 judge prompt
+# 供 LLM Judge 评估，避免依赖本地 session 文件。
+#
+# 数据来源：
+#   trace.input             — user_message, item_id, operation_type, difficulty
+#   observations (legacy v1) — 完整 SPAN/GENERATION 列表，含 input/output
+
+_OBSERVATION_PAGE_SIZE = 100  # 后端限制
+
+
+def _fetch_observations(lf: Any, trace_id: str) -> list:
+    """从 Langfuse 拉取一个 trace 的全部 observations（按 start_time 升序）。"""
+    all_obs: list = []
+    page = 1
+    while True:
+        resp = lf.api.legacy.observations_v1.get_many(
+            trace_id=trace_id,
+            limit=_OBSERVATION_PAGE_SIZE,
+            page=page,
+        )
+        all_obs.extend(resp.data)
+        if len(resp.data) < _OBSERVATION_PAGE_SIZE:
+            break
+        page += 1
+    all_obs.sort(key=lambda o: o.start_time or "")
+    return all_obs
+
+
+def _extract_command_from_obs(obs: Any) -> str:
+    """从 SPAN observation 提取 bash command（exec/Bash 类工具）。
+
+    支持两种格式：
+    - CC / exec 格式: input={"command": "caw pact submit ..."}
+    - Openclaw caw span 格式: input={"subcmd": "pact submit ..."}
+      （由 upload_session._build_caw_child 写入，prepend "caw " 还原完整命令）
+    """
+    if not obs.input:
+        return ""
+    inp = obs.input
+    # Langfuse 可能以 string 返回（safe_str 存的是 JSON 字符串），尝试解析
+    if isinstance(inp, str):
+        try:
+            inp = json.loads(inp)
+        except Exception:
+            return ""
+    if not isinstance(inp, dict):
+        return ""
+    # CC / exec 格式
+    if inp.get("command"):
+        return str(inp["command"])
+    # Openclaw caw span 格式（_build_caw_child 存的是 {"subcmd": "pact submit ..."}）
+    if inp.get("subcmd"):
+        return "caw " + str(inp["subcmd"])
+    return ""
+
+
+def _stringify_obs_output(obs: Any) -> str:
+    """将 observation.output 转为字符串。"""
+    out = obs.output
+    if out is None:
+        return ""
+    if isinstance(out, str):
+        return out
+    return json.dumps(out, ensure_ascii=False) if isinstance(out, (dict, list)) else str(out)
+
+
+def _build_extraction_from_observations(
+    trace: Any,
+    observations: list,
+) -> Any:
+    """从 trace + observations 重建 StructuredExtraction（assertions.py 数据模型）。
+
+    与 assertions.extract_structured() 输出格式一致，可直接喂给现有断言/judge 管线。
+    """
+    from assertions import ToolCallRecord, StructuredExtraction
+    from upload_session import (
+        extract_caw_flags,
+        parse_caw_command,
+        parse_tx_result,
+    )
+    from assertions import extract_pact_submit_flags
+
+    # user_message 来自 trace.input
+    trace_input = trace.input if isinstance(trace.input, dict) else {}
+    user_message = trace_input.get("user_message", "") or ""
+
+    all_calls: list = []
+    pact_calls: list = []
+    tx_calls: list = []
+
+    for obs in observations:
+        # 只关注 SPAN 类型工具调用（exec/Bash 等）
+        if obs.type != "SPAN":
+            continue
+        command_str = _extract_command_from_obs(obs)
+        if not command_str:
+            # 命令为空但有输出的 exec span（可能是 ./script.sh 间接调用 caw pact submit）
+            result_text = _stringify_obs_output(obs)
+            if result_text and '"pact_id"' in result_text and '"status"' in result_text:
+                from assertions import _extract_pact_flags_from_output
+
+                pact_flags = _extract_pact_flags_from_output(result_text)
+                if pact_flags:
+                    tool_name = (obs.name or "").split(":", 1)[0] if obs.name else "exec"
+                    record = ToolCallRecord(
+                        call_id=obs.id or "",
+                        name=tool_name,
+                        command="(indirect via script)",
+                        caw_op="caw.pact.submit",
+                        category="auth",
+                        pact_flags=pact_flags,
+                        result_text=result_text,
+                        is_error=False,
+                    )
+                    all_calls.append(record)
+                    pact_calls.append(record)
+            continue
+
+        parsed = parse_caw_command(command_str)
+        if not parsed:
+            # 命令不含 caw（如 ./script.sh），检查输出是否含 pact submit 结果
+            result_text = _stringify_obs_output(obs)
+            if result_text and '"pact_id"' in result_text and '"status"' in result_text:
+                from assertions import _extract_pact_flags_from_output
+
+                pact_flags = _extract_pact_flags_from_output(result_text)
+                if pact_flags:
+                    tool_name = (obs.name or "").split(":", 1)[0] if obs.name else "exec"
+                    record = ToolCallRecord(
+                        call_id=obs.id or "",
+                        name=tool_name,
+                        command=command_str,
+                        caw_op="caw.pact.submit",
+                        category="auth",
+                        pact_flags=pact_flags,
+                        result_text=result_text,
+                        is_error=False,
+                    )
+                    all_calls.append(record)
+                    pact_calls.append(record)
+            continue
+
+        caw_op, category, subcmd = parsed
+        flags = extract_caw_flags(subcmd)
+        result_text = _stringify_obs_output(obs)
+        tx_result = parse_tx_result(result_text) if result_text else {}
+
+        pact_flags: dict = {}
+        if caw_op == "caw.pact.submit":
+            pact_flags = extract_pact_submit_flags(command_str)
+
+        is_error = bool(tx_result.get("error_code")) or '"error": true' in result_text.lower()
+
+        # 从 obs.name 推断 tool_name（如 "exec:exec" → "exec"）
+        tool_name = (obs.name or "").split(":", 1)[0] if obs.name else "exec"
+
+        record = ToolCallRecord(
+            call_id=obs.id or "",
+            name=tool_name,
+            command=command_str,
+            caw_op=caw_op,
+            category=category,
+            flags=flags,
+            pact_flags=pact_flags,
+            result_text=result_text,
+            tx_result=tx_result,
+            is_error=is_error,
+        )
+        all_calls.append(record)
+
+        if caw_op == "caw.pact.submit":
+            pact_calls.append(record)
+        elif category == "transaction":
+            tx_calls.append(record)
+
+    return StructuredExtraction(
+        user_message=user_message,
+        pact_tool_calls=pact_calls,
+        tx_tool_calls=tx_calls,
+        all_tool_calls=all_calls,
+    )
+
+
+def _build_session_text_from_observations(
+    trace: Any,
+    observations: list,
+    max_chars: int = 60000,
+) -> str:
+    """构造 session 文本摘要，嵌入 judge prompt 用（替代 session_path）。
+
+    格式：
+      [USER] <user_message>
+      [TOOL <name>] <command>
+      [RESULT] <output_truncated>
+      [ASSISTANT] <text>
+      ...
+    """
+    trace_input = trace.input if isinstance(trace.input, dict) else {}
+    user_message = trace_input.get("user_message", "") or ""
+
+    parts: list[str] = []
+    parts.append(f"[USER] {user_message}")
+    parts.append("")
+
+    for obs in observations:
+        name = (obs.name or "").strip()
+        if obs.type == "SPAN":
+            command = _extract_command_from_obs(obs)
+            if command:
+                tool = name.split(":", 1)[0] if name else "tool"
+                parts.append(f"[TOOL {tool}] {command}")
+                output = _stringify_obs_output(obs)
+                if output:
+                    parts.append(f"[RESULT] {output}")
+                parts.append("")
+            else:
+                # 非命令型 SPAN（如 read/write/process）
+                in_str = json.dumps(obs.input, ensure_ascii=False) if obs.input else ""
+                out_str = _stringify_obs_output(obs)
+                if in_str or out_str:
+                    parts.append(f"[TOOL {name}] input={in_str} output={out_str}")
+                    parts.append("")
+        elif obs.type == "GENERATION":
+            # 助手文本响应（output 通常是 list[str] 或 str）
+            out = obs.output
+            text = ""
+            if isinstance(out, list):
+                text = " ".join(str(x) for x in out if isinstance(x, str))
+            elif isinstance(out, str):
+                text = out
+            if text.strip():
+                parts.append(f"[ASSISTANT] {text}")
+                parts.append("")
+
+    full = "\n".join(parts)
+    if len(full) > max_chars:
+        # 截断，但保留头尾以便 judge 看到任务开始和最终结果
+        head = full[: max_chars // 2]
+        tail = full[-(max_chars // 2) :]
+        full = f"{head}\n\n... [中间内容截断] ...\n\n{tail}"
+    return full
+
+
+def _fetch_run_traces(lf: Any, dataset_name: str, run_name: str) -> dict[str, str]:
+    """获取一个 dataset run 的所有 (item_metadata_id → trace_id) 映射。
+
+    item_metadata_id 是 dataset item 的 metadata.id（如 E2E-01L1），
+    回退到 langfuse dataset_item_id（UUID）。
+    """
+    dataset = lf.api.datasets.get(dataset_name)
+    items = lf.api.dataset_run_items.list(dataset_id=dataset.id, run_name=run_name, limit=100)
+
+    # 构建 dataset_item UUID → metadata id 映射
+    item_id_map: dict[str, str] = {}
+    ds_full = lf.get_dataset(dataset_name)
+    for di in ds_full.items:
+        meta = di.metadata if isinstance(di.metadata, dict) else {}
+        mid = meta.get("id", di.id)
+        item_id_map[di.id] = mid
+
+    result: dict[str, str] = {}
+    for ri in items.data:
+        mid = item_id_map.get(ri.dataset_item_id, ri.dataset_item_id)
+        result[mid] = ri.trace_id
+    return result
 
 
 # ── Stage content extractor ───────────────────────────────────────────────────
@@ -190,7 +462,7 @@ def extract_stage_content(trace: Any) -> dict[str, str]:
     full_text = "\n\n".join(full_parts)
 
     # S1: first turn (intent parsing)
-    s1 = turn_texts[0] if turn_texts else full_text[:2000]
+    s1 = turn_texts[0] if turn_texts else full_text
     # S2: pact-related turns + pact exec spans
     pact_turn_texts = [
         t
@@ -217,8 +489,8 @@ def extract_stage_content(trace: Any) -> dict[str, str]:
     s3 = "\n\n".join(tx_texts + ([last_turn] if last_turn else [])) or full_text
 
     return {
-        "s1": s1 or full_text[:2000],
-        "s2": s2 or full_text[:3000],
+        "s1": s1 or full_text,
+        "s2": s2 or full_text,
         "s3": s3 or full_text,
         "full": full_text,
     }
@@ -384,7 +656,7 @@ def extract_stage_content_from_session(session: dict) -> dict[str, str]:
             return ""
         for b in result_ev.get("message", {}).get("content", []):
             if b.get("type") == "text":
-                return b.get("text", "")[:600]
+                return b.get("text", "")
         return ""
 
     def is_pact_call(tc: dict) -> bool:
@@ -401,12 +673,12 @@ def extract_stage_content_from_session(session: dict) -> dict[str, str]:
     s1_parts: list[str] = []
     if user_msgs:
         texts = get_text_blocks(user_msgs[0])
-        s1_parts.append(f"User: {' '.join(texts)[:800]}")
+        s1_parts.append(f"User: {' '.join(texts)}")
     for ev in assistant_msgs:
         texts = get_text_blocks(ev)
         tools = get_tool_calls(ev)
         if texts:
-            s1_parts.append(f"Assistant: {' '.join(texts)[:1200]}")
+            s1_parts.append(f"Assistant: {' '.join(texts)}")
         if tools:
             break
     s1 = "\n".join(s1_parts)
@@ -434,7 +706,7 @@ def extract_stage_content_from_session(session: dict) -> dict[str, str]:
         if texts:
             combined = " ".join(texts)
             if any(kw in combined.lower() for kw in pact_keywords):
-                s2_texts.append(combined[:2000])
+                s2_texts.append(combined)
         # Collect pact tool calls
         for tc in tools:
             if is_pact_call(tc):
@@ -457,7 +729,7 @@ def extract_stage_content_from_session(session: dict) -> dict[str, str]:
                 cmd = tc.get("arguments", {}).get("command", "")
                 s3_items.append(
                     {
-                        "command": cmd[:400],
+                        "command": cmd,
                         "result": get_tool_result_text(tc.get("id", "")),
                     }
                 )
@@ -466,7 +738,7 @@ def extract_stage_content_from_session(session: dict) -> dict[str, str]:
     for ev in reversed(assistant_msgs):
         texts = get_text_blocks(ev)
         if texts:
-            last_assistant_text = " ".join(texts)[:3000]
+            last_assistant_text = " ".join(texts)
             break
     s3_exec = (
         json.dumps(s3_items[:20], ensure_ascii=False, indent=2)
@@ -483,19 +755,19 @@ def extract_stage_content_from_session(session: dict) -> dict[str, str]:
             texts = get_text_blocks(ev)
             tools = get_tool_calls(ev)
             if texts:
-                full_parts.append(f"[{role.upper()}] {' '.join(texts)[:300]}")
+                full_parts.append(f"[{role.upper()}] {' '.join(texts)}")
             for tc in tools:
                 cmd = tc.get("arguments", {}).get("command", "") if tc.get("name") == "exec" else ""
                 full_parts.append(
-                    f"[TOOL:{tc.get('name', '')}] {(cmd or json.dumps(tc.get('arguments', {})))[:200]}"
+                    f"[TOOL:{tc.get('name', '')}] {cmd or json.dumps(tc.get('arguments', {}))}"
                 )
     full = "\n".join(full_parts)
 
     return {
-        "s1": s1[:3000] or full[:2000],
-        "s2": s2[:4000] or full[:3000],
-        "s3": s3[:4000] or full,
-        "full": full[:8000],
+        "s1": s1 or full,
+        "s2": s2 or full,
+        "s3": s3 or full,
+        "full": full,
     }
 
 
@@ -991,6 +1263,603 @@ def _get_judge_scores(
     return []
 
 
+def _score_extraction(
+    extraction: Any,
+    item_input: dict,
+    item_expected: dict,
+    item_metadata: dict,
+    trace_id: str,
+    judge_result: dict[str, Any] | None,
+    skip_llm_judge: bool,
+    tool_call_count: int,
+    dry_run: bool = False,
+    lf: Any = None,
+    extra_run_metrics: dict | None = None,
+) -> dict[str, Any]:
+    """评分核心逻辑（不依赖 session 文件）：断言 + LLM Judge → 综合分 → 上传 Langfuse。
+
+    供 score_session_file（本地 session 路径）和 langfuse 模式（trace_id）共用。
+    """
+    hints = item_expected.get("pact_hints", {})
+    should_refuse = hints.get("should_refuse", False)
+
+    diagnostics = classify_diagnostics(extraction)
+    all_dimensions: dict[str, DimensionScore] = {}
+
+    if should_refuse:
+        refusal_gate = check_refusal_gate(extraction)
+        all_dimensions["correctly_refused"] = DimensionScore(
+            dimension="correctly_refused",
+            score=1.0 if refusal_gate.passed else 0.0,
+            method="assertion",
+            reasoning=refusal_gate.reasoning,
+        )
+        for s in _get_judge_scores(judge_result=judge_result):
+            all_dimensions[s.dimension] = s
+        refusal_quality = all_dimensions.get(
+            "refusal_quality",
+            DimensionScore(
+                dimension="refusal_quality",
+                score=0.5,
+                method="default",
+                reasoning="LLM judge 不可用",
+            ),
+        )
+        task_completion_score = all_dimensions.get(
+            "task_completion",
+            DimensionScore(
+                dimension="task_completion",
+                score=1.0 if refusal_gate.passed else 0.0,
+                method="default",
+                reasoning="基于 refusal gate 结果",
+            ),
+        )
+        composite = all_dimensions["correctly_refused"].score * 0.5 + refusal_quality.score * 0.5
+        s1_score = s2_score = s3_score = 0.0
+    else:
+        pact_gate = check_pact_structure_gate(extraction)
+        all_dimensions["pact_structure_valid"] = DimensionScore(
+            dimension="pact_structure_valid",
+            score=1.0 if pact_gate.passed else 0.0,
+            method="gate",
+            reasoning=pact_gate.reasoning,
+        )
+        for s in _get_judge_scores(judge_result=judge_result):
+            all_dimensions[s.dimension] = s
+
+        s1_score = all_dimensions.get(
+            "intent_understanding",
+            DimensionScore(
+                dimension="intent_understanding",
+                score=0.5,
+                method="default",
+                reasoning="LLM judge 不可用",
+            ),
+        ).score
+
+        if not pact_gate.passed:
+            s2_score = 0.0
+        else:
+            pc = all_dimensions.get(
+                "policies_correctness",
+                DimensionScore(
+                    dimension="policies_correctness",
+                    score=0.5,
+                    method="default",
+                    reasoning="LLM judge 不可用",
+                ),
+            ).score
+            cc = all_dimensions.get(
+                "completion_conditions_correctness",
+                DimensionScore(
+                    dimension="completion_conditions_correctness",
+                    score=0.5,
+                    method="default",
+                    reasoning="LLM judge 不可用",
+                ),
+            ).score
+            s2_score = pc * 0.7 + cc * 0.3
+
+        ec = all_dimensions.get(
+            "execution_correctness",
+            DimensionScore(
+                dimension="execution_correctness",
+                score=0.5,
+                method="default",
+                reasoning="LLM judge 不可用",
+            ),
+        ).score
+        rr = all_dimensions.get(
+            "result_reporting",
+            DimensionScore(
+                dimension="result_reporting",
+                score=0.5,
+                method="default",
+                reasoning="LLM judge 不可用",
+            ),
+        ).score
+        s3_score = ec * 0.6 + rr * 0.4
+
+        task_completion_score = all_dimensions.get(
+            "task_completion",
+            DimensionScore(
+                dimension="task_completion",
+                score=0.5,
+                method="default",
+                reasoning="LLM judge 不可用",
+            ),
+        )
+
+        process_quality = (
+            s1_score * STAGE_WEIGHTS["s1"]
+            + s2_score * STAGE_WEIGHTS["s2"]
+            + s3_score * STAGE_WEIGHTS["s3"]
+        )
+        tc_val = (
+            task_completion_score.score
+            if isinstance(task_completion_score, DimensionScore)
+            else task_completion_score
+        )
+        composite = tc_val * _TC_WEIGHT + process_quality * _PROCESS_WEIGHT
+
+    tc_float = (
+        task_completion_score.score
+        if isinstance(task_completion_score, DimensionScore)
+        else float(task_completion_score)
+    )
+    scoring_source = "assertion+judge" if not skip_llm_judge else "assertion_only"
+
+    _print_summary(
+        trace_id,
+        s1_score,
+        s2_score,
+        s3_score,
+        composite,
+        tc_float,
+        scoring_source,
+        diagnostics.reasoning,
+    )
+
+    result = {
+        "trace_id": trace_id,
+        "scoring_source": scoring_source,
+        "item_metadata": item_metadata,
+        "composite": round(composite, 4),
+        "s1_score": round(s1_score, 4),
+        "s2_score": round(s2_score, 4),
+        "s3_score": round(s3_score, 4),
+        "task_completion": round(tc_float, 4),
+        "diagnostics": {
+            "error_type": diagnostics.error_type,
+            "retry_count": diagnostics.retry_count,
+        },
+        "dimensions": {
+            k: {"score": v.score, "method": v.method, "reasoning": v.reasoning}
+            for k, v in all_dimensions.items()
+        },
+    }
+
+    if dry_run:
+        return result
+
+    # score metadata（写入 Langfuse score 用于 ClickHouse 查询）
+    _dataset_name = item_metadata.get("dataset_name", "")
+    _type = item_metadata.get("type", "") or ("recipe" if "recipe" in _dataset_name else "")
+    score_meta = {
+        "run_name": item_metadata.get("run_name", ""),
+        "dataset_name": _dataset_name,
+        "item_id": item_metadata.get("id", ""),
+        "operation_type": item_metadata.get("operation_type", ""),
+        "difficulty": item_metadata.get("difficulty", ""),
+        "chain": item_metadata.get("chain", ""),
+        "model": item_metadata.get("model", ""),
+        "type": _type,
+    }
+    score_meta = {k: v for k, v in score_meta.items() if v}
+
+    run_metrics = {
+        "duration_seconds": item_metadata.get("duration_seconds", 0),
+        "token_count": item_metadata.get("token_count", 0),
+        "tool_call_count": tool_call_count,
+        "caw_command_count": len(extraction.all_tool_calls),
+        "pact_submit_count": len(extraction.pact_tool_calls),
+        "tx_command_count": len(extraction.tx_tool_calls),
+        "error_count": diagnostics.retry_count,
+    }
+    if extra_run_metrics:
+        run_metrics.update(extra_run_metrics)
+    run_metrics = {
+        k: v for k, v in run_metrics.items() if v or k not in ("duration_seconds", "token_count")
+    }
+
+    _lf = lf or _make_langfuse()
+    _upload_scores(
+        _lf,
+        trace_id,
+        s1_score,
+        s2_score,
+        s3_score,
+        composite,
+        tc_float,
+        scoring_source,
+        all_dimensions,
+        diagnostics.reasoning,
+        run_metrics=run_metrics,
+        score_metadata=score_meta,
+    )
+    _lf.flush()
+    return result
+
+
+def _build_judge_req_for_item(
+    lf: Any, item_id: str, trace_id: str, items_cache: dict
+) -> dict | None:
+    """为单个 (item_id, trace_id) 构建 judge request dict。失败返回 None。
+
+    提取复用自 langfuse_main Phase 1 的逻辑，供 --watch 模式增量调用。
+
+    注意：judge_results.json 中每条必须含 trace_id 和 item_id 两个字段，
+    否则 load_judge_results() 无法索引（LEARNING: 经 eval-oc-doubao-20260415-1530 验证）。
+    """
+    try:
+        trace = lf.api.trace.get(trace_id)
+        obs_list = _fetch_observations(lf, trace_id)
+        inp, exp, meta = items_cache.get(item_id, ({}, {}, {}))
+        extraction = _build_extraction_from_observations(trace, obs_list)
+        pact_gate = check_pact_structure_gate(extraction)
+        diagnostics = classify_diagnostics(extraction)
+        best_pact = get_best_pact_submit(extraction)
+        hints = exp.get("pact_hints", {})
+        is_refuse = hints.get("should_refuse", False)
+        assertion_lines = [
+            f"[gate] pact_structure_valid={'pass' if pact_gate.passed else 'fail'} — {pact_gate.reasoning}",
+            f"[diag] error_type={diagnostics.error_type}, retry_count={diagnostics.retry_count}",
+        ]
+        session_text = _build_session_text_from_observations(trace, obs_list)
+        prompt = build_judge_prompt(
+            user_message=inp.get("user_message", ""),
+            expected=exp,
+            metadata=meta,
+            assertion_context="\n".join(assertion_lines),
+            best_pact_submit=best_pact,
+            is_refuse=is_refuse,
+            session_text=session_text,
+        )
+        return {
+            "trace_id": trace_id,
+            "item_id": item_id,
+            "metadata": meta,
+            "system_prompt": JUDGE_SYSTEM_PROMPT,
+            "prompt": prompt,
+        }
+    except Exception as e:
+        print(f"  [ERROR] build_judge_req {item_id}: {e}")
+        return None
+
+
+async def _watch_and_judge(
+    lf: Any,
+    dataset_name: str,
+    run_name: str,
+    items_cache: dict,
+    out_path: str,
+    expected_count: int,
+    watch_timeout: int,
+    watch_interval: int,
+) -> None:
+    """轮询 Langfuse，新 trace 出现即生成 judge request 并追加到 out_path。
+
+    配合 dispatch --fire-and-forget 使用：dispatch 启动远端后台进程后本地立即运行此函数，
+    边等待评测结果边生成 judge requests，实现 dispatch→judge 流水线化，消除等待间隙。
+
+    断点续跑：若 out_path 已存在，自动跳过已处理的 item_id。
+    """
+    seen: set[str] = set()
+    requests: list[dict] = []
+    out_file = Path(out_path)
+    # 断点续跑：加载已有文件
+    if out_file.exists():
+        try:
+            existing = json.loads(out_file.read_text())
+            requests = existing
+            seen = {r["item_id"] for r in existing if "item_id" in r}
+            print(f"[WATCH] Resumed: {len(seen)} already done")
+        except Exception:
+            pass
+
+    deadline = time.monotonic() + watch_timeout
+    print(
+        f"[WATCH] Watching for traces: run={run_name}, dataset={dataset_name}"
+        f" expected={expected_count}, timeout={watch_timeout}s, interval={watch_interval}s"
+    )
+
+    while True:
+        try:
+            run_traces = _fetch_run_traces(lf, dataset_name, run_name)
+        except Exception as e:
+            print(f"[WATCH] Fetch error: {e}, retrying in {watch_interval}s...")
+            await asyncio.sleep(watch_interval)
+            if time.monotonic() > deadline:
+                break
+            continue
+
+        new_items = [(iid, tid) for iid, tid in run_traces.items() if iid not in seen]
+        for item_id, trace_id in sorted(new_items):
+            req = _build_judge_req_for_item(lf, item_id, trace_id, items_cache)
+            if req:
+                requests.append(req)
+                seen.add(item_id)
+                out_file.parent.mkdir(parents=True, exist_ok=True)
+                out_file.write_text(json.dumps(requests, indent=2, ensure_ascii=False))
+                print(f"[WATCH] +{item_id} ({len(seen)}/{expected_count}) → {out_path}")
+
+        if len(seen) >= expected_count:
+            print(f"[WATCH] All {expected_count} traces collected. Done.")
+            break
+
+        if time.monotonic() > deadline:
+            print(
+                f"[WATCH] TIMEOUT: collected {len(seen)}/{expected_count} traces after {watch_timeout}s"
+            )
+            break
+
+        remaining = int(deadline - time.monotonic())
+        print(
+            f"[WATCH] {len(seen)}/{expected_count} traces, next poll in {watch_interval}s ({remaining}s left)"
+        )
+        await asyncio.sleep(watch_interval)
+
+    print(f"[SAVED] {len(requests)} judge request(s) → {out_path}")
+    if requests:
+        print("[NEXT] 启动 CC subagent 评分每个 request，再用 --judge-results <file> 应用评分")
+
+
+def langfuse_main() -> None:
+    """
+    Subcommand: 从 Langfuse API 拉取 dataset run 的 traces 评分（openclaw 评测用）。
+
+    与 session 子命令的区别：
+      - session: 读本地 .jsonl 文件评分（CC 评测）
+      - langfuse: 从 Langfuse trace + observations 重建评分数据（openclaw 评测）
+                  无需下载/导入 session，session 内容直接嵌入 judge prompt
+
+    用法:
+        # 阶段一：生成 judge prompt 文件
+        python score_traces.py langfuse --run-name eval-oc-doubao-X --dataset-name caw-agent-eval-eth-v1 \\
+          --dump-judge-requests /tmp/req.json
+
+        # 阶段二：使用预计算的 judge 评分结果（CC subagent 评出）
+        python score_traces.py langfuse --run-name eval-oc-doubao-X --dataset-name caw-agent-eval-eth-v1 \\
+          --judge-results /tmp/results.json
+
+        # 仅断言评分（跳过 LLM Judge）
+        python score_traces.py langfuse --run-name X --dataset-name Y --skip-llm-judge --report
+    """
+    import argparse as _ap
+
+    parser = _ap.ArgumentParser(description="Score Langfuse-hosted traces (openclaw flow).")
+    parser.add_argument("subcommand", help=_ap.SUPPRESS)  # 占位 'langfuse'
+    parser.add_argument("--run-name", help="Langfuse dataset run 名称（与 --trace 二选一）")
+    parser.add_argument("--dataset-name", required=True, help="Langfuse dataset 名称")
+    parser.add_argument("--item-id", help="只评分指定 item（如 E2E-01L1）")
+    parser.add_argument(
+        "--trace",
+        action="append",
+        default=[],
+        help="直接传 'item_id=trace_id' 评分，无需 dataset run。可重复，如 "
+        "--trace E2E-01L1=uuid1 --trace E2E-06L1=uuid2",
+    )
+    parser.add_argument(
+        "--trace-map",
+        help="从 JSON 文件读 {item_id: trace_id} 映射（如服务器 trace_map.json）",
+    )
+    parser.add_argument("--dump-judge-requests", help="导出 judge prompt 到 JSON 文件")
+    parser.add_argument("--judge-results", help="从 JSON 文件加载预计算的 judge 评分")
+    parser.add_argument("--skip-llm-judge", action="store_true", help="跳过 LLM Judge")
+    parser.add_argument("--report", action="store_true", help="打印评分汇总")
+    parser.add_argument("--output", help="评分结果导出路径（JSON）")
+    parser.add_argument("--dry-run", action="store_true", help="只评分不上传 Langfuse")
+    parser.add_argument(
+        "--judge-model",
+        default="claude-sonnet-4-20250514",
+        help="LLM Judge 模型 ID（仅作元数据，不影响 subagent 评分）",
+    )
+    # --watch 模式：轮询 Langfuse 等待新 trace，逐条生成 judge request（配合 --fire-and-forget dispatch）
+    parser.add_argument(
+        "--watch",
+        action="store_true",
+        help=(
+            "轮询 Langfuse 等待新 trace 出现，逐条生成 judge request 并写入 --dump-judge-requests 文件。"
+            "配合 dispatch --fire-and-forget 使用，实现 dispatch→judge 流水线化。"
+        ),
+    )
+    parser.add_argument(
+        "--expected-count",
+        type=int,
+        default=0,
+        help="--watch 模式：期望收到的 trace 数量（达到后自动退出，0 表示不限制）",
+    )
+    parser.add_argument(
+        "--watch-timeout",
+        type=int,
+        default=7200,
+        help="--watch 模式：最长等待秒数（默认 7200s = 2h）",
+    )
+    parser.add_argument(
+        "--watch-interval",
+        type=int,
+        default=30,
+        help="--watch 模式：轮询间隔秒数（默认 30s）",
+    )
+    args = parser.parse_args()
+
+    lf = _make_langfuse()
+
+    # 1. 收集 {item_id: trace_id}：支持三种来源
+    #    a) --trace E2E-XX=uuid 显式列表（无需 dataset run）
+    #    b) --trace-map <json file>（如服务器 trace_map.json）
+    #    c) --run-name 反查 dataset run（默认）
+    run_traces: dict[str, str] = {}
+
+    if args.trace:
+        for spec in args.trace:
+            if "=" not in spec:
+                print(f"[ERROR] --trace 格式错误，应为 'item_id=trace_id': {spec}", file=sys.stderr)
+                sys.exit(1)
+            iid, tid = spec.split("=", 1)
+            run_traces[iid.strip()] = tid.strip()
+        print(f"[INFO] Got {len(run_traces)} traces from --trace args")
+
+    if args.trace_map:
+        try:
+            tm = json.loads(Path(args.trace_map).read_text())
+            run_traces.update(tm)
+            print(f"[INFO] Loaded {len(tm)} traces from {args.trace_map}")
+        except Exception as e:
+            print(f"[ERROR] Failed to load --trace-map: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    if not run_traces and args.run_name:
+        print(f"[INFO] Fetching run items: dataset={args.dataset_name}, run={args.run_name}")
+        try:
+            run_traces = _fetch_run_traces(lf, args.dataset_name, args.run_name)
+        except Exception as e:
+            # --watch 模式下 run 还不存在（404）属于正常情况，视为 0 traces 继续轮询
+            if args.watch and args.dump_judge_requests and "not found" in str(e).lower():
+                print(f"[INFO] Run not found yet (will poll): {e}")
+                run_traces = {}
+            else:
+                print(f"[ERROR] Failed to fetch run items: {e}", file=sys.stderr)
+                sys.exit(1)
+        if run_traces:
+            print(f"[INFO] Got {len(run_traces)} traces from run")
+
+    if args.item_id:
+        run_traces = {k: v for k, v in run_traces.items() if k == args.item_id}
+
+    if not run_traces:
+        # --watch 模式允许以 0 trace 启动（dispatch 刚开始还没有 trace 上传时）
+        if not (args.watch and args.dump_judge_requests and args.run_name):
+            print(
+                "[ERROR] No traces. 提供 --run-name (从 dataset run 反查) "
+                "或 --trace item_id=uuid (直接指定) 或 --trace-map <file>",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print("[INFO] No traces yet (watch mode will poll for them)")
+
+    # 2. 加载 dataset items（用于评分上下文）
+    items_cache: dict[str, tuple[dict, dict, dict]] = {}
+    ds_full = lf.get_dataset(args.dataset_name)
+    for di in ds_full.items:
+        meta = di.metadata if isinstance(di.metadata, dict) else {}
+        mid = meta.get("id", di.id)
+        inp = di.input if isinstance(di.input, dict) else {"user_message": di.input or ""}
+        exp = di.expected_output if isinstance(di.expected_output, dict) else {}
+        items_cache[mid] = (inp, exp, meta)
+
+    # 3. 加载预计算 judge 结果（如有）
+    judge_results_map: dict[str, dict] = {}
+    if args.judge_results:
+        judge_results_map = load_judge_results(args.judge_results)
+        print(f"[INFO] Loaded {len(judge_results_map)} judge result(s)")
+
+    # ── Phase 1: 生成 judge requests
+    if args.dump_judge_requests:
+        # --watch 模式：轮询 Langfuse，新 trace 出现即生成 judge request（配合 --fire-and-forget）
+        if args.watch:
+            if not args.run_name:
+                print("[ERROR] --watch 需要 --run-name", file=sys.stderr)
+                sys.exit(1)
+            expected = args.expected_count or len(run_traces) or 99
+            asyncio.run(
+                _watch_and_judge(
+                    lf=lf,
+                    dataset_name=args.dataset_name,
+                    run_name=args.run_name,
+                    items_cache=items_cache,
+                    out_path=args.dump_judge_requests,
+                    expected_count=expected,
+                    watch_timeout=args.watch_timeout,
+                    watch_interval=args.watch_interval,
+                )
+            )
+            return
+
+        # 普通一次性模式：对已有 run_traces 全量生成
+        requests: list[dict] = []
+        for item_id, trace_id in sorted(run_traces.items()):
+            req = _build_judge_req_for_item(lf, item_id, trace_id, items_cache)
+            if req:
+                requests.append(req)
+                print(f"  [{item_id}] judge req built (trace={trace_id[:8]}...)")
+
+        Path(args.dump_judge_requests).write_text(
+            json.dumps(requests, indent=2, ensure_ascii=False)
+        )
+        print(f"[SAVED] {len(requests)} judge request(s) → {args.dump_judge_requests}")
+        print("[NEXT] 启动 CC subagent 评分每个 request，再用 --judge-results <file> 应用评分")
+        return
+
+    # ── Phase 2: 评分（assertion + 已有 judge results）
+    skip_judge = args.skip_llm_judge
+    print(f"[INFO] Scoring mode: {'assertion_only' if skip_judge else 'assertion+judge'}")
+    print(f"[INFO] Scoring {len(run_traces)} traces...")
+
+    results: list[dict] = []
+    for item_id, trace_id in sorted(run_traces.items()):
+        try:
+            trace = lf.api.trace.get(trace_id)
+            obs_list = _fetch_observations(lf, trace_id)
+
+            inp, exp, meta = items_cache.get(item_id, ({}, {}, {}))
+            # 补充上下文给 score_meta 用
+            sf_metadata = dict(meta) if meta else {"item_id": item_id}
+            sf_metadata.setdefault("run_name", args.run_name)
+            sf_metadata.setdefault("dataset_name", args.dataset_name)
+            # model 从 trace.metadata 提取
+            tmeta = trace.metadata if isinstance(trace.metadata, dict) else {}
+            sf_metadata.setdefault("model", tmeta.get("model", ""))
+            sf_metadata.setdefault("duration_seconds", tmeta.get("duration_seconds", 0))
+
+            extraction = _build_extraction_from_observations(trace, obs_list)
+            # tool_call_count: 所有 SPAN observations
+            tool_call_count = sum(1 for o in obs_list if o.type == "SPAN")
+
+            judge_result = judge_results_map.get(trace_id) or judge_results_map.get(item_id)
+
+            print(f"  → {item_id} (trace={trace_id[:8]}...)")
+            result = _score_extraction(
+                extraction=extraction,
+                item_input=inp,
+                item_expected=exp,
+                item_metadata=sf_metadata,
+                trace_id=trace_id,
+                judge_result=judge_result,
+                skip_llm_judge=skip_judge,
+                tool_call_count=tool_call_count,
+                dry_run=args.dry_run,
+                lf=lf,
+            )
+            result["item_id"] = item_id
+            results.append(result)
+        except Exception as e:
+            print(f"  [ERROR] {item_id}: {e}")
+
+    if args.report or len(run_traces) > 1:
+        valid = [r for r in results if "composite" in r]
+        if valid:
+            avg_e2e = sum(r["composite"] for r in valid) / len(valid)
+            avg_tc = sum(r["task_completion"] for r in valid) / len(valid)
+            print(f"\n{'=' * 60}")
+            print(f"Summary: {len(valid)} traces  |  E2E={avg_e2e:.3f}  TC={avg_tc:.3f}")
+            print(f"{'=' * 60}")
+
+    if args.output:
+        Path(args.output).write_text(json.dumps(results, indent=2, ensure_ascii=False))
+        print(f"[SAVED] {args.output}")
+
+
 def session_main() -> None:
     """
     Subcommand: score one or more local session .jsonl files (assertion + LLM Judge).
@@ -1257,15 +2126,20 @@ def session_main() -> None:
 
 
 def main() -> None:
-    # Dispatch to subcommands — 'session' is the primary entry point
+    # Dispatch to subcommands
     if len(sys.argv) > 1 and sys.argv[1] == "session":
         session_main()
         return
+    if len(sys.argv) > 1 and sys.argv[1] == "langfuse":
+        langfuse_main()
+        return
 
-    # No subcommand → show help directing to session subcommand
+    # No subcommand → show help
     print(
-        "Usage: python score_traces.py session --session <path> [options]\n\n"
-        "Use 'python score_traces.py session --help' for details.",
+        "Usage:\n"
+        "  python score_traces.py session  --session <path> [options]   # CC 评测：本地 .jsonl\n"
+        "  python score_traces.py langfuse --run-name X --dataset-name Y [options]  # openclaw 评测：从 Langfuse 拉数据\n\n"
+        "Use '<subcommand> --help' for details.",
         file=sys.stderr,
     )
     sys.exit(1)

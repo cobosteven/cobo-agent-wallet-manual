@@ -1,34 +1,51 @@
 #!/usr/bin/env python3
 """
-Openclaw 弱模型评测脚本 — 三层分离方案的服务器端。
+Openclaw 弱模型评测脚本。
 
-在 Openclaw 服务器上运行，零 LLM 依赖。负责：
-  1. prepare         — 从 Langfuse 拉 dataset items，生成 task prompt 文件（含 wrapper 模式）
-  2. import-sessions — 从 wrapper subagent 写入的 /tmp/eval-sessions/*.json 导入到 run 目录
-  3. upload          — 将收集的 session 上传到 Langfuse
-  4. pack            — 打包 session 供本地下载
+可在 Openclaw 服务器上运行（run/prepare/import-sessions/collect/upload/pack 子命令），
+也可在本地 Mac 上运行 dispatch 子命令以并行调度多台 openclaw 服务器。零 LLM 依赖。
 
-执行 caw 命令由 openclaw 对话中的弱模型完成。wrapper subagent 负责
-spawn task、调用 sessions_history、将结果写入 /tmp/eval-sessions/{item_id}.json。
+服务器端子命令：
+  1. run             — 脚本驱动串行执行评测（推荐）：自动创建隔离 agent、执行 task、收集 session
+  2. prepare         — 从 Langfuse 拉 dataset items，生成 task prompt 文件
+  3. import-sessions — 从 /tmp/eval-sessions/*.json 导入 session 到 run 目录
+  4. collect         — 从 openclaw session 目录中 grep 收集 session
+  5. upload          — 将收集的 session 上传到 Langfuse
+  6. pack            — 打包 session 供本地下载
 
-用法:
-    # Step 1: 生成 prompt（含 wrapper subagent 模式）
+本地 Mac 调度子命令：
+  7. dispatch        — 并行 SSH 到 N 台 openclaw 服务器，每台作为 worker 动态从任务队列取 item 执行
+                        （默认动态队列模式：空闲服务器自动取下一个任务，充分利用服务器资源）
+                        加 --static 退化为静态轮询分配（i % N），fire-and-forget 时自动使用静态模式
+
+推荐用法（脚本驱动，串行执行 — 单台服务器）:
+    python run_eval_openclaw.py run \\
+      --run-name eval-oc-doubao-20260415 \\
+      --dataset-name caw-agent-eval-seth-v2
+
+并行用法（本地 Mac 调度多台服务器）:
+    python run_eval_openclaw.py dispatch \\
+      --run-name eval-oc-doubao-20260415 \\
+      --dataset-name caw-agent-eval-seth-v2 \\
+      --model doubao --model-full volcengine/doubao-seed-2.0-code \\
+      --server srv1:asia-east2-a:my-project \\
+      --server srv2:asia-east2-c:my-project \\
+      --server srv3:asia-east2-c:my-project \\
+      --server srv4:asia-east2-c:my-project
+
+传统用法（wrapper subagent 模式，需弱模型编排）:
     python run_eval_openclaw.py prepare --dataset-name caw-agent-eval-seth-v2
-
-    # Step 2: 在 openclaw 对话中粘贴 _all_tasks.txt，弱模型按 wrapper 模式并行执行
-
-    # Step 3: 导入 session（从 wrapper 写入的 /tmp/eval-sessions/ 读取）
+    # 在 openclaw 对话中粘贴 _all_tasks.txt
     python run_eval_openclaw.py import-sessions --run-name eval-oc-doubao-20260412
-
-    # Step 4: 上传到 Langfuse
     python run_eval_openclaw.py upload --run-name eval-oc-doubao-20260412
-
-    # Step 5: 打包 session 供本地下载评分
     python run_eval_openclaw.py pack --run-name eval-oc-doubao-20260412
 """
 
 import argparse
+import asyncio
 import json
+import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -52,6 +69,31 @@ _OC_SESSION_DIR = Path.home() / ".openclaw" / "agents" / "main" / "sessions"
 # 评测 run 的本地存储目录
 _RUNS_DIR = Path.home() / ".caw-eval" / "runs"
 
+# ── run 子命令常量 ────────────────────────────────────────────────────────────
+
+_OC_HOME = Path.home() / ".openclaw"
+_DEFAULT_TIMEOUT = 600  # 单个 task 超时（秒）
+_MAX_CONTINUATIONS = 20  # 续传次数上限（安全阀）
+
+# workspace 中由 openclaw 框架管理的系统文件，eval 清理时保留
+_WORKSPACE_SYSTEM_FILES = frozenset(
+    [
+        "AGENTS.md",
+        "SOUL.md",
+        "TOOLS.md",
+        "IDENTITY.md",
+        "USER.md",
+        "HEARTBEAT.md",
+        "BOOTSTRAP.md",
+        ".git",
+        ".gitignore",
+        ".openclaw",
+        "node_modules",
+        "package.json",
+        "package-lock.json",
+    ]
+)
+
 
 def build_task_prompt(item: dict) -> str:
     """构建单个 item 的 task 执行 prompt（由 wrapper subagent 传给 task session）。"""
@@ -60,6 +102,12 @@ def build_task_prompt(item: dict) -> str:
 
     return f"""[EVAL:{item_id}]
 cobo-agentic-wallet-sandbox skill 已激活。
+
+## Environment（环境已就绪，无需安装）
+
+- `caw` CLI 已安装于 `~/.cobo-agentic-wallet/bin/caw`，**无需 npm install 或任何安装步骤**
+- 如 `caw` 不在 PATH，执行：`export PATH="$HOME/.cobo-agentic-wallet/bin:$PATH"`
+- Onboarding 已完成，钱包和网络已配置好，直接执行任务即可
 
 **评测模式约束 — 仅针对 skill 内部的交互流程，不影响对用户指令本身的响应：**
 
@@ -160,6 +208,372 @@ def build_all_tasks_prompt(items: list[dict]) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+
+# ── run 子命令（脚本驱动串行执行） ─────────────────────────────────────────────
+
+
+_CAW_BIN = os.path.expanduser("~/.cobo-agentic-wallet/bin/caw")
+
+
+async def _revoke_active_pacts(item_id: str) -> None:
+    """Revoke 所有 active pact，确保每个 eval item 从干净的 pact 状态开始。"""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            _CAW_BIN,
+            "pact",
+            "list",
+            "--status",
+            "active",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+        if proc.returncode != 0:
+            return
+        pact_data = json.loads(stdout.decode())
+        pacts = pact_data.get("result", {}).get("pacts", [])
+        for p in pacts:
+            pid = p.get("id", "")
+            if not pid:
+                continue
+            rp = await asyncio.create_subprocess_exec(
+                _CAW_BIN,
+                "pact",
+                "revoke",
+                pid,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await asyncio.wait_for(rp.communicate(), timeout=10)
+        if pacts:
+            print(f"  [{item_id}] revoked {len(pacts)} active pact(s)")
+    except Exception:
+        pass  # 清理失败不阻塞评测
+
+
+async def _run_openclaw(
+    openclaw_bin: str,
+    args: list[str],
+    timeout: int | None = None,
+) -> tuple[int, str, str]:
+    """调用 openclaw CLI，返回 (returncode, stdout, stderr)。超时时 kill 进程。"""
+    proc = await asyncio.create_subprocess_exec(
+        openclaw_bin,
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            proc.communicate(),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return -1, "", "timeout"
+
+    return (
+        proc.returncode or 0,
+        stdout_bytes.decode("utf-8", errors="replace"),
+        stderr_bytes.decode("utf-8", errors="replace"),
+    )
+
+
+def _parse_agent_result(stdout: str) -> dict:
+    """从 ``openclaw agent --json`` 的 stdout 中解析 JSON 结果。
+
+    openclaw 可能在 JSON 前输出非 JSON 文本（如 streaming），因此先尝试全文解析，
+    失败则逐行倒序查找首个合法 JSON 对象。
+    """
+    stdout = stdout.strip()
+    if not stdout:
+        return {}
+    try:
+        return json.loads(stdout)
+    except json.JSONDecodeError:
+        pass
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                continue
+    return {}
+
+
+def _get_stop_reason(result: dict) -> str:
+    """从 openclaw agent --json 的结果中提取 stopReason。"""
+    try:
+        return result["result"]["meta"]["stopReason"]
+    except (KeyError, TypeError):
+        return ""
+
+
+async def _run_single_task(
+    item: dict,
+    openclaw_bin: str,
+    workspace: str,
+    run_dir: Path,
+    timeout: int,
+) -> str:
+    """执行单个评测 task，返回状态字符串 ("ok" | "error:<reason>")。"""
+    item_id = item["id"]
+    # 在 agent 名中加入完整 run_name，确保不同 run 使用不同的
+    # ~/.openclaw/agents/ 目录，从根本上避免继承上一次 run 的旧 session。
+    agent_name = f"eval-{item_id}-{run_dir.name}"
+    actual_agent_id = ""
+
+    try:
+        # 0. 预清理残留 agent（上次异常退出或 delete 失败时会留下同名 agent，
+        #    导致 agents add 报 "already exists"；直接忽略失败）
+        await _run_openclaw(
+            openclaw_bin,
+            ["agents", "delete", agent_name.lower(), "--force"],
+            timeout=15,
+        )
+        # 同时清理 session 目录（agents delete 只删注册信息，不删目录）。
+        # 由于 agent 名已含 run_suffix，理论上不会命中旧 run 的目录，
+        # 但保留清理逻辑作为双重保障。
+        agent_session_dir = _OC_HOME / "agents" / agent_name.lower()
+        if agent_session_dir.exists():
+            shutil.rmtree(agent_session_dir, ignore_errors=True)
+
+        # 0.5 清理 workspace 产物（scripts/、pact JSON、tx JSON 等前序 session 遗留文件）
+        # 保留系统文件（SOUL.md / AGENTS.md 等），删除 agent 在任务过程中写入的内容。
+        ws = Path(workspace)
+        if ws.exists():
+            for entry in list(ws.iterdir()):
+                if entry.name not in _WORKSPACE_SYSTEM_FILES:
+                    try:
+                        if entry.is_dir():
+                            shutil.rmtree(entry, ignore_errors=True)
+                        else:
+                            entry.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
+        # 0.6 清理所有 active pact（避免 agent 复用旧 pact 导致评测无法检测 pact submit）
+        await _revoke_active_pacts(item_id)
+
+        # 1. 创建隔离 agent
+        rc, out, err = await _run_openclaw(
+            openclaw_bin,
+            ["agents", "add", agent_name, "--workspace", workspace, "--non-interactive", "--json"],
+            timeout=30,
+        )
+        if rc != 0:
+            print(f"  [{item_id}] ERROR  agents add 失败: {err.strip() or out.strip()}")
+            return "error:agent_create_failed"
+
+        # Openclaw 自动将 agent ID 转小写，从返回的 JSON 中读取实际 ID
+        try:
+            add_result = json.loads(out.strip())
+            actual_agent_id = add_result.get("agentId", agent_name.lower())
+        except json.JSONDecodeError:
+            actual_agent_id = agent_name.lower()
+
+        # 2. 构建 prompt 并发送
+        prompt = build_task_prompt(item)
+        rc, out, err = await _run_openclaw(
+            openclaw_bin,
+            [
+                "agent",
+                "--agent",
+                actual_agent_id,
+                "--message",
+                prompt,
+                "--json",
+                "--timeout",
+                str(timeout),
+            ],
+            timeout=timeout + 60,  # 给 CLI 本身留出余量
+        )
+
+        if rc == -1:
+            print(f"  [{item_id}] TIMEOUT  ({timeout}s)")
+            status = "error:timeout"
+        elif rc != 0:
+            print(f"  [{item_id}] ERROR  agent 返回非零: rc={rc}")
+            status = "error:agent_failed"
+        else:
+            result = _parse_agent_result(out)
+            stop_reason = _get_stop_reason(result)
+            status = "ok"
+
+            # 3. 续传循环：stopReason 不是 stop 时发 "继续"
+            continuations = 0
+            while stop_reason and stop_reason != "stop" and continuations < _MAX_CONTINUATIONS:
+                continuations += 1
+                print(f"  [{item_id}] 续传 #{continuations} (stopReason={stop_reason})")
+                rc, out, err = await _run_openclaw(
+                    openclaw_bin,
+                    [
+                        "agent",
+                        "--agent",
+                        actual_agent_id,
+                        "--message",
+                        "继续执行，不要停下",
+                        "--json",
+                        "--timeout",
+                        str(timeout),
+                    ],
+                    timeout=timeout + 60,
+                )
+                if rc == -1:
+                    print(f"  [{item_id}] TIMEOUT  续传 #{continuations}")
+                    status = "error:timeout"
+                    break
+                if rc != 0:
+                    print(f"  [{item_id}] ERROR  续传 #{continuations} rc={rc}")
+                    status = "error:agent_failed"
+                    break
+                result = _parse_agent_result(out)
+                stop_reason = _get_stop_reason(result)
+
+            if continuations >= _MAX_CONTINUATIONS and stop_reason != "stop":
+                print(f"  [{item_id}] WARN  达到续传上限 ({_MAX_CONTINUATIONS})")
+                status = "warn:max_continuations"
+
+        # 4. 收集 session 文件
+        session_dir = _OC_HOME / "agents" / actual_agent_id / "sessions"
+        jsonl_files = (
+            sorted(session_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if session_dir.exists()
+            else []
+        )
+        # 过滤掉 sessions.json（不是 session 数据文件）
+        jsonl_files = [f for f in jsonl_files if f.name != "sessions.json"]
+
+        if jsonl_files:
+            dst = run_dir / f"{item_id}.jsonl"
+            shutil.copy2(jsonl_files[0], dst)
+            size_kb = dst.stat().st_size / 1024
+            print(f"  [{item_id}] {status.upper()}  session={size_kb:.0f}KB -> {dst.name}")
+        else:
+            print(f"  [{item_id}] {status.upper()}  (no session file)")
+            if status == "ok":
+                status = "error:no_session"
+
+        return status
+
+    except Exception as e:
+        print(f"  [{item_id}] EXCEPTION  {e}")
+        return f"error:exception:{e}"
+
+    finally:
+        # 5. 清理 agent（无论成功失败都执行）
+        if actual_agent_id:
+            rc, _, err = await _run_openclaw(
+                openclaw_bin,
+                ["agents", "delete", actual_agent_id, "--force"],
+                timeout=30,
+            )
+            if rc != 0:
+                print(f"  [{item_id}] WARN  agent 清理失败: {err.strip()}")
+
+
+async def _cmd_run(
+    dataset_name: str,
+    run_name: str,
+    item_ids: list[str] | None,
+    timeout: int,
+    openclaw_bin: str,
+    workspace: str,
+    skip_upload: bool,
+    skip_pack: bool,
+    skill: str,
+    model: str,
+    model_full: str,
+    description: str,
+    skip_link: bool = False,
+) -> None:
+    """脚本驱动串行执行评测：为每个 task 创建隔离 agent，通过 CLI 执行，收集 session。
+
+    Args:
+        skip_link: True 时上传 trace 不创建/关联 dataset run（适合调试少量 case）。
+    """
+    items = get_dataset_items(dataset_name)
+    if item_ids:
+        items = [i for i in items if i["id"] in item_ids]
+
+    if not items:
+        print("[ERROR] 没有匹配的 items")
+        sys.exit(1)
+
+    run_dir = _RUNS_DIR / run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"=== 脚本驱动评测 (run: {run_name}) ===")
+    print(f"数据集: {dataset_name} ({len(items)} items)")
+    print(f"openclaw: {openclaw_bin}")
+    print(f"workspace: {workspace}")
+    print(f"timeout: {timeout}s / task")
+    print()
+
+    results: dict[str, str] = {}
+
+    for i, item in enumerate(items):
+        item_id = item["id"]
+        op = item["operation_type"]
+        diff = item["difficulty"]
+        print(f"[{i + 1}/{len(items)}] {item_id} ({op} {diff})")
+        status = await _run_single_task(item, openclaw_bin, workspace, run_dir, timeout)
+        results[item_id] = status
+
+    # 写 manifest
+    manifest = {
+        "run_name": run_name,
+        "dataset_name": dataset_name,
+        "source": "openclaw-cli",
+        "executed_at": datetime.now(tz=timezone.utc).isoformat(),
+        "items": {
+            item["id"]: {
+                "status": results.get(item["id"], "skipped"),
+                "operation_type": item["operation_type"],
+                "difficulty": item["difficulty"],
+            }
+            for item in items
+        },
+    }
+    manifest_path = run_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # 汇总
+    ok_count = sum(1 for s in results.values() if s == "ok")
+    warn_count = sum(1 for s in results.values() if s.startswith("warn:"))
+    err_count = sum(1 for s in results.values() if s.startswith("error:"))
+    print(
+        f"\n=== 完成: {ok_count} ok / {warn_count} warn / {err_count} error (共 {len(items)}) ==="
+    )
+    print(f"文件位置: {run_dir}")
+
+    if err_count > 0:
+        failed = [iid for iid, s in results.items() if s.startswith("error:")]
+        print(f"\n失败项: {', '.join(failed)}")
+        print(
+            f"重跑命令: python {sys.argv[0]} run --run-name {run_name} --item-id {' '.join(failed)}"
+        )
+
+    # upload + pack
+    if not skip_upload:
+        print("\n--- 上传到 Langfuse ---")
+        cmd_upload(
+            run_name,
+            dataset_name,
+            item_ids,
+            skill,
+            model,
+            model_full,
+            description,
+            skip_link=skip_link,
+        )
+
+    if not skip_pack:
+        print("\n--- 打包 ---")
+        cmd_pack(run_name)
 
 
 # ── prepare 子命令 ──────────────────────────────────────────────────────────────
@@ -403,8 +817,13 @@ def cmd_upload(
     model: str,
     model_full: str,
     description: str,
+    skip_link: bool = False,
 ) -> None:
-    """上传 session 到 Langfuse。"""
+    """上传 session 到 Langfuse。
+
+    Args:
+        skip_link: True 时只上传 trace，不创建/关联 dataset run（适合调试少量 case）。
+    """
     run_dir = _RUNS_DIR / run_name
     if not run_dir.exists():
         print(f"[ERROR] Run 目录不存在: {run_dir}")
@@ -420,7 +839,9 @@ def cmd_upload(
             f" ({n_sessions} cases) | env: openclaw sandbox"
         )
 
-    batch_upload_sessions(run_dir, run_name, dataset_name, skill, item_ids, run_description)
+    batch_upload_sessions(
+        run_dir, run_name, dataset_name, skill, item_ids, run_description, skip_link=skip_link
+    )
 
 
 # ── pack 子命令 ────────────────────────────────────────────────────────────────
@@ -470,6 +891,407 @@ def cmd_pack(run_name: str) -> None:
     print(f"  {_build_scp_command(archive)}")
 
 
+# ── dispatch 子命令（本地 Mac 端：并行调度多台 openclaw 服务器） ────────────────
+
+
+def _parse_server_spec(spec: str) -> dict:
+    """解析 server 规格 'name:zone:project' 为 dict。"""
+    parts = spec.split(":")
+    if len(parts) != 3:
+        raise ValueError(f"invalid server spec '{spec}', expected format 'name:zone:project'")
+    return {"name": parts[0], "zone": parts[1], "project": parts[2]}
+
+
+def _build_remote_run_cmd(
+    dataset_name: str,
+    run_name: str,
+    item_ids: list[str],
+    timeout: int,
+    skill: str,
+    model: str,
+    model_full: str,
+    *,
+    fire_and_forget: bool = False,
+    server_name: str = "",
+) -> str:
+    """构建要在远端 openclaw 服务器上执行的完整 shell 命令（传给 sudo su - ubuntu -c）。
+
+    fire_and_forget=True 时：用 nohup 后台执行，SSH 在 echo 远端 PID 后立即返回。
+    日志写到远端 ~/.caw-eval/runs/{run_name}/{server_name}.nohup.log。
+    """
+    item_args = " ".join(item_ids)
+    # 远端 model-full 可能含 /，不会破坏 shell；但保险用 shlex.quote 包起来
+    core_cmd = (
+        "export PATH=/home/ubuntu/.npm-global/bin:/home/ubuntu/.cobo-agentic-wallet/bin:$PATH; "
+        "cd ~/.agents/skills/caw-eval/scripts && "
+        "python3 -u run_eval_openclaw.py run "
+        f"--run-name {shlex.quote(run_name)} "
+        f"--dataset-name {shlex.quote(dataset_name)} "
+        f"--item-id {item_args} "
+        f"--timeout {timeout} "
+        f"--skill {shlex.quote(skill)} "
+        f"--model {shlex.quote(model)} "
+        f"--model-full {shlex.quote(model_full)} "
+        "--skip-pack"
+    )
+    if not fire_and_forget:
+        return core_cmd
+    # fire-and-forget：nohup 后台运行，echo PID 后 SSH 立即返回
+    # 本地日志文件（.log）只记录 PID 和 nohup log 路径；实际输出在远端 nohup log
+    log_path = f"~/.caw-eval/runs/{run_name}/{server_name}.nohup.log"
+    return (
+        f"mkdir -p ~/.caw-eval/runs/{shlex.quote(run_name)}; "
+        f"nohup bash -c {shlex.quote(core_cmd)} > {log_path} 2>&1 & echo $!"
+    )
+
+
+async def _ssh_dispatch_one(
+    server: dict,
+    item_ids: list[str],
+    dataset_name: str,
+    run_name: str,
+    timeout: int,
+    skill: str,
+    model: str,
+    model_full: str,
+    log_dir: Path,
+    *,
+    fire_and_forget: bool = False,
+) -> tuple[str, int]:
+    """SSH 到一台 server 串行执行其分配的 items，stdout/stderr 写入 log_dir/{name}.log。
+
+    fire_and_forget=True 时：远端用 nohup 后台启动，SSH 在拿到 PID 后立即返回。
+    本地日志只记录 PID + 远端 nohup log 路径，实际输出在远端。
+    """
+    if not item_ids:
+        return server["name"], 0
+
+    remote_cmd = _build_remote_run_cmd(
+        dataset_name,
+        run_name,
+        item_ids,
+        timeout,
+        skill,
+        model,
+        model_full,
+        fire_and_forget=fire_and_forget,
+        server_name=server["name"],
+    )
+    ssh_cmd = [
+        "gcloud",
+        "compute",
+        "ssh",
+        "--zone",
+        server["zone"],
+        server["name"],
+        "--tunnel-through-iap",
+        "--project",
+        server["project"],
+        "--ssh-flag=-o ServerAliveInterval=60",
+        "--ssh-flag=-o ServerAliveCountMax=10",
+        "--",
+        f"sudo su - ubuntu -c {shlex.quote(remote_cmd)}",
+    ]
+
+    log_file = log_dir / f"{server['name']}.log"
+    print(f"[DISPATCH→ {server['name']}] items={item_ids} log={log_file}")
+
+    if fire_and_forget:
+        # FF 模式：SSH 只等远端 echo PID，不等进程结束
+        proc = await asyncio.create_subprocess_exec(
+            *ssh_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        pid = stdout.decode().strip()
+        nohup_log = f"~/.caw-eval/runs/{run_name}/{server['name']}.nohup.log"
+        with log_file.open("w", encoding="utf-8") as f:
+            f.write("# fire-and-forget dispatch\n")
+            f.write(f"# command: {' '.join(shlex.quote(c) for c in ssh_cmd)}\n")
+            f.write(f"# remote PID: {pid}\n")
+            f.write(f"# nohup log (on server): {nohup_log}\n")
+            if stderr.strip():
+                f.write(f"# stderr: {stderr.decode().strip()}\n")
+        print(f"[DISPATCH← {server['name']}] fire-and-forget PID={pid}")
+        print(f"  nohup log (on server): {nohup_log}")
+        return server["name"], 0
+
+    with log_file.open("w", encoding="utf-8") as f:
+        f.write(f"# dispatch command:\n# {' '.join(shlex.quote(c) for c in ssh_cmd)}\n\n")
+        f.flush()
+        proc = await asyncio.create_subprocess_exec(
+            *ssh_cmd,
+            stdout=f,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        rc = await proc.wait()
+
+    print(f"[DISPATCH← {server['name']}] rc={rc}")
+    return server["name"], rc
+
+
+async def _dynamic_worker(
+    server: dict,
+    queue: asyncio.Queue,
+    item_results: dict,
+    dataset_name: str,
+    run_name: str,
+    timeout: int,
+    skill: str,
+    model: str,
+    model_full: str,
+    log_dir: Path,
+) -> str:
+    """动态 worker：从队列持续取 item 执行，直到队列空为止。
+
+    每次只跑 1 个 item，完成后立即从队列取下一个，实现服务器间负载均衡。
+    item_results[item_id] = (server_name, rc) 记录每个 item 的执行结果。
+    """
+    while True:
+        try:
+            item_id = queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+
+        remote_cmd = _build_remote_run_cmd(
+            dataset_name,
+            run_name,
+            [item_id],
+            timeout,
+            skill,
+            model,
+            model_full,
+            fire_and_forget=False,
+            server_name=server["name"],
+        )
+        ssh_cmd = [
+            "gcloud",
+            "compute",
+            "ssh",
+            "--zone",
+            server["zone"],
+            server["name"],
+            "--tunnel-through-iap",
+            "--project",
+            server["project"],
+            "--ssh-flag=-o ServerAliveInterval=60",
+            "--ssh-flag=-o ServerAliveCountMax=10",
+            "--",
+            f"sudo su - ubuntu -c {shlex.quote(remote_cmd)}",
+        ]
+
+        log_file = log_dir / f"{server['name']}-{item_id}.log"
+        print(f"[DISPATCH→ {server['name']}] item={item_id} log={log_file.name}")
+
+        with log_file.open("w", encoding="utf-8") as f:
+            f.write(f"# dispatch command:\n# {' '.join(shlex.quote(c) for c in ssh_cmd)}\n\n")
+            f.flush()
+            proc = await asyncio.create_subprocess_exec(
+                *ssh_cmd,
+                stdout=f,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            rc = await proc.wait()
+
+        status = "OK" if rc == 0 else f"FAIL rc={rc}"
+        print(f"[DISPATCH← {server['name']}] item={item_id} {status}")
+        item_results[item_id] = (server["name"], rc)
+        queue.task_done()
+
+    return server["name"]
+
+
+async def _cmd_dispatch(
+    dataset_name: str,
+    run_name: str,
+    item_ids: list[str] | None,
+    servers: list[dict],
+    timeout: int,
+    skill: str,
+    model: str,
+    model_full: str,
+    *,
+    fire_and_forget: bool = False,
+    static: bool = False,
+) -> None:
+    """并行 dispatch 评测任务到多台 openclaw 服务器。
+
+    默认动态队列模式（非 fire-and-forget）：所有 items 放入队列，每台服务器作为 worker
+    持续取任务执行，完成一个立即取下一个，充分利用空闲服务器。
+
+    fire_and_forget=True 或 static=True 时：退化为静态轮询分配（i % N），
+    各台服务器预先分配固定 chunk，SSH 启动后（fire-and-forget 时）立即返回。
+    """
+    items = get_dataset_items(dataset_name)
+    if item_ids:
+        items = [i for i in items if i["id"] in item_ids]
+
+    if not items:
+        print("[ERROR] 没有匹配的 items")
+        sys.exit(1)
+
+    if not servers:
+        print("[ERROR] 至少需要一台 --server")
+        sys.exit(1)
+
+    n = len(servers)
+    log_dir = _RUNS_DIR / run_name / "dispatch-logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── 预清理：并行 SSH 到各服务器，删除所有历史残留 eval agent + session 目录 ──
+    print("=== 预清理历史残留 eval agent / session 目录 ===")
+    cleanup_tasks = []
+    for srv in servers:
+        cleanup_cmd = (
+            "export PATH=/home/ubuntu/.npm-global/bin:$PATH; "
+            # 列出所有 eval- 开头的 agent 并逐个 --force 删除
+            "for a in $(openclaw agents list 2>&1 "
+            "| awk '/^- eval-/{print $2}' ); do "
+            '  openclaw agents delete "$a" --force 2>&1; '
+            "done; "
+            # 清理残留 session 目录（仅删 ~/.openclaw/agents/ 下 eval- 开头的一级目录）
+            "find ~/.openclaw/agents -maxdepth 1 -type d -name 'eval-*' -exec rm -rf {} + 2>/dev/null; "
+            "echo cleanup-done"
+        )
+        ssh_cmd = [
+            "gcloud",
+            "compute",
+            "ssh",
+            "--zone",
+            srv["zone"],
+            srv["name"],
+            "--tunnel-through-iap",
+            "--project",
+            srv["project"],
+            "--",
+            f"sudo su - ubuntu -c {shlex.quote(cleanup_cmd)}",
+        ]
+        cleanup_tasks.append(
+            asyncio.create_subprocess_exec(
+                *ssh_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        )
+    cleanup_procs = await asyncio.gather(*cleanup_tasks)
+    cleanup_results = await asyncio.gather(*(p.communicate() for p in cleanup_procs))
+    for srv, (stdout, stderr) in zip(servers, cleanup_results):
+        out = stdout.decode().strip()
+        if "cleanup-done" in out:
+            print(f"  {srv['name']}: 清理完成")
+        else:
+            print(f"  {srv['name']}: 清理可能不完整 — {out} {stderr.decode().strip()}")
+    print()
+
+    # ── 静态分配路径（fire-and-forget 或显式 --static）────────────────────────
+    if fire_and_forget or static:
+        chunks: list[list[str]] = [[] for _ in range(n)]
+        for i, item in enumerate(items):
+            chunks[i % n].append(item["id"])
+
+        mode = "fire-and-forget" if fire_and_forget else "static"
+        print(f"=== Dispatch [{mode}] (run: {run_name}) ===")
+        print(f"数据集: {dataset_name} ({len(items)} items)")
+        print(f"服务器: {n}, 模型: {model_full or model}")
+        for srv, chunk in zip(servers, chunks):
+            print(f"  → {srv['name']} [{srv['zone']}]: {chunk}")
+        print(f"日志目录: {log_dir}")
+        print()
+
+        coroutines = [
+            _ssh_dispatch_one(
+                srv,
+                chunk,
+                dataset_name,
+                run_name,
+                timeout,
+                skill,
+                model,
+                model_full,
+                log_dir,
+                fire_and_forget=fire_and_forget,
+            )
+            for srv, chunk in zip(servers, chunks)
+        ]
+        static_results = await asyncio.gather(*coroutines, return_exceptions=True)
+
+        print("\n=== 完成 ===")
+        failures: list[str] = []
+        for srv, result in zip(servers, static_results):
+            if isinstance(result, Exception):
+                print(f"  {srv['name']}: EXCEPTION {result}")
+                failures.append(srv["name"])
+            else:
+                _, rc = result  # type: ignore[misc]
+                status = "OK" if rc == 0 else f"FAIL rc={rc}"
+                print(f"  {srv['name']}: {status}")
+                if rc != 0:
+                    failures.append(srv["name"])
+
+        if failures:
+            print(f"\n失败服务器: {failures}")
+            print(f"查看日志: {log_dir}/<server>.log")
+            if fire_and_forget:
+                print(
+                    f"或查看 nohup log：ssh 到各服务器看 ~/.caw-eval/runs/{run_name}/<server>.nohup.log"
+                )
+        else:
+            print(f"\n所有 server 执行完毕。Langfuse run: {run_name}")
+            print("下一步：参考 SKILL-openclaw.md Step 4 评分（score_traces.py langfuse）")
+        return
+
+    # ── 动态队列路径（默认）────────────────────────────────────────────────────
+    print(f"=== Dispatch [dynamic] (run: {run_name}) ===")
+    print(f"数据集: {dataset_name} ({len(items)} items)")
+    print(f"服务器: {n} workers, 模型: {model_full or model}")
+    print("模式: 动态队列（空闲服务器自动取下一个任务）")
+    all_ids = [item["id"] for item in items]
+    print(f"任务队列: {all_ids}")
+    print(f"日志目录: {log_dir}")
+    print()
+
+    queue: asyncio.Queue = asyncio.Queue()
+    for item in items:
+        await queue.put(item["id"])
+
+    item_results: dict[str, tuple[str, int]] = {}
+
+    workers = [
+        _dynamic_worker(
+            srv,
+            queue,
+            item_results,
+            dataset_name,
+            run_name,
+            timeout,
+            skill,
+            model,
+            model_full,
+            log_dir,
+        )
+        for srv in servers
+    ]
+    await asyncio.gather(*workers)
+
+    print("\n=== 完成 ===")
+    failed_items: list[str] = []
+    for item_id, (srv_name, rc) in sorted(item_results.items()):
+        status = "OK" if rc == 0 else f"FAIL rc={rc}"
+        print(f"  [{srv_name}] {item_id}: {status}")
+        if rc != 0:
+            failed_items.append(item_id)
+
+    if failed_items:
+        print(f"\n失败 items: {failed_items}")
+        print(f"查看日志: {log_dir}/<server>-<item_id>.log")
+        print(f"重跑命令示例: --item-id {' '.join(failed_items)}")
+        sys.exit(1)
+    else:
+        print(f"\n所有 {len(item_results)} 个 item 执行完毕。Langfuse run: {run_name}")
+        print("下一步：参考 SKILL-openclaw.md Step 4 评分（score_traces.py langfuse）")
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 
@@ -481,6 +1303,30 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = parser.add_subparsers(dest="cmd")
+
+    # ── run（推荐）
+    p_run = sub.add_parser("run", help="脚本驱动串行执行评测（推荐）")
+    p_run.add_argument("--dataset-name", default="caw-agent-eval-seth-v2")
+    p_run.add_argument("--run-name", required=True)
+    p_run.add_argument("--item-id", nargs="*", help="只执行指定 item")
+    p_run.add_argument("--timeout", type=int, default=_DEFAULT_TIMEOUT, help="单个 task 超时秒数")
+    p_run.add_argument("--openclaw-bin", default="openclaw", help="openclaw 二进制路径")
+    p_run.add_argument(
+        "--workspace",
+        default=str(_OC_HOME / "workspace"),
+        help="Openclaw workspace 路径（默认 ~/.openclaw/workspace）",
+    )
+    p_run.add_argument("--skip-upload", action="store_true", help="跳过上传 Langfuse")
+    p_run.add_argument("--skip-pack", action="store_true", help="跳过打包")
+    p_run.add_argument(
+        "--no-link",
+        action="store_true",
+        help="只上传 trace，不创建/关联 dataset run（指定少量 case 调试时用）",
+    )
+    p_run.add_argument("--skill", default="cobo-agentic-wallet-sandbox")
+    p_run.add_argument("--model", default="doubao", help="模型短标识")
+    p_run.add_argument("--model-full", default="", help="完整模型 ID")
+    p_run.add_argument("--description", default="", help="自定义 run description")
 
     # ── prepare
     p_prepare = sub.add_parser("prepare", help="生成 task prompt 文件")
@@ -520,14 +1366,79 @@ def main() -> None:
     p_upload.add_argument(
         "--description", default="", help="自定义 run description（覆盖自动生成）"
     )
+    p_upload.add_argument(
+        "--no-link",
+        action="store_true",
+        help="只上传 trace，不创建/关联 dataset run",
+    )
 
     # ── pack
     p_pack = sub.add_parser("pack", help="打包 session 文件供下载")
     p_pack.add_argument("--run-name", required=True)
 
+    # ── dispatch（本地 Mac 端：并行调度 N 台 openclaw 服务器）
+    p_dispatch = sub.add_parser(
+        "dispatch",
+        help="本地 Mac 端：并行 SSH 到多台 openclaw 服务器，每台串行执行其分配的 items",
+    )
+    p_dispatch.add_argument("--dataset-name", default="caw-agent-eval-seth-v2")
+    p_dispatch.add_argument("--run-name", required=True)
+    p_dispatch.add_argument("--item-id", nargs="*", help="只分发指定 item（否则使用整个 dataset）")
+    p_dispatch.add_argument(
+        "--server",
+        action="append",
+        required=True,
+        metavar="name:zone:project",
+        help="gcloud 服务器规格，可重复；items 轮询分配（i %% N）到各台",
+    )
+    p_dispatch.add_argument(
+        "--timeout", type=int, default=_DEFAULT_TIMEOUT, help="远端单 task 超时（秒）"
+    )
+    p_dispatch.add_argument("--skill", default="cobo-agentic-wallet-sandbox")
+    p_dispatch.add_argument("--model", required=True, help="模型短标识，如 doubao")
+    p_dispatch.add_argument(
+        "--model-full", default="", help="完整模型 ID，如 volcengine/doubao-seed-2.0-code"
+    )
+    p_dispatch.add_argument(
+        "--static",
+        action="store_true",
+        help=(
+            "静态轮询分配模式（i %% N）：items 预先固定分给每台服务器，不做动态调度。"
+            "默认为动态队列模式（空闲服务器自动取下一个任务）。"
+            "fire-and-forget 时自动启用静态模式。"
+        ),
+    )
+    p_dispatch.add_argument(
+        "--fire-and-forget",
+        action="store_true",
+        help=(
+            "后台模式：SSH 启动远端 nohup 进程后立即返回，不等待评测完成。"
+            "进度通过 score_traces.py langfuse --watch 轮询 Langfuse 跟踪。"
+            "隐含 --static（后台模式无法动态调度）。"
+        ),
+    )
+
     args = parser.parse_args()
 
-    if args.cmd == "prepare":
+    if args.cmd == "run":
+        asyncio.run(
+            _cmd_run(
+                dataset_name=args.dataset_name,
+                run_name=args.run_name,
+                item_ids=args.item_id,
+                timeout=args.timeout,
+                openclaw_bin=args.openclaw_bin,
+                workspace=args.workspace,
+                skip_upload=args.skip_upload,
+                skip_pack=args.skip_pack,
+                skill=args.skill,
+                model=args.model,
+                model_full=args.model_full,
+                description=args.description,
+                skip_link=args.no_link,
+            )
+        )
+    elif args.cmd == "prepare":
         cmd_prepare(
             dataset_name=args.dataset_name,
             output_dir=args.output_dir,
@@ -557,9 +1468,26 @@ def main() -> None:
             model=args.model,
             model_full=args.model_full,
             description=args.description,
+            skip_link=args.no_link,
         )
     elif args.cmd == "pack":
         cmd_pack(run_name=args.run_name)
+    elif args.cmd == "dispatch":
+        servers = [_parse_server_spec(s) for s in args.server]
+        asyncio.run(
+            _cmd_dispatch(
+                dataset_name=args.dataset_name,
+                run_name=args.run_name,
+                item_ids=args.item_id,
+                servers=servers,
+                timeout=args.timeout,
+                skill=args.skill,
+                model=args.model,
+                model_full=args.model_full,
+                fire_and_forget=args.fire_and_forget,
+                static=args.static,
+            )
+        )
     else:
         parser.print_help()
         sys.exit(1)
