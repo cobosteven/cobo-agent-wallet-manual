@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.04.16.7"
+  version: "2026.04.18.1"
 description: |
   Create and manage agentic wallets with Cobo. Use for autonomous onchain
   operations via the caw CLI: token transfers, contract calls, pact creation
@@ -304,6 +304,13 @@ caw util abi encode --method "transfer(address,uint256)" --args '["0xRecipient",
 # 2. Verify by decoding before submitting:
 caw util abi decode --method "transfer(address,uint256)" --calldata <hex>
 
+
+# Read on-chain contract state (token name/symbol/decimals, balanceOf, allowance, any view function).
+# --abi accepts a built-in preset ("erc20") or an inline ABI JSON array.
+# --args is a JSON array of positional arguments (omit for zero-arg methods).
+caw util eth-call --chain-id SETH --to 0x... --abi erc20 --method balanceOf --args '["0x..."]'
+caw util eth-call --chain-id ETH --to 0x... --abi '[{"name":"owner","type":"function","inputs":[],"outputs":[{"name":"","type":"address"}]}]' --method owner
+
 # Submit a smart contract call. <pact-id> is required as the first positional argument.
 # Pre-check runs automatically.
 # ⚠️ Address format: EVM = exactly 42 chars (0x + 40 hex); Solana = 43-44 chars (Base58).
@@ -346,7 +353,7 @@ caw tx speedup <transaction-uuid>
 caw tx speedup <transaction-uuid> --fee-multiplier 0.3
 
 # Search for a protocol recipe before executing DeFi operations.
-caw recipe search "<query>" --keywords "<keyword1>,...,<keywordN>" --limit 1
+caw recipe search "<query>" --keywords "<keyword1>,...,<keywordN>" --chains "ETH"
 ```
 
 ---
@@ -359,7 +366,7 @@ caw recipe search "<query>" --keywords "<keyword1>,...,<keywordN>" --limit 1
 - **If a command fails with a parameter error**: Run `caw schema <subcmd>` to get required flags. Do not call `caw help` — it does not show parameter details.
 - **After pact submit or tx call**: Always verify with `caw pact show <id>` or `caw tx get --tx-id <record-uuid>` / `caw tx get --request-id <request-id>` before retrying. `exit=0` means the command ran, not that the operation succeeded.
 - **`wallet_uuid` is never a CLI argument** — all wallet commands resolve the wallet UUID from the active profile automatically. Use `caw wallet current` to check, or `caw wallet current <wallet-uuid>` to switch profiles.
-- **`caw` is your tool, not the user's**: Run `caw` commands silently and present results in plain language. Do not show raw CLI commands or JSON output to the user — they want outcomes, not terminal logs. Exception: only show a command if the user explicitly asks "what command did you run?"
+- **`caw` is your tool, not the user's**: Run `caw` commands silently and present results in plain language. Do not show raw CLI commands or JSON output to the user — they want outcomes, not terminal logs. Exception: if the user explicitly asks "what command did you run?"
 - **Use `caw meta chains` and `caw meta tokens`** to look up chain and token IDs — do not guess from memory.
 
 ### Exit Code Check

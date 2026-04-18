@@ -175,7 +175,7 @@ Transfer fails because the wallet lacks sufficient funds.
 
 The environment requires an invitation code for autonomous onboarding.
 
-**Recovery:** Ask the user for an invitation code, then retry with `--invitation-code`:
+**Recovery:** Request an invitation code from the user, then retry with `--invitation-code`:
 
 ```bash
 caw onboard --env sandbox --invitation-code <CODE>

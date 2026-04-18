@@ -124,7 +124,7 @@ cobo-agentic-wallet-sandbox skill 已激活。
 需要自动跳过的 skill 内部交互（来自 cobo-agentic-wallet-sandbox skill）：
 - 提交 pact 时：跳过展示预览和等待用户确认的步骤，直接调用 `caw pact submit` 提交
 - 交易返回 `status=pending_approval` 且 `owner_linked=false` 时：立即自动执行 `caw pending approve <pending_operation_id>`
-- 如遇到无法自动化处理的真实阻塞（如 `owner_linked=true` 需要 Human App 审批），记录原因并跳过，继续执行其余步骤
+- 如遇到无法自动化处理的真实阻塞（如 `owner_linked=true` 需要 Cobo Agentic Wallet app 审批），记录原因并跳过，继续执行其余步骤
 
 这是自动化评测，无人工实时监控，须完整执行至结束，不得因 skill 内部的交互流程而中断。
 """
