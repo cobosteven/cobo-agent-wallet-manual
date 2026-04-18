@@ -315,7 +315,7 @@ For additional protocol recipes, use one of two mechanisms:
 
 **1. Built-in recipe knowledge base** (server-side, no install needed):
 ```bash
-caw recipe search "<protocol-name> <chain>"
+caw recipe search --query "<protocol-name> <chain>"
 # e.g. "uniswap base", "aave arbitrum", "jupiter solana"
 ```
 

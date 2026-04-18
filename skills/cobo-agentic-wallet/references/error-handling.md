@@ -58,11 +58,11 @@ For exact schemas, run `caw schema <command>`. The fields below are the ones you
 
 On success, `.result` contains pact metadata including:
 
-- **pact ID** — use as the positional argument to `caw tx transfer`, `caw tx call`, `caw tx sign-message`, and to all `caw pact *` commands
+- **pact ID** — pass as `--pact-id` to `caw tx transfer`, `caw tx call`, `caw tx sign-message`, and as `--pact-id` to all `caw pact *` commands
 - **status** — one of `pending_approval`, `active`, `rejected`, `completed`, `expired`, `revoked` (literal strings; match exactly — these are pact statuses, distinct from transaction statuses)
 - **approval request reference** — present when the pact needs owner approval before activation
 
-New pacts typically start at `pending_approval` and transition to `active` after owner approval. Poll with `caw pact show <pact-id>` to trigger lazy activation and confirm the current state.
+New pacts typically start at `pending_approval` and transition to `active` after owner approval. Poll with `caw pact show --pact-id <pact-id>` to trigger lazy activation and confirm the current state.
 
 ### `caw tx transfer` / `caw tx call` / `caw tx sign-message`
 
@@ -158,7 +158,7 @@ Transaction status is `PendingApproval` — requires owner manual approval befor
 
 ```bash
 # Poll the pending operation
-caw pending get <operation_id>
+caw pending get --operation-id <operation_id>
 ```
 
 **Recovery:** Wait for the owner to approve/reject in the Cobo Agentic Wallet app, then check the transaction status.

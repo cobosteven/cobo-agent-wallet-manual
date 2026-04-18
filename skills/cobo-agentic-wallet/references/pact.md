@@ -19,7 +19,7 @@ Any task that uses `caw tx transfer`, `caw tx call`, or `caw tx sign-message` re
 - Inform the user the pact has been submitted.
   - If **not paired**: tell the user the pact is automatically activated — no owner approval required since the wallet has no linked owner yet.
   - If **paired**: remind the user to approve in the **Cobo Agentic Wallet app**.
-- Poll pact status with `caw pact show <pact-id>` and check `.status` until it changes from `PendingApproval`.
+- Poll pact status with `caw pact show --pact-id <pact-id>` and check `.status` until it changes from `PendingApproval`.
 
 ### Act on Result
 
@@ -27,15 +27,15 @@ Any task that uses `caw tx transfer`, `caw tx call`, or `caw tx sign-message` re
   - Reply: "Pact approved — executing now."
   - Execute as a background task — do not synchronously wait for the transaction result before replying to the user. Pass `<pact_id>` as the first argument.
     ```bash
-    caw tx transfer <pact_id> \
+    caw tx transfer --pact-id <pact_id> \
       --token-id BASE_USDC --dst-address 0xRecipient... --amount 10 \
       --request-id pay-001
 
-    caw tx call <pact_id> \
+    caw tx call --pact-id <pact_id> \
       --chain-id BASE_ETH --contract 0xContract... --calldata 0x... \
       --request-id call-001
 
-    caw tx sign-message <pact_id> \
+    caw tx sign-message --pact-id <pact_id> \
       --chain-id ETH --destination-type eip712 --eip712-typed-data '{...}'
     ```
   - Return the transaction result.
@@ -80,7 +80,7 @@ Your job: Find the recipe(s) that apply to this task type.
 A Recipe is a domain knowledge document for a specific operation type (e.g. DEX swap, lending, DCA). Find the recipe whose use case matches the intent — if no recipe matches, proceed without one. If a match is found, read it before continuing.
 
 ```bash
-caw recipe search "<protocol-name> <chain>"
+caw recipe search --query "<protocol-name> <chain>"
 # e.g. "uniswap base", "aave arbitrum", "jupiter solana"
 ```
 
@@ -170,7 +170,7 @@ Then submit via `caw pact submit` (see [`caw pact submit` Flag Reference](#caw-p
 
 **Step 2 — Recipe:**
 
-`caw recipe search "uniswap base"` → matches Uniswap V3 on Base recipe.
+`caw recipe search --query "uniswap base"` → matches Uniswap V3 on Base recipe.
 
 **Step 3 — Plan:**
 
@@ -451,11 +451,11 @@ Matching operations require owner approval before execution.
 
 Submit a new pact for owner approval. See [`caw pact submit` Flag Reference](#caw-pact-submit-flag-reference) for flag details.
 
-### `caw pact status <pact-id>`
+### `caw pact status --pact-id <pact-id>`
 
 Check the current status of a pact, triggering lazy activation if the pact is ready to become active. Use for a quick status check without loading full detail.
 
-### `caw pact show <pact-id>`
+### `caw pact show --pact-id <pact-id>`
 
 Show full details of a specific pact including spec, status, policies, and completion conditions. Also triggers lazy activation if approved.
 
@@ -463,11 +463,11 @@ Show full details of a specific pact including spec, status, policies, and compl
 
 List pacts with optional filters: `--status`, `--wallet-id`, `--limit`. Use `--after`/`--before` for cursor pagination.
 
-### `caw pact events <pact-id>`
+### `caw pact events --pact-id <pact-id>`
 
 Get lifecycle event history for a pact.
 
-### `caw pact revoke <pact-id>`
+### `caw pact revoke --pact-id <pact-id>`
 
 Revoke an **active** pact. **Wallet owner only.**
 

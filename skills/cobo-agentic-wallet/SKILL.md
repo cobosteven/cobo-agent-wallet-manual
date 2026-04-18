@@ -139,7 +139,7 @@ A recipe is a domain knowledge document for a specific operation type (e.g. DEX 
 Recipes are queried on demand, not bundled:
 
 ```bash
-caw recipe search "<protocol> <chain>"
+caw recipe search --query "<protocol> <chain>"
 ```
 
 Find the recipe whose use case matches the intent — if no recipe matches, proceed without one. If a match is found, read it before continuing.
@@ -169,7 +169,7 @@ caw pact list --status active
 ```
 
 This returns all active pacts awaiting execution. For each one:
-1. **Read the pact**: `caw pact show <pact-id>` to understand the intent and execution plan
+1. **Read the pact**: `caw pact show --pact-id <pact-id>` to understand the intent and execution plan
 2. **Check execution progress**: `caw tx get` to see which steps are complete and which remain
 3. **Resume execution**: Execute remaining steps in the program
 
@@ -207,11 +207,14 @@ First check `caw pact list` — if an existing pact already covers this goal, re
 - **If the wallet is not paired**: present a 4-item preview (Intent, Execution Plan, Policies, Completion Conditions) and wait for an explicit "yes" before calling `caw pact submit`. The preview must match what the command will receive — do not summarize or reformulate. If the user requests any change after seeing the preview, apply the change, re-show the full updated preview, and ask again — do not submit until the user explicitly confirms the final spec.
 - **If paired**: submit directly — the owner approves in the Cobo Agentic Wallet app. No in-chat preview needed.
 
-Poll pact status with `caw pact show <pact-id>` and check `.status` until it changes from `PendingApproval`.
+**If `caw pact submit` fails** (`.success = false` or non-zero exit): do not resubmit with the same parameters. Read the error, fix it, then resubmit. Three failures with the same error → stop and report to the owner.
+
+Poll pact status with `caw pact show --pact-id <pact-id>` and check `.status` until it changes from `pending_approval`.
 
 - **When status becomes `active`**: reply immediately, then execute as a background task — do not synchronously wait for the transaction result before replying. See [Act on Result](./references/pact.md#act-on-result).
 - **Rejected** → tell the owner, offer to revise with narrower scope and resubmit.
 - **Revoked / expired / completed** → stop immediately, notify the owner, offer a new pact if the goal is unmet.
+- **Approval not arriving** → if a pact has been waiting in `pending_approval` longer than expected, stop polling and surface the situation to the owner. Do not loop indefinitely.
 
 #### 3. Execute
 
@@ -221,22 +224,30 @@ All transactions (transfers, contract calls, message signing) run inside a pact.
 - **Recipe preflight for contract interactions**: Before calling any contract, search for a matching recipe (`caw recipe search`). From the recipe: take contract addresses from the `Fact` section; build calldata from the `ABI` section using `caw util abi encode`, then verify with `caw util abi decode` before submitting. Do not guess selectors, addresses, or argument encoding. If any parameter or contract detail is not covered by the recipe, consult the URLs in the recipe's `References` section. If still unclear, search the protocol's official documentation or ask the user.
 - **`--request-id` idempotency**: Always set a unique, deterministic request ID per logical transaction (e.g. `invoice-001`, `swap-20240318-1`). Retrying with the same `--request-id` is safe — the server deduplicates.
 - **`<pact-id>` (required positional arg)**: `caw tx transfer`, `caw tx call`, and `caw tx sign-message` all take `<pact-id>` as the first positional argument. The CLI resolves the wallet UUID and API key from the pact automatically — do not pass `--wallet-id` separately.
-- **Sequential execution for same-address transactions (nonce ordering)**: On EVM chains, each transaction from the same address must use an incrementing nonce. **Wait for each transaction to reach `Success` status (tx is confirmed on-chain) before submitting the next one.** Poll with `caw tx get --request-id <request-id>` and check `.status` — the lifecycle is `Initiated → PendingApproval → Approved → Processing → Pending → Success`. `.status` is a literal string field — match it with exact string equality against one of: `Initiated`, `PendingApproval`, `Approved`, `Processing`, `Pending`, `Success`, `Failed`, `Rejected`, `Cancelled`. Do not do substring or prefix matching.
+- **Sequential execution for same-address transactions (nonce ordering)**: On EVM chains, each transaction from the same address must use an incrementing nonce. **Wait for each transaction to reach `Completed` status (tx is confirmed on-chain) before submitting the next one.** Poll with `caw tx get --request-id <request-id>` and check `.status` — the lifecycle is `Initiated → Submitted → PendingAuthorization → PendingSignature → Broadcasting → Confirming → Completed`. `.status` is a literal string field — match it with exact string equality against one of: `Initiated`, `Submitted`, `PendingScreening`, `PendingAuthorization`, `PendingSignature`, `Broadcasting`, `Confirming`, `Completed`, `Failed`, `Rejected`, `Pending`. Do not do substring or prefix matching.
 - **Never use a contract address from memory**. Token addresses: query `caw meta tokens --token-ids <id>`. Protocol contract addresses (routers, pools, exchanges): use the recipe; if no recipe matches, use the protocol's official documentation; if still unclear, ask the user. 
 - **Contract addresses differ per chain** — wallet addresses are shared across chains of the same type (all EVM chains share one address), but contract addresses typically do not. Always look them up per chain from official sources or the user's input.
 - **Multi-step operations** (DeFi strategies, loops, conditional logic, automation): write a script using the SDK, then run it. Store in `./scripts/` and reuse existing scripts over creating new ones. See [sdk-scripting.md](./references/sdk-scripting.md).
-- **`status=PendingApproval`**: The transaction requires owner approval before it executes. Follow [pending-approval.md](./references/pending-approval.md).
+- **`status=PendingAuthorization`**: The transaction requires owner approval before it executes. Follow [pending-approval.md](./references/pending-approval.md).
 - **After submitting a transaction** (`caw tx transfer` / `caw tx call` / `caw tx sign-message`): reply with a brief summary — tx ID, status, amount/token, and original intent if applicable.
+
+**Polling for status and transaction hash after submission**: The submit response reflects the state at submission time, not the final outcome. Always follow up with `caw tx get --tx-id <tx-id>` to get the actual status. Poll until status advances past `Processing`. Once `sub_status` becomes `broadcasting`, the `transaction_hash` becomes available — use it to link to the on-chain record. Do not report a final outcome until `Success` (or a terminal failure state) is confirmed via `caw tx get`. If a transaction remains in `PendingAuthorization` longer than expected, stop polling and surface the situation to the owner — do not loop indefinitely.
+
+**Stuck transactions**: If a submitted transaction is not getting confirmed due to low gas, call `caw tx speedup <transaction-uuid>` to resubmit with a higher fee. If the owner wants to cancel instead, call `caw tx drop <transaction-uuid>`.
 
 **When an operation is denied**: Report the denial and the `suggestion` field to the user. If the suggestion offers a parameter adjustment (e.g. "Retry with amount <= 60") that still fulfills the user's intent, you may retry with the adjusted value. If the denial is a cumulative limit, submit a new pact scoped to this transfer. See [error-handling.md](./references/error-handling.md).
 
-**On contract call failure**:
-- **Revert** → Stop. Surface the revert reason as-is. Wait for user instructions.
-- **Out of gas** → Retry once with a higher gas limit. If still fails, stop and report.
+**On transaction failure** (transfers, contract calls, or any on-chain operation) — always diagnose before retrying. For logic or validation errors, fix the parameters first — do not resubmit unchanged.
+
+*All transaction types:*
 - **Insufficient balance** → Stop. Report balance and shortfall.
 - **Nonce conflict** → Fetch correct nonce and retry once.
 - **Underpriced gas** → Re-estimate gas price and retry once.
 - **Unknown error** → Do not retry. Surface raw error data and wait for user instructions.
+
+*Contract/program calls only:*
+- **Contract execution reverted** — the contract rejected the call and rolled back. Always surface the revert reason as-is before deciding next steps. Common recoverable patterns: **slippage exceeded** → retry with a higher slippage tolerance; **insufficient allowance** → submit a token approval transaction for the contract first, then retry the original call. If the revert reason is not something you can resolve, stop and wait for user instructions — do not guess at a fix.
+- **Out of compute** → Retry once with a higher gas/compute limit. If still fails, stop and report.
 
 #### 4. Verify and report
 
@@ -289,11 +300,11 @@ caw address create --chain-id <chain-id>
 # List on-chain transaction records, filterable by status/token/chain/address.
 caw tx list --limit 20
 
-# Submit a token transfer. <pact-id> is required as the first positional argument.
+# Submit a token transfer. --pact-id is required.
 # Pre-check (policy + fee) runs automatically before submission.
 # If policy denies, the transfer is NOT submitted and the denial is returned.
 # Use --request-id as an idempotency key so retries return the existing record.
-caw tx transfer <pact-id> --dst-address 0x1234...abcd --token-id ETH_USDC --amount 10 --request-id pay-001
+caw tx transfer --pact-id <pact-id> --dst-address 0x1234...abcd --token-id ETH_USDC --amount 10 --request-id pay-001
 
 # Estimate the network fee for a transfer without running policy checks.
 caw tx estimate-transfer-fee --dst-address 0x... --token-id ETH_USDC --amount 10
@@ -311,27 +322,27 @@ caw util abi decode --method "transfer(address,uint256)" --calldata <hex>
 caw util eth-call --chain-id SETH --to 0x... --abi erc20 --method balanceOf --args '["0x..."]'
 caw util eth-call --chain-id ETH --to 0x... --abi '[{"name":"owner","type":"function","inputs":[],"outputs":[{"name":"","type":"address"}]}]' --method owner
 
-# Submit a smart contract call. <pact-id> is required as the first positional argument.
+# Submit a smart contract call. --pact-id is required.
 # Pre-check runs automatically.
 # ⚠️ Address format: EVM = exactly 42 chars (0x + 40 hex); Solana = 43-44 chars (Base58).
 
 # Estimate fee before submitting (optional but recommended for large calls):
 caw tx estimate-call-fee --contract 0x... --calldata 0x... --chain-id ETH
 # EVM:
-caw tx call <pact-id> --contract 0x... --calldata 0x... --chain-id ETH --request-id call-001
+caw tx call --pact-id <pact-id> --contract 0x... --calldata 0x... --chain-id ETH --request-id call-001
 # Solana (use --instructions instead of --contract):
-caw tx call <pact-id> --instructions '[{"program_id":"<Base58_addr>","data":"...","accounts":[...]}]' --chain-id SOL --request-id call-001
+caw tx call --pact-id <pact-id> --instructions '[{"program_id":"<Base58_addr>","data":"...","accounts":[...]}]' --chain-id SOL --request-id call-001
 
 # Sign a typed message (EIP-712).
-caw tx sign-message <pact-id> --chain-id ETH --destination-type eip712 --eip712-typed-data '{"types":...}'
+caw tx sign-message --pact-id <pact-id> --chain-id ETH --destination-type eip712 --eip712-typed-data '{"types":...}'
 
 # Get details of a specific pending operation (transfers/calls awaiting owner approval).
 # Use `caw pending list` to see all pending operations.
-caw pending get <operation_id>
+caw pending get --operation-id <operation_id>
 
 # List pacts with optional filters.
 caw pact list --status active
-caw pact show <pact-id>
+caw pact show --pact-id <pact-id>
 
 # Step 1 — find available testnet token IDs.
 caw faucet tokens
@@ -344,16 +355,16 @@ caw meta tokens --chain-ids BASE_ETH         # list tokens on a specific chain
 caw meta tokens --token-ids SETH,SETH_USDC   # get metadata for specific token IDs
 
 # Cancel an unconfirmed transaction (EVM RBF — sends zero-value replacement).
-caw tx drop <transaction-uuid>
+caw tx drop --tx-id <transaction-uuid>
 
 # Speed up an unconfirmed transaction (EVM RBF — resubmit with higher fee).
-# The fee is derived automatically from the original transaction's fee bumped by --fee-multiplier (default +10%).
-caw tx speedup <transaction-uuid>
-# Optional: override the default 10% fee bump, e.g. --fee-multiplier 0.3 for +30%.
-caw tx speedup <transaction-uuid> --fee-multiplier 0.3
+# The fee is derived automatically from the original transaction's fee bumped by --fee-multiplier (default +15%).
+caw tx speedup --tx-id <transaction-uuid>
+# Optional: override the default 15% fee bump, e.g. --fee-multiplier 0.3 for +30%.
+caw tx speedup --tx-id <transaction-uuid> --fee-multiplier 0.3
 
 # Search for a protocol recipe before executing DeFi operations.
-caw recipe search "<query>" --keywords "<keyword1>,...,<keywordN>" --chain "ETH"
+caw recipe search --query "<query>" --keywords "<keyword1>,...,<keywordN>" --chain "ETH"
 ```
 
 ---
@@ -364,8 +375,8 @@ caw recipe search "<query>" --keywords "<keyword1>,...,<keywordN>" --chain "ETH"
 
 - **Before using an unfamiliar command**: Run `caw schema <command>` (e.g. `caw schema tx transfer`) to get exact flags, required parameters, and exit codes. Do not guess flag names or assume parameters from memory.
 - **If a command fails with a parameter error**: Run `caw schema <subcmd>` to get required flags. Do not call `caw help` — it does not show parameter details.
-- **After pact submit or tx call**: Always verify with `caw pact show <id>` or `caw tx get --tx-id <record-uuid>` / `caw tx get --request-id <request-id>` before retrying. `exit=0` means the command ran, not that the operation succeeded.
-- **`wallet_uuid` is never a CLI argument** — all wallet commands resolve the wallet UUID from the active profile automatically. Use `caw wallet current` to check, or `caw wallet current <wallet-uuid>` to switch profiles.
+- **After pact submit or tx call**: Always verify with `caw pact show --pact-id <id>` or `caw tx get --tx-id <record-uuid>` / `caw tx get --request-id <request-id>` before retrying. `exit=0` means the command ran, not that the operation succeeded.
+- **`wallet_uuid` is never a CLI argument** — all wallet commands resolve the wallet UUID from the active profile automatically. Use `caw wallet current` to check, or `caw wallet current --wallet-id <wallet-uuid>` to switch profiles.
 - **`caw` is your tool, not the user's**: Run `caw` commands silently and present results in plain language. Do not show raw CLI commands or JSON output to the user — they want outcomes, not terminal logs. Exception: if the user explicitly asks "what command did you run?"
 - **Use `caw meta chains` and `caw meta tokens`** to look up chain and token IDs — do not guess from memory.
 

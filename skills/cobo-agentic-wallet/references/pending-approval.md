@@ -25,9 +25,9 @@ The wallet has no paired owner yet. Approval happens directly in this conversati
 > Please reply **approve** or **reject**."
 
 Once the user replies:
-- **approve** → call `caw pending approve <pending_operation_id>`
+- **approve** → call `caw pending approve --operation-id <pending_operation_id>`
   - If this call fails (`.success = false`), surface the error to the user and do not retry — the operation may have already expired or been processed.
-- **reject** → call `caw pending reject <pending_operation_id> --reason "<reason>"`
+- **reject** → call `caw pending reject --operation-id <pending_operation_id> --reason "<reason>"`
 - **no reply / user unreachable** → do not approve. Wait and notify when the user returns.
 
 The `pending_operation_id` is returned in the original `caw tx transfer` / `caw tx call` response as `result.pending_operation_id`.
@@ -45,7 +45,7 @@ The wallet owner must approve via the Cobo Agentic Wallet app (mobile). Inform t
 Do NOT call `caw pending approve` — that requires the owner's credentials. Poll for completion instead:
 
 ```bash
-caw pending get <pending_operation_id>
+caw pending get --operation-id <pending_operation_id>
 # Check .status field
 ```
 

@@ -73,8 +73,8 @@ Core capabilities:
 - Check active wallet:     caw wallet current
 - Check balance:           caw wallet balance
 - Submit a pact:           caw pact submit --program '<json>'
-- Execute a transfer:      caw tx transfer <pact-id> --to <addr> --token <id> --amount <n>
-- Execute a contract call: caw tx call <pact-id> --contract <addr> --calldata <hex> --chain <id>
+- Execute a transfer:      caw tx transfer --pact-id <pact-id> --to <addr> --token <id> --amount <n>
+- Execute a contract call: caw tx call --pact-id <pact-id> --contract <addr> --calldata <hex> --chain <id>
 - List transactions:       caw tx list
 - Pair wallet to owner:    caw wallet pair --context '<json>'
 
