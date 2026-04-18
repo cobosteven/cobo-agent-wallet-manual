@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "2026.04.18.1"
+  version: "2026.04.18.3"
 description: |
   Create and manage agentic wallets with Cobo. Use for autonomous onchain
   operations via the caw CLI: token transfers, contract calls, pact creation
@@ -353,7 +353,7 @@ caw tx speedup <transaction-uuid>
 caw tx speedup <transaction-uuid> --fee-multiplier 0.3
 
 # Search for a protocol recipe before executing DeFi operations.
-caw recipe search "<query>" --keywords "<keyword1>,...,<keywordN>" --chains "ETH"
+caw recipe search "<query>" --keywords "<keyword1>,...,<keywordN>" --chain "ETH"
 ```
 
 ---
