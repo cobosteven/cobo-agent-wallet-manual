@@ -28,7 +28,6 @@ Script 1: 生成 CAW Agent 评测数据集并上传到 Langfuse（dataset projec
 
 import argparse
 import os
-import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -48,6 +47,7 @@ def _dataset_langfuse_config(
 
     Priority: explicit arg → LANGFUSE_DATASET_* → LANGFUSE_* → .env file.
     """
+
     def _pick(arg: str, specific: str, generic: str) -> str:
         return arg or os.environ.get(specific, "") or os.environ.get(generic, "")
 
@@ -55,9 +55,11 @@ def _dataset_langfuse_config(
     sec = _pick(secret_key, "LANGFUSE_DATASET_SECRET_KEY", "LANGFUSE_SECRET_KEY")
     hst = _pick(host, "LANGFUSE_DATASET_HOST", "LANGFUSE_HOST") or _DEFAULT_HOST
     if not pub or not sec:
-        print("[WARN] Langfuse dataset-project credentials not set. "
-              "Set LANGFUSE_DATASET_PUBLIC_KEY + LANGFUSE_DATASET_SECRET_KEY "
-              "in .env or environment variables.")
+        print(
+            "[WARN] Langfuse dataset-project credentials not set. "
+            "Set LANGFUSE_DATASET_PUBLIC_KEY + LANGFUSE_DATASET_SECRET_KEY "
+            "in .env or environment variables."
+        )
     return pub, sec, hst
 
 
@@ -105,9 +107,12 @@ SCENARIO_RULES: list[dict] = [
                 "pact_hints": {"token": "ETH", "amount": "0.001", "chain": "base"},
                 "success_criteria": "agent calls caw tx transfer with correct params on Base",
                 "s1_overrides": {
-                    "key_entities": {"token": "ETH", "amount": "0.001",
-                                     "to_address": "0xabcdef1234567890abcdef1234567890abcdef12",
-                                     "chain": "base"},
+                    "key_entities": {
+                        "token": "ETH",
+                        "amount": "0.001",
+                        "to_address": "0xabcdef1234567890abcdef1234567890abcdef12",
+                        "chain": "base",
+                    },
                 },
                 "s3_overrides": {
                     "policy": {"token": "ETH", "max_amount": "0.001", "chain": "base"},
@@ -121,9 +126,12 @@ SCENARIO_RULES: list[dict] = [
                 "pact_hints": {"token": "USDC", "amount": "5", "chain": "base"},
                 "success_criteria": "agent uses Base chain for ERC-20 USDC transfer",
                 "s1_overrides": {
-                    "key_entities": {"token": "USDC", "amount": "5",
-                                     "to_address": "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
-                                     "chain": "base"},
+                    "key_entities": {
+                        "token": "USDC",
+                        "amount": "5",
+                        "to_address": "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+                        "chain": "base",
+                    },
                     "constraints": ["chain=base explicitly specified"],
                 },
                 "s3_overrides": {
@@ -138,9 +146,12 @@ SCENARIO_RULES: list[dict] = [
                 "pact_hints": {"token": "USDC", "amount": "1", "chain": "solana"},
                 "success_criteria": "agent handles Solana SPL token transfer with correct address format",
                 "s1_overrides": {
-                    "key_entities": {"token": "USDC", "amount": "1",
-                                     "to_address": "HN7cABrd5bkhDg2YNGz5oQqWzHGtBmPMgFNqXpBFVKMt",
-                                     "chain": "solana"},
+                    "key_entities": {
+                        "token": "USDC",
+                        "amount": "1",
+                        "to_address": "HN7cABrd5bkhDg2YNGz5oQqWzHGtBmPMgFNqXpBFVKMt",
+                        "chain": "solana",
+                    },
                     "constraints": ["solana SPL token; address format differs from EVM"],
                 },
                 "s2_overrides": {"steps": ["check_solana_balance", "transfer_spl_token"]},
@@ -148,7 +159,6 @@ SCENARIO_RULES: list[dict] = [
             },
         ],
     },
-
     # ── 02 DEX Swap ──────────────────────────────────────────────────────────
     {
         "id": "02",
@@ -179,16 +189,31 @@ SCENARIO_RULES: list[dict] = [
                 "chain": "base",
                 "tags": ["approve_required", "default_protocol", "evm"],
                 "user_message": "用 2 USDC 换 ETH（Base 链）",
-                "pact_hints": {"token_in": "USDC", "token_out": "ETH", "amount_in": "2", "chain": "base"},
+                "pact_hints": {
+                    "token_in": "USDC",
+                    "token_out": "ETH",
+                    "amount_in": "2",
+                    "chain": "base",
+                },
                 "success_criteria": "agent generates approve + swap transaction sequence on Base",
                 "s1_overrides": {
-                    "key_entities": {"token_in": "USDC", "amount_in": "2", "token_out": "ETH",
-                                     "chain": "base"},
+                    "key_entities": {
+                        "token_in": "USDC",
+                        "amount_in": "2",
+                        "token_out": "ETH",
+                        "chain": "base",
+                    },
                 },
                 "s3_overrides": {
-                    "policy": {"approve": "USDC",
-                               "swap": {"token_in": "USDC", "token_out": "ETH",
-                                        "amount_in": "2", "chain": "base"}},
+                    "policy": {
+                        "approve": "USDC",
+                        "swap": {
+                            "token_in": "USDC",
+                            "token_out": "ETH",
+                            "amount_in": "2",
+                            "chain": "base",
+                        },
+                    },
                 },
             },
             {
@@ -196,18 +221,38 @@ SCENARIO_RULES: list[dict] = [
                 "chain": "base",
                 "tags": ["specify_protocol", "slippage_constraint", "evm"],
                 "user_message": "在 Base 上用 Uniswap V3 把 3 USDC 换成 ETH，滑点不超过 1%",
-                "pact_hints": {"token_in": "USDC", "token_out": "ETH", "amount_in": "3",
-                               "chain": "base", "protocol": "uniswap_v3", "slippage_max": "1%"},
+                "pact_hints": {
+                    "token_in": "USDC",
+                    "token_out": "ETH",
+                    "amount_in": "3",
+                    "chain": "base",
+                    "protocol": "uniswap_v3",
+                    "slippage_max": "1%",
+                },
                 "success_criteria": "agent specifies correct chain, protocol, and slippage constraint",
                 "s1_overrides": {
-                    "key_entities": {"token_in": "USDC", "amount_in": "3", "token_out": "ETH",
-                                     "chain": "base", "protocol": "uniswap_v3", "slippage": "1%"},
+                    "key_entities": {
+                        "token_in": "USDC",
+                        "amount_in": "3",
+                        "token_out": "ETH",
+                        "chain": "base",
+                        "protocol": "uniswap_v3",
+                        "slippage": "1%",
+                    },
                     "constraints": ["slippage <= 1%", "chain = base", "protocol = uniswap_v3"],
                 },
-                "s2_overrides": {"steps": ["approve_usdc", "swap_uniswap_v3"], "protocol": "uniswap_v3"},
+                "s2_overrides": {
+                    "steps": ["approve_usdc", "swap_uniswap_v3"],
+                    "protocol": "uniswap_v3",
+                },
                 "s3_overrides": {
-                    "policy": {"chain": "base", "protocol": "uniswap_v3",
-                               "max_slippage": "1%", "token_in": "USDC", "amount_in": "3"},
+                    "policy": {
+                        "chain": "base",
+                        "protocol": "uniswap_v3",
+                        "max_slippage": "1%",
+                        "token_in": "USDC",
+                        "amount_in": "3",
+                    },
                 },
             },
             {
@@ -215,12 +260,22 @@ SCENARIO_RULES: list[dict] = [
                 "chain": "solana",
                 "tags": ["solana", "jupiter", "route_optimization", "devnet"],
                 "user_message": "用 Jupiter 在 Solana 上把 2 USDC 换 SOL，最优路由",
-                "pact_hints": {"token_in": "USDC", "token_out": "SOL",
-                               "chain": "solana", "protocol": "jupiter", "amount_in": "2"},
+                "pact_hints": {
+                    "token_in": "USDC",
+                    "token_out": "SOL",
+                    "chain": "solana",
+                    "protocol": "jupiter",
+                    "amount_in": "2",
+                },
                 "success_criteria": "agent handles Solana DEX swap via Jupiter with route optimization",
                 "s1_overrides": {
-                    "key_entities": {"token_in": "USDC", "amount_in": "2", "token_out": "SOL",
-                                     "chain": "solana", "protocol": "jupiter"},
+                    "key_entities": {
+                        "token_in": "USDC",
+                        "amount_in": "2",
+                        "token_out": "SOL",
+                        "chain": "solana",
+                        "protocol": "jupiter",
+                    },
                     "constraints": ["optimize route"],
                 },
                 "s2_overrides": {
@@ -230,13 +285,16 @@ SCENARIO_RULES: list[dict] = [
                 },
                 "s3_overrides": {
                     "pact_type": "single_transaction",
-                    "policy": {"chain": "solana", "protocol": "jupiter",
-                               "token_in": "USDC", "amount_in": "2"},
+                    "policy": {
+                        "chain": "solana",
+                        "protocol": "jupiter",
+                        "token_in": "USDC",
+                        "amount_in": "2",
+                    },
                 },
             },
         ],
     },
-
     # ── 03 DeFi Lending ──────────────────────────────────────────────────────
     {
         "id": "03",
@@ -267,16 +325,31 @@ SCENARIO_RULES: list[dict] = [
                 "chain": "base",
                 "tags": ["aave", "deposit", "evm"],
                 "user_message": "把 3 USDC 存到 Aave（Base 链）",
-                "pact_hints": {"action": "deposit", "token": "USDC",
-                               "amount": "3", "protocol": "aave_v3", "chain": "base"},
+                "pact_hints": {
+                    "action": "deposit",
+                    "token": "USDC",
+                    "amount": "3",
+                    "protocol": "aave_v3",
+                    "chain": "base",
+                },
                 "success_criteria": "agent generates approve + Aave deposit transaction on Base",
                 "s1_overrides": {
-                    "key_entities": {"action": "deposit", "token": "USDC",
-                                     "amount": "3", "protocol": "aave_v3", "chain": "base"},
+                    "key_entities": {
+                        "action": "deposit",
+                        "token": "USDC",
+                        "amount": "3",
+                        "protocol": "aave_v3",
+                        "chain": "base",
+                    },
                 },
                 "s3_overrides": {
-                    "policy": {"protocol": "aave_v3", "action": "deposit",
-                               "token": "USDC", "amount": "3", "chain": "base"},
+                    "policy": {
+                        "protocol": "aave_v3",
+                        "action": "deposit",
+                        "token": "USDC",
+                        "amount": "3",
+                        "chain": "base",
+                    },
                 },
             },
             {
@@ -284,15 +357,20 @@ SCENARIO_RULES: list[dict] = [
                 "chain": "base",
                 "tags": ["aave", "deposit", "borrow", "collateral", "evm"],
                 "user_message": "存 0.005 ETH 到 Aave 作为抵押，借出 2 USDC",
-                "pact_hints": {"steps": ["deposit_eth", "borrow_usdc"],
-                               "collateral": {"token": "ETH", "amount": "0.005"},
-                               "borrow": {"token": "USDC", "amount": "2"},
-                               "chain": "base"},
+                "pact_hints": {
+                    "steps": ["deposit_eth", "borrow_usdc"],
+                    "collateral": {"token": "ETH", "amount": "0.005"},
+                    "borrow": {"token": "USDC", "amount": "2"},
+                    "chain": "base",
+                },
                 "success_criteria": "agent plans deposit + borrow sequence, checks health factor",
                 "s1_overrides": {
-                    "key_entities": {"collateral": {"token": "ETH", "amount": "0.005"},
-                                     "borrow": {"token": "USDC", "amount": "2"},
-                                     "protocol": "aave_v3", "chain": "base"},
+                    "key_entities": {
+                        "collateral": {"token": "ETH", "amount": "0.005"},
+                        "borrow": {"token": "USDC", "amount": "2"},
+                        "protocol": "aave_v3",
+                        "chain": "base",
+                    },
                     "constraints": ["health_factor >= 1.5"],
                     "multi_intent": True,
                 },
@@ -301,9 +379,12 @@ SCENARIO_RULES: list[dict] = [
                     "dependencies": ["deposit_before_borrow"],
                 },
                 "s3_overrides": {
-                    "policy": {"deposit": {"token": "ETH", "amount": "0.005"},
-                               "borrow": {"token": "USDC", "amount": "2"},
-                               "health_factor_min": "1.5", "chain": "base"},
+                    "policy": {
+                        "deposit": {"token": "ETH", "amount": "0.005"},
+                        "borrow": {"token": "USDC", "amount": "2"},
+                        "health_factor_min": "1.5",
+                        "chain": "base",
+                    },
                 },
             },
             {
@@ -311,12 +392,19 @@ SCENARIO_RULES: list[dict] = [
                 "chain": "base",
                 "tags": ["aave", "withdraw", "repay", "balance_dependent", "evm"],
                 "user_message": "把 Aave 里的 USDC 全部取出来还贷（Base 链）",
-                "pact_hints": {"steps": ["query_balance", "repay", "withdraw"],
-                               "requires_query": True, "chain": "base"},
+                "pact_hints": {
+                    "steps": ["query_balance", "repay", "withdraw"],
+                    "requires_query": True,
+                    "chain": "base",
+                },
                 "success_criteria": "agent queries Aave balance first, then plans repay + withdraw",
                 "s1_overrides": {
-                    "key_entities": {"action": "withdraw_and_repay",
-                                     "token": "USDC", "amount": "all", "chain": "base"},
+                    "key_entities": {
+                        "action": "withdraw_and_repay",
+                        "token": "USDC",
+                        "amount": "all",
+                        "chain": "base",
+                    },
                     "constraints": ["requires_balance_query_first"],
                     "multi_intent": True,
                 },
@@ -325,13 +413,15 @@ SCENARIO_RULES: list[dict] = [
                     "dependencies": ["query_first", "repay_before_withdraw"],
                 },
                 "s3_overrides": {
-                    "policy": {"requires_balance_query": True, "actions": ["repay", "withdraw"],
-                               "chain": "base"},
+                    "policy": {
+                        "requires_balance_query": True,
+                        "actions": ["repay", "withdraw"],
+                        "chain": "base",
+                    },
                 },
             },
         ],
     },
-
     # ── 04 DCA 策略 ──────────────────────────────────────────────────────────
     {
         "id": "04",
@@ -362,17 +452,30 @@ SCENARIO_RULES: list[dict] = [
                 "chain": "base",
                 "tags": ["daily", "open_ended", "evm"],
                 "user_message": "每天买 1 USDC 的 ETH（Base 链）",
-                "pact_hints": {"token_in": "USDC", "token_out": "ETH",
-                               "amount_per_period": "1", "period": "daily", "chain": "base"},
+                "pact_hints": {
+                    "token_in": "USDC",
+                    "token_out": "ETH",
+                    "amount_per_period": "1",
+                    "period": "daily",
+                    "chain": "base",
+                },
                 "success_criteria": "agent sets up recurring daily DCA without end date",
                 "s1_overrides": {
-                    "key_entities": {"token_in": "USDC", "token_out": "ETH",
-                                     "amount_per_period": "1", "frequency": "daily"},
+                    "key_entities": {
+                        "token_in": "USDC",
+                        "token_out": "ETH",
+                        "amount_per_period": "1",
+                        "frequency": "daily",
+                    },
                     "constraints": ["no end date"],
                 },
                 "s3_overrides": {
-                    "policy": {"token_in": "USDC", "amount_per_period": "1",
-                               "frequency": "daily", "chain": "base"},
+                    "policy": {
+                        "token_in": "USDC",
+                        "amount_per_period": "1",
+                        "frequency": "daily",
+                        "chain": "base",
+                    },
                     "usage_limit": {"rolling_24h": "1"},
                 },
             },
@@ -381,26 +484,41 @@ SCENARIO_RULES: list[dict] = [
                 "chain": "base",
                 "tags": ["weekly", "duration_limited", "amount_cap", "evm"],
                 "user_message": "每周买 2 USDC 的 ETH，持续 1 个月，单次不超过 3 USDC",
-                "pact_hints": {"token_in": "USDC", "token_out": "ETH", "amount_per_period": "2",
-                               "period": "weekly", "duration": "1_month", "max_per_tx": "3",
-                               "chain": "base"},
+                "pact_hints": {
+                    "token_in": "USDC",
+                    "token_out": "ETH",
+                    "amount_per_period": "2",
+                    "period": "weekly",
+                    "duration": "1_month",
+                    "max_per_tx": "3",
+                    "chain": "base",
+                },
                 "success_criteria": "agent correctly sets period, duration, and per-tx limit",
                 "s1_overrides": {
-                    "key_entities": {"token_in": "USDC", "token_out": "ETH",
-                                     "amount_per_period": "2", "frequency": "weekly",
-                                     "duration": "1_month", "max_per_tx": "3"},
+                    "key_entities": {
+                        "token_in": "USDC",
+                        "token_out": "ETH",
+                        "amount_per_period": "2",
+                        "frequency": "weekly",
+                        "duration": "1_month",
+                        "max_per_tx": "3",
+                    },
                     "constraints": ["duration=1month", "per_tx_cap=3"],
                 },
                 "s2_overrides": {"note": "must encode duration limit and per-tx amount cap"},
                 "s3_overrides": {
-                    "policy": {"token_in": "USDC", "amount_per_period": "2",
-                               "frequency": "weekly", "max_per_tx": "3", "chain": "base"},
+                    "policy": {
+                        "token_in": "USDC",
+                        "amount_per_period": "2",
+                        "frequency": "weekly",
+                        "max_per_tx": "3",
+                        "chain": "base",
+                    },
                     "usage_limit": {"rolling_24h": "3", "end_date": "+1_month"},
                 },
             },
         ],
     },
-
     # ── 05 跨链 Bridge ───────────────────────────────────────────────────────
     {
         "id": "05",
@@ -431,16 +549,30 @@ SCENARIO_RULES: list[dict] = [
                 "chain": "base",
                 "tags": ["cross_chain", "usdc", "evm"],
                 "user_message": "把 2 USDC 从 Ethereum 转到 Base",
-                "pact_hints": {"token": "USDC", "amount": "2",
-                               "from_chain": "ethereum", "to_chain": "base"},
+                "pact_hints": {
+                    "token": "USDC",
+                    "amount": "2",
+                    "from_chain": "ethereum",
+                    "to_chain": "base",
+                },
                 "success_criteria": "agent generates bridge transaction with correct chains",
                 "s1_overrides": {
-                    "key_entities": {"token": "USDC", "amount": "2",
-                                     "from_chain": "ethereum", "to_chain": "base"},
+                    "key_entities": {
+                        "token": "USDC",
+                        "amount": "2",
+                        "from_chain": "ethereum",
+                        "to_chain": "base",
+                    },
                 },
                 "s3_overrides": {
-                    "policy": {"bridge": {"token": "USDC", "from_chain": "ethereum",
-                                          "to_chain": "base", "amount": "2"}},
+                    "policy": {
+                        "bridge": {
+                            "token": "USDC",
+                            "from_chain": "ethereum",
+                            "to_chain": "base",
+                            "amount": "2",
+                        }
+                    },
                 },
             },
             {
@@ -448,15 +580,21 @@ SCENARIO_RULES: list[dict] = [
                 "chain": "base",
                 "tags": ["cross_chain", "bridge_then_swap", "evm"],
                 "user_message": "把 0.001 ETH 从 Ethereum 桥接到 Base，然后换成 USDC",
-                "pact_hints": {"steps": ["bridge_eth", "swap_eth_to_usdc"],
-                               "chains": ["ethereum", "base"],
-                               "eth_amount": "0.001"},
+                "pact_hints": {
+                    "steps": ["bridge_eth", "swap_eth_to_usdc"],
+                    "chains": ["ethereum", "base"],
+                    "eth_amount": "0.001",
+                },
                 "success_criteria": "agent plans bridge + swap sequence, handles chain dependency",
                 "s1_overrides": {
                     "operation_type": "multi_step",
                     "key_entities": {
-                        "bridge": {"token": "ETH", "amount": "0.001",
-                                   "from": "ethereum", "to": "base"},
+                        "bridge": {
+                            "token": "ETH",
+                            "amount": "0.001",
+                            "from": "ethereum",
+                            "to": "base",
+                        },
                         "swap": {"token_in": "ETH", "token_out": "USDC", "chain": "base"},
                     },
                     "multi_intent": True,
@@ -468,15 +606,17 @@ SCENARIO_RULES: list[dict] = [
                 },
                 "s3_overrides": {
                     "policy": {
-                        "bridge": {"token": "ETH", "amount": "0.001",
-                                   "chains": ["ethereum", "base"]},
+                        "bridge": {
+                            "token": "ETH",
+                            "amount": "0.001",
+                            "chains": ["ethereum", "base"],
+                        },
                         "swap": {"token_in": "ETH", "token_out": "USDC", "chain": "base"},
                     },
                 },
             },
         ],
     },
-
     # ── 06 收益优化 ──────────────────────────────────────────────────────────
     {
         "id": "06",
@@ -521,8 +661,11 @@ SCENARIO_RULES: list[dict] = [
                 "chain": "multi",
                 "tags": ["migrate_yield", "multi_step", "evm"],
                 "user_message": "把 Aave Ethereum 上的 USDC（假设 5 USDC）转到 Base 的 Aave，那边利率更高",
-                "pact_hints": {"steps": ["aave_withdraw", "bridge_usdc", "aave_deposit"],
-                               "chains": ["ethereum", "base"], "amount": "5"},
+                "pact_hints": {
+                    "steps": ["aave_withdraw", "bridge_usdc", "aave_deposit"],
+                    "chains": ["ethereum", "base"],
+                    "amount": "5",
+                },
                 "success_criteria": "agent plans withdraw + bridge + deposit sequence",
                 "s1_overrides": {
                     "operation_type": "multi_step",
@@ -534,20 +677,29 @@ SCENARIO_RULES: list[dict] = [
                     "multi_intent": True,
                 },
                 "s2_overrides": {
-                    "steps": ["query_aave_eth_position", "aave_withdraw_eth",
-                              "bridge_usdc_to_base", "aave_deposit_base"],
-                    "dependencies": ["query_first", "withdraw_before_bridge", "bridge_before_deposit"],
+                    "steps": [
+                        "query_aave_eth_position",
+                        "aave_withdraw_eth",
+                        "bridge_usdc_to_base",
+                        "aave_deposit_base",
+                    ],
+                    "dependencies": [
+                        "query_first",
+                        "withdraw_before_bridge",
+                        "bridge_before_deposit",
+                    ],
                     "protocol": "aave_v3 + bridge",
                 },
                 "s3_overrides": {
                     "pact_type": "multi_transaction",
-                    "policy": {"actions": ["query", "withdraw", "bridge", "deposit"],
-                               "token": "USDC"},
+                    "policy": {
+                        "actions": ["query", "withdraw", "bridge", "deposit"],
+                        "token": "USDC",
+                    },
                 },
             },
         ],
     },
-
     # ── 07 多步骤复合操作 ────────────────────────────────────────────────────
     {
         "id": "07",
@@ -578,14 +730,18 @@ SCENARIO_RULES: list[dict] = [
                 "chain": "base",
                 "tags": ["swap_then_transfer", "evm"],
                 "user_message": "把 0.001 ETH 换成 USDC，然后转给 0xabcdef1234567890abcdef1234567890abcdef12",
-                "pact_hints": {"steps": ["swap_eth_to_usdc", "transfer_usdc"],
-                               "eth_amount": "0.001"},
+                "pact_hints": {
+                    "steps": ["swap_eth_to_usdc", "transfer_usdc"],
+                    "eth_amount": "0.001",
+                },
                 "success_criteria": "agent plans swap + transfer in correct order on Base",
                 "s1_overrides": {
                     "key_entities": {
                         "swap": {"token_in": "ETH", "amount": "0.001", "token_out": "USDC"},
-                        "transfer": {"token": "USDC",
-                                     "to": "0xabcdef1234567890abcdef1234567890abcdef12"},
+                        "transfer": {
+                            "token": "USDC",
+                            "to": "0xabcdef1234567890abcdef1234567890abcdef12",
+                        },
                     },
                 },
                 "s2_overrides": {
@@ -605,8 +761,11 @@ SCENARIO_RULES: list[dict] = [
                 "chain": "base",
                 "tags": ["swap_lend_dca", "balance_split", "evm"],
                 "user_message": "用一半 ETH 换 USDC 存 Aave，剩下的设置每周定投 USDC（Base 链）",
-                "pact_hints": {"steps": ["swap_half_eth", "aave_deposit", "setup_dca"],
-                               "requires_balance_query": True, "chain": "base"},
+                "pact_hints": {
+                    "steps": ["swap_half_eth", "aave_deposit", "setup_dca"],
+                    "requires_balance_query": True,
+                    "chain": "base",
+                },
                 "success_criteria": "agent handles 3-step operation: swap + lend + DCA setup",
                 "s1_overrides": {
                     "key_entities": {
@@ -618,8 +777,13 @@ SCENARIO_RULES: list[dict] = [
                     "constraints": ["balance_dependent", "split_calculation"],
                 },
                 "s2_overrides": {
-                    "steps": ["query_eth_balance", "calculate_half",
-                              "swap_half_eth_to_usdc", "aave_deposit_usdc", "setup_dca"],
+                    "steps": [
+                        "query_eth_balance",
+                        "calculate_half",
+                        "swap_half_eth_to_usdc",
+                        "aave_deposit_usdc",
+                        "setup_dca",
+                    ],
                     "dependencies": ["query_first", "swap_before_deposit", "deposit_before_dca"],
                     "protocol": "default_dex + aave_v3",
                 },
@@ -627,7 +791,6 @@ SCENARIO_RULES: list[dict] = [
             },
         ],
     },
-
     # ── 08 错误恢复 ──────────────────────────────────────────────────────────
     {
         "id": "08",
@@ -662,8 +825,7 @@ SCENARIO_RULES: list[dict] = [
                 "pact_hints": {"expected_outcome": "insufficient_balance", "should_refuse": True},
                 "success_criteria": "agent detects insufficient USDC balance and explains clearly",
                 "s1_overrides": {
-                    "key_entities": {"token": "USDC", "amount": "9999",
-                                     "chain": "base"},
+                    "key_entities": {"token": "USDC", "amount": "9999", "chain": "base"},
                     "constraints": ["insufficient_balance_detected"],
                 },
             },
@@ -672,13 +834,21 @@ SCENARIO_RULES: list[dict] = [
                 "chain": "base",
                 "tags": ["all_balance", "gas_reservation", "evm"],
                 "user_message": "把我所有的 ETH 换成 USDC（Base 链）",
-                "pact_hints": {"operation_type": "swap", "amount_type": "all",
-                               "should_reserve_gas": True, "chain": "base"},
+                "pact_hints": {
+                    "operation_type": "swap",
+                    "amount_type": "all",
+                    "should_reserve_gas": True,
+                    "chain": "base",
+                },
                 "success_criteria": "agent reserves gas for transaction and doesn't swap 100% of ETH",
                 "s1_overrides": {
                     "operation_type": "swap",
-                    "key_entities": {"token_in": "ETH", "amount_type": "all",
-                                     "token_out": "USDC", "chain": "base"},
+                    "key_entities": {
+                        "token_in": "ETH",
+                        "amount_type": "all",
+                        "token_out": "USDC",
+                        "chain": "base",
+                    },
                     "constraints": ["must_reserve_gas"],
                 },
                 "s2_overrides": {
@@ -690,7 +860,6 @@ SCENARIO_RULES: list[dict] = [
             },
         ],
     },
-
     # ── 09 边缘情况 ──────────────────────────────────────────────────────────
     {
         "id": "09",
@@ -736,8 +905,11 @@ SCENARIO_RULES: list[dict] = [
                 "pact_hints": {"expected_outcome": "zero_address_warning", "should_warn": True},
                 "success_criteria": "agent warns about zero address risk and requests confirmation",
                 "s1_overrides": {
-                    "key_entities": {"token": "USDC", "amount": "1",
-                                     "to_address": "0x0000000000000000000000000000000000000000"},
+                    "key_entities": {
+                        "token": "USDC",
+                        "amount": "1",
+                        "to_address": "0x0000000000000000000000000000000000000000",
+                    },
                     "constraints": ["high_risk_zero_address"],
                 },
                 "s2_overrides": {
@@ -765,6 +937,7 @@ SCENARIO_RULES: list[dict] = [
 
 
 # ── 规则展开 ─────────────────────────────────────────────────────────────────
+
 
 def expand_rules(rules: list[dict]) -> list[dict]:
     """
@@ -795,24 +968,65 @@ def expand_rules(rules: list[dict]) -> list[dict]:
                 **variant.get("pact_hints", {}),
             }
 
-            items.append({
+            # F3 (stage2): 真实用户交互场景标注
+            # wallet_paired=false: 当前自动化评测的默认场景（未配对钱包，agent 全自主执行）
+            # auto_approve_owner=true: owner_linked=false 时 agent 可自动 approve pending
+            # variant / rule 可 override 这两个字段（如需测 paired 场景，走真人审计流程）
+            wallet_paired = variant.get("wallet_paired", rule.get("wallet_paired", False))
+            auto_approve_owner = variant.get(
+                "auto_approve_owner", rule.get("auto_approve_owner", True)
+            )
+
+            # Operation Spec 方案（Recipe 模式评分锚点）：
+            # variant / rule 可选带 operation_spec + pact_expectation + recipe 内容，
+            # 由 judge 消费（stage_criteria / success_criteria 保留做兼容层）。
+            # 三者同时出现或同时缺失；schema 校验会在 validate_item 时强制这个一致性。
+            operation_spec = variant.get("operation_spec", rule.get("operation_spec"))
+            pact_expectation = variant.get("pact_expectation", rule.get("pact_expectation"))
+            recipe_name = variant.get("recipe_name", rule.get("recipe_name"))
+            recipe_version = variant.get("recipe_version", rule.get("recipe_version"))
+            recipe_content = variant.get("recipe", rule.get("recipe"))
+            variant_label = variant.get("variant")
+
+            expected: dict = {
+                "pact_hints": pact_hints,
+                "success_criteria": variant.get("success_criteria", ""),
+                "stage_criteria": stage_criteria,
+            }
+            if operation_spec is not None:
+                expected["operation_spec"] = operation_spec
+            if pact_expectation is not None:
+                expected["pact_expectation"] = pact_expectation
+
+            metadata: dict = {
                 "id": item_id,
-                "input": {
-                    "user_message": variant["user_message"],
-                },
-                "expected": {
-                    "pact_hints": pact_hints,
-                    "success_criteria": variant.get("success_criteria", ""),
-                    "stage_criteria": stage_criteria,
-                },
-                "metadata": {
-                    "difficulty": difficulty,
-                    "operation_type": rule["operation_type"],
-                    "chain": variant.get("chain", "base"),
-                    "category": rule["category"],
-                    "tags": variant.get("tags", []),
-                },
-            })
+                "difficulty": difficulty,
+                "operation_type": rule["operation_type"],
+                "chain": variant.get("chain", "base"),
+                "category": rule["category"],
+                "tags": variant.get("tags", []),
+                "wallet_paired": wallet_paired,
+                "auto_approve_owner": auto_approve_owner,
+            }
+            if recipe_name:
+                metadata["recipe_name"] = recipe_name
+            if recipe_version:
+                metadata["recipe_version"] = recipe_version
+            if recipe_content:
+                metadata["recipe"] = recipe_content
+            if variant_label:
+                metadata["variant"] = variant_label
+
+            items.append(
+                {
+                    "id": item_id,
+                    "input": {
+                        "user_message": variant["user_message"],
+                    },
+                    "expected": expected,
+                    "metadata": metadata,
+                }
+            )
     return items
 
 
@@ -821,6 +1035,7 @@ DATASET_ITEMS: list[dict] = expand_rules(SCENARIO_RULES)
 
 
 # ── 上传逻辑 ─────────────────────────────────────────────────────────────────
+
 
 def generate_dataset(
     dataset_name: str,
@@ -838,9 +1053,11 @@ def generate_dataset(
         print("\n[DRY-RUN] Items to upload:")
         for item in DATASET_ITEMS:
             meta = item["metadata"]
-            print(f"  {item['id']:12s} | {meta['difficulty']} | "
-                  f"{meta['operation_type']:15s} | {meta['chain']:10s} | "
-                  f"{', '.join(meta.get('tags', []))}")
+            print(
+                f"  {item['id']:12s} | {meta['difficulty']} | "
+                f"{meta['operation_type']:15s} | {meta['chain']:10s} | "
+                f"{', '.join(meta.get('tags', []))}"
+            )
         return
 
     from langfuse import Langfuse
@@ -916,11 +1133,18 @@ def main() -> None:
     args = parser.parse_args()
 
     public_key, secret_key, host = _dataset_langfuse_config(
-        args.public_key, args.secret_key, args.host,
+        args.public_key,
+        args.secret_key,
+        args.host,
     )
 
-    generate_dataset(args.dataset_name, public_key=public_key, secret_key=secret_key,
-                     host=host, dry_run=args.dry_run)
+    generate_dataset(
+        args.dataset_name,
+        public_key=public_key,
+        secret_key=secret_key,
+        host=host,
+        dry_run=args.dry_run,
+    )
 
 
 if __name__ == "__main__":

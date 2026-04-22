@@ -13,7 +13,12 @@ import json
 import re
 from typing import Optional
 
-from assertions import DimensionScore, ToolCallRecord
+from assertions import DimensionScore, ToolCallRecord, _placeholder_fields
+from spec_derivation import (
+    derive_intent_canonical,
+    derive_pact_checklist,
+    derive_success_criteria,
+)
 
 
 # ── LLM Judge System Prompt ──────────────────────────────────────────────────
@@ -27,13 +32,18 @@ CAW workflow 知识:
 - pending_approval (HTTP 202): 使用 caw pending get 轮询，不是错误
 - should_refuse 场景: agent 应明确拒绝操作，不提交 pact，不执行 tx
 - denial/policy 处理: 汇报 suggestion，不越权重试
-- policies 最小权限: chain_in/token_in/destination_address_in 应精确限定，deny_if 限额应合理
+- policies 最小权限:
+  - **transfer 类型**: 必填 chain_in / token_in（token_in 是 transfer 类 policy 的核心约束）；可选 destination_address_in；建议 deny_if.amount_gt 限额
+  - **contract_call 类型**: 必填 chain_in / target_in（合约地址列表）；token_in **选填**（合约调用未必直接对应单一 token，缺失不应扣分；但若用户语义明确涉及单一 token，加上更精确）；建议 deny_if.amount_gt / tx_count_gt 限额
+  - 通用: scope 应最小化（不过度授权），deny_if 限额应合理
 
 评分原则:
 - 各维度 0-1 分（越高越好）
 - 依据 CAW skill 规范严格评分，不宽泛给分
 - 每个维度必须返回 score + reasoning
-- 必须返回合法 JSON"""
+- 必须返回合法 JSON
+- **数值字段格式宽容**: pact JSON 中 threshold / amount 等数值字段允许字符串（"1"）或整数（1）形式，
+  二者语义等价，**不得仅因格式差异扣分**（如 threshold="1" 与 threshold=1 应视为相同）"""
 
 
 # ── Judge Prompt 构建 ────────────────────────────────────────────────────────
@@ -73,7 +83,38 @@ def build_judge_prompt(
     pact_section = ""
     if best_pact_submit and best_pact_submit.pact_flags:
         pf = best_pact_submit.pact_flags
-        pact_section = f"""
+        spec_source = pf.get("_spec_source", "")
+        residual_placeholders = _placeholder_fields(pf)
+        source_note = ""
+        if spec_source == "backend_replay":
+            source_note = (
+                "\n⚠️ **以下 pact 内容由后端 `caw pact show` 回放获取**（非 trace 原始字面）："
+                'agent 提交时使用了 shell 变量传参（`--policies "$POLICIES"` 等），'
+                "openclaw tool logger 记录的是 pre-shell-expansion 的 argv 模板（shell 展开发生在 CLI 侧），"
+                "trace 原文看起来是占位符。**请按下列真实 spec 评分，"
+                "不得仅因 trace 里出现 `$POLICIES` / `$COMPLETION` 等字样就判 policies_correctness=0 "
+                "或 completion_conditions=0**。这不是 agent 错误，而是 harness logger 的限制。\n"
+            )
+        elif spec_source == "backend_replay_inferred":
+            source_note = (
+                "\n⚠️ **以下 pact 内容由后端 `caw pact show` 回放推断获取**（非 trace 原始字面）："
+                "trace 中 `caw pact submit` 调用未被识别（典型场景：openclaw tool logger 把整个 argv "
+                "错记为 `caw util abi decode` 等其他命令），但 trace 文本里出现的 pact_id 在 backend "
+                "pact_specs 中找到匹配 → 已用 backend 真实 spec 重建 pact 字段。**请按下列真实 spec 评分，"
+                "不得因 trace 里看不到 `caw pact submit` 调用就判 policies_correctness=0、"
+                "completion_conditions=0 或 pact_structure_invalid**。这不是 agent 错误，而是 harness logger 的限制。\n"
+            )
+        elif residual_placeholders:
+            source_note = (
+                "\n⚠️ **以下字段仍含 shell 变量占位符**（"
+                + ", ".join(residual_placeholders)
+                + "），说明 agent 通过前置 exec 定义了变量、提交时引用——"
+                "logger 记录的是 pre-shell-expansion 模板，parser 静态解不出真值，"
+                "本次评分未提供 `caw pact show` 回放。**请不要因字面是占位符就扣 0 分**；"
+                "结合后续 pact submit 结果（如果返回了合法 pact_id 且 status=active）"
+                "及链上执行效果保守评估；无法验证的维度给中性分（如 0.5）并在 reasoning 注明。\n"
+            )
+        pact_section = f"""{source_note}
 **Agent 提交的 Pact 参数**（结构最完整的一次）:
 - intent: {pf.get("intent", "(空)")}
 - execution-plan: {pf.get("execution-plan", "(空)")}
@@ -140,19 +181,57 @@ pact_hints: {json.dumps(hints, ensure_ascii=False)}
             "- recipe_adherence: agent 是否遵循了 recipe 中规定的操作流程？"
             "合约地址、函数签名、参数顺序是否与 recipe 一致？"
             "是否正确使用了 recipe 提供的 ABI/selector 信息？"
+            "注意：agent 可能偏离 recipe 但仍正确完成 tx（对照 operation_spec 判）——"
+            "这种情况下 recipe_adherence 给低分，但不影响 tx_construction_correctness。"
         )
         if not recipe_content:
+            # cc_no_recipe 对照组：agent 仍按真实用户流程自主调 `caw recipe search`，
+            # 但 search 拿到空结果（count=0）。重点评估"没 recipe 时 agent 能力基线"。
             recipe_adherence_dim = (
-                "- recipe_adherence: **本次评测未提供 recipe（CC 无 recipe 对照组）**，"
-                "该维度评为 N/A，请给 score=0.0 并在 reasoning 中写明 'N/A: no recipe provided'。"
+                "- recipe_adherence: **本次评测为对照组（CC 无 recipe，search 返回空）**，"
+                "该维度评为 N/A，请给 score=0.0 并在 reasoning 中写明 'N/A: control group - empty recipe search'。"
+                "评测重点看 agent 是否**按正常流程调用 caw recipe search**（行为链路和 with_recipe 一致），"
+                "以及没 recipe 时 tx_construction_correctness 的基线。"
             )
+
+        # Operation Spec 方案：优先用结构化 ground truth 构建 judge 参考，
+        # 如果 item 有 operation_spec / pact_expectation 就用它们；
+        # 否则 fallback 到历史 success_criteria 字段（兼容老数据）
+        op_spec = expected.get("operation_spec")
+        pact_exp = expected.get("pact_expectation")
+
+        spec_section = ""
+        if op_spec or pact_exp:
+            intent_canonical = derive_intent_canonical(user_message, metadata, op_spec, pact_exp)
+            criteria_lines = derive_success_criteria(op_spec)
+            pact_checklist = derive_pact_checklist(pact_exp)
+            spec_section = (
+                "\n**标准答案锚点（评分依据，从 operation_spec + pact_expectation 派生）**:\n"
+                f"- intent 标准表达: {intent_canonical}\n"
+            )
+            if criteria_lines:
+                spec_section += "- 期望构造的 tx 清单:\n"
+                for line in criteria_lines:
+                    spec_section += f"  - {line}\n"
+            if pact_checklist:
+                spec_section += "- 期望 pact 参数 checklist:\n"
+                for line in pact_checklist:
+                    spec_section += f"  - {line}\n"
+            spec_section += (
+                "**评分时对比 agent 实际产出 vs 以上锚点**：\n"
+                "- intent_understanding：agent 理解是否和 intent 标准表达语义一致\n"
+                "- policies/completion_correctness：pact 参数是否满足 checklist\n"
+                "- tx_construction_correctness：agent 构造的 calldata 是否匹配 tx 清单"
+                "（contract / selector / params 逐项比对）\n"
+            )
+
+        legacy_success = f"成功标准（历史字段）: {success_criteria}\n" if success_criteria else ""
 
         return f"""**评估任务（Recipe 模式 — 仅评估交易构建，不评估链上执行）**
 操作类型: {operation_type} | 难度: {difficulty}
 用户指令: {user_message}
-成功标准: {success_criteria}
-pact_hints: {json.dumps(hints, ensure_ascii=False)}
-
+{legacy_success}pact_hints: {json.dumps(hints, ensure_ascii=False)}
+{spec_section}
 **断言结果**:
 {assertion_context}
 {pact_section}{recipe_section}{_session_section}
@@ -162,14 +241,20 @@ pact_hints: {json.dumps(hints, ensure_ascii=False)}
 交易成功提交（caw tx 返回 status=Initiated/PendingApproval）即视为构建完成。
 
 S1 意图解析:
-- intent_understanding: agent 是否正确理解了用户想做什么操作、涉及什么资产、在哪条链上？
+- intent_understanding: agent 是否正确理解了用户想做什么操作、涉及什么资产、在哪条链上？（对比 intent 标准表达语义）
 
 S2 Pact 协商（基于 agent 实际提交的 pact 参数评分）:
-- policies_correctness: policies JSON 是否与用户意图匹配？chain_in/token_in/contract allowlist 是否正确？deny_if 限额是否合理？scope 是否最小化（不过度授权）？
-- completion_conditions_correctness: completion-conditions 是否与用户意图匹配？type 选择是否正确（tx_count/amount_spent_usd/time_elapsed）？threshold 是否合理？
+- policies_correctness: policies JSON 是否满足 pact checklist？
+  - **chain_in** 是否覆盖期望链？
+  - **transfer 类型**：token_in 必填，缺失扣分
+  - **contract_call 类型**：必填 target_in（合约地址）；token_in 选填，仅当用户语义明确指向单一 token 且 agent 完全没列时才酌情扣分
+  - **deny_if** 限额是否合理（amount_gt / tx_count_gt 等）？
+  - scope 是否最小化（不过度授权）？
+- completion_conditions_correctness: completion-conditions 是否匹配 checklist？type / threshold 是否合理？
+  （注：threshold 数值允许字符串或整数形式，二者等价，不得仅因 "1" vs 1 这种格式差异扣分）
 
-S3 交易构建完整性（仅评估交易是否被正确构建和提交，不评估链上执行结果）:
-- tx_construction_correctness: 是否用正确的 caw tx 命令（transfer/call）？合约地址是否正确？function selector 和 ABI 编码参数是否正确？calldata 构建逻辑是否合理？
+S3 交易构建完整性（对比 operation_spec.transactions 逐项评分）:
+- tx_construction_correctness: 是否用正确的 caw tx 命令（transfer/call/sign-message）？contract / selector / params 是否和期望 tx 清单逐项匹配？
 {recipe_adherence_dim}
 
 以合法 JSON 返回:
@@ -197,8 +282,13 @@ S1 意图解析:
 - intent_understanding: agent 是否正确理解了用户想做什么操作、涉及什么资产、在哪条链上？
 
 S2 Pact 协商（基于 agent 实际提交的 pact 参数评分）:
-- policies_correctness: policies JSON 是否与用户意图匹配？chain_in/token_in/contract allowlist 是否正确？deny_if 限额是否合理？scope 是否最小化（不过度授权）？
+- policies_correctness: policies JSON 是否与用户意图匹配？
+  - **chain_in** 是否覆盖期望链？
+  - **transfer 类型**：token_in 必填，缺失扣分
+  - **contract_call 类型**：必填 target_in（合约地址）；token_in 选填，仅当用户语义明确指向单一 token 且 agent 完全没列时才酌情扣分
+  - **deny_if** 限额是否合理？scope 是否最小化（不过度授权）？
 - completion_conditions_correctness: completion-conditions 是否与用户意图匹配？type 选择是否正确（tx_count/amount_spent_usd/time_elapsed）？threshold 是否合理？
+  （注：threshold 数值允许字符串或整数形式，二者等价，不得仅因 "1" vs 1 这种格式差异扣分）
 
 S3 执行:
 - execution_correctness: agent 是否用正确的方式执行了操作？命令和参数是否正确？如果用了脚本构造 calldata，逻辑是否正确？

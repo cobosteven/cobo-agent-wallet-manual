@@ -130,15 +130,14 @@ Before you submit, verify:
 
 For every address and amount in `--policies` and `--execution-plan`:
 - **Trace the source.** Where did this value come from?
-  - User stated it explicitly → copy character-for-character from the exact message. Do not retype from memory.
-  - Came from a recipe or official docs → re-read the source now. Do not rely on what you wrote earlier.
+  - User stated it explicitly → copy character-for-character from the exact message.
+  - Came from a recipe or official docs → use the value as-is and proceed.
   - Source unclear → stop and ask the user before submitting.
 - **Never infer or complete a partial value.** If an address looks truncated or an amount approximate, ask.
 - **Address format check.** For every address in `target_in` / `destination_address_in`:
   - EVM: exactly 42 characters — `0x` + 40 hex chars. Count them.
   - Solana: 32–44 Base58 characters.
   - If the count is off by even one character, re-fetch from source.
-- **Cross-check execution consistency.** The contract address in `target_in` must be the exact same string as `--contract` in `caw tx call`. The destination in `destination_address_in` must match `--to` in `caw tx transfer`.
 - **Cross-document consistency.** Every address must be identical across intent text, execution plan, and policy JSON. The intended amount must fall within the policy's allow limits. Completion conditions must reflect the intended scope (e.g. a fixed-spend operation → `amount_spent` or `amount_spent_usd` matching total intended spend).
 
 Present a pre-submit preview to the user with the **4 core items**:

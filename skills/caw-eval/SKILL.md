@@ -1,77 +1,74 @@
 ---
 name: caw-eval
 metadata:
-  version: "2026.04.13.1"
+  version: "2026.04.21.1"
 description: |
-  在本地 Claude Code 中评测 CAW (Cobo Agentic Wallet) Agent 质量，产出评分数据和分析报告。
+  在本地 Mac 编排 CAW (Cobo Agentic Wallet) Agent 评测，并把 headless claude / openclaw agent
+  dispatch 到远端服务器执行，最终产出评分数据和分析报告。
   Use when: 用户想运行 CAW 评测、跑评测、测试 Skill、评估 Agent 质量、
-  生成评测报告，或说 "跑评测", "测评 CAW", "eval", "评分"。
-  弱模型 / openclaw 评测请使用 caw-eval-openclaw（仅安装在 openclaw 服务器）。
+  生成评测报告，或说 "跑评测", "测评 CAW", "eval", "评分",
+  "recipe 评测", "弱模型评测", "openclaw 评测", "模型兼容性测试"。
 ---
 
 # CAW Eval
 
-端到端评测 CAW Agent 质量，产出评分数据和分析报告。
+端到端评测 CAW Agent 质量：本地 Mac 作为调度器，dispatch 到远端服务器跑 headless claude
+（标准 / recipe 评测）或 openclaw agent（弱模型兼容性评测），评分和报告都在本地完成。
 
 ## Step 0: 环境识别（必做）
-
-执行任何后续步骤前，先确认当前环境：
 
 ```bash
 [[ "$(hostname)" == *openclaw* ]] && echo "env=openclaw" || echo "env=local"
 ```
 
-- `env=openclaw`：**本 SKILL（caw-eval）是本地 CC 版本，不能在 openclaw 服务器跑**。告诉用户：
-  > "当前在 openclaw 服务器，本地 CC 评测 SKILL 不适用。请使用 `caw-eval-openclaw`（说'弱模型评测'或'openclaw 评测'触发）。"
-  然后停止。
-- `env=local`：继续下面的流程路由。
+- `env=local`：继续。确保 `gcloud auth login` 已完成、IAP 通道可用。
+- `env=openclaw`：停止。本 SKILL 是**本地调度器**，不能在 openclaw 服务器直接跑。
+  请回到本地 Mac 终端后重新触发。
 
 ## 流程路由
 
-根据用户意图选择评测方式，然后**读取对应的 reference 文件并按步骤执行**：
+根据用户意图选择评测方式，然后**读取对应的 reference 按步骤执行**：
 
 | 用户说 | 评测方式 | 读取并执行 |
 |--------|---------|-----------|
-| "跑评测"、"测评 CAW"、"eval"、"评分"、"claude code 评测" | **Claude Code 评测**（默认 dataset: `caw-agent-eval-seth-v2`） | → 读 [run-eval-cc.md](./references/run-eval-cc.md) 按步骤执行 |
-| "recipe 评测"、"recipe eval" | **Recipe 评测**（交易构建模式） | → 读 [run-eval-recipe.md](./references/run-eval-recipe.md) 按步骤执行 |
-| "recipe 对比评测"、"recipe 对比" | **Recipe 三模式对比评测** | → 读 [run-eval-recipe.md](./references/run-eval-recipe.md)（跑三次对比） |
-| "弱模型验证"、"openclaw 评测"、"模型兼容性" | **Openclaw 弱模型验证** | → 读 [run-eval-openclaw.md](./references/run-eval-openclaw.md) 按步骤执行（SSH 到服务器跑评测 → 下载 session → 本地评分出报告） |
+| "跑评测" / "测评 CAW" / "eval" / "评分" / "claude code 评测" | **标准模式 + CC headless** | → [run-eval-cc.md](./references/run-eval-cc.md) |
+| "recipe 评测" / "recipe eval" | **Recipe 模式**（交易构建评测） | → [run-eval-recipe.md](./references/run-eval-recipe.md) |
+| "recipe 对比评测" / "recipe 对比" | **Recipe 三模式对比**（OpenClaw / CC+recipe / CC 无 recipe） | → [run-eval-recipe.md](./references/run-eval-recipe.md) |
+| "弱模型验证" / "openclaw 评测" / "模型兼容性" / "doubao/minimax/gpt-5.4 评测" | **Openclaw 弱模型评测**（多台并行 dispatch） | → [run-eval-openclaw.md](./references/run-eval-openclaw.md) |
 
-**默认走 Claude Code 评测**（如果用户没有明确说"弱模型"或"openclaw"）。
+**默认走标准 CC 评测**（用户没明确说 "recipe" 或 "openclaw" 时）。
+
+执行前的公共前置（SSH / gcloud / 服务器同步）：[common-execution.md](./references/common-execution.md)
 
 ---
 
 ## 概览
 
-### Claude Code 评测（主要方式）
+### 标准 / Recipe 评测（CC headless）
 
-在本地 Claude Code 中用 Sonnet subagent 并行执行 + 评分，最后用 Opus subagent 生成分析报告。
+本地 Mac 用 `run_eval_cc.py dispatch` 并行调度 N 台服务器，每台跑 headless `claude -p`。
 
 ```
-检查环境 → 获取 case 列表 → Sonnet subagent 并行执行 14 case
-→ 收集 session → 上传 Langfuse → LLM Judge 评分 → 应用评分
-→ Opus subagent 生成报告
+本地 dispatch → 动态队列（空闲服务器自动取下一个 item）
+               → 远端 claude headless 跑任务
+               → scp 拉回 session → 上传 Langfuse → 评分 → 报告
 ```
 
-- 时间：约 40 分钟（14 case 并行 4 个）
-- 模型分工：
-  - 主会话 / Step 1-8：**Sonnet**（编排与脚本调度，不消耗 Opus 额度）
-  - Step 3 评测 subagent：**Sonnet**（独立周额度）
-  - Step 7 judge subagent：**Sonnet**（或走 API 直调节省 CC 额度）
-  - Step 9 报告 subagent：**Opus**（深度分析，隔离 context 省 token）
+- 时间：14 case / 4 台 ≈ 30 分钟
 - 详细步骤：[run-eval-cc.md](./references/run-eval-cc.md)
+- Recipe 三模式对比：[run-eval-recipe.md](./references/run-eval-recipe.md)
 
-### Openclaw 弱模型验证
+### Openclaw 弱模型评测
 
-在 Openclaw 服务器上用弱模型执行，本地 Claude Code 评分。三层分离架构。
+本地 Mac 用 `run_eval_openclaw.py dispatch` 并行调度多台 openclaw 服务器，每台串行跑
+`openclaw agent`，session 直接上传 Langfuse，本地评分出报告。
 
 ```
-服务器: 脚本生成 prompt → 弱模型执行 task → 脚本收集 session → 打包
-  ↓ gcp scp
-本地: 导入 session → LLM Judge 评分 → 上传 Langfuse → 生成报告
+本地 dispatch → 多台服务器 openclaw agent 跑任务 → 上传 Langfuse
+             → 本地读 Langfuse trace 评分（LLM Judge subagent 并行）→ 报告
 ```
 
-- 适用：上线前验证 Skill 对弱模型的兼容性
+- 时间：14 case / 3 台弱模型 ≈ 1-3 小时（取决于模型）
 - 详细步骤：[run-eval-openclaw.md](./references/run-eval-openclaw.md)
 
 ---
@@ -92,36 +89,43 @@ process_quality = S1(意图) × 0.15 + S2(Pact) × 0.45 + S3(执行) × 0.4
 S3 = tx_construction_correctness × 0.5 + recipe_adherence × 0.3 + tx_submission_success × 0.2
 ```
 
-无 Task Completion 评分。仅评估交易是否被正确构建和提交，不评估链上执行结果。
+无 task_completion。仅评估交易是否被正确构建/提交，不评估链上执行结果。
 
 所有分数 0-1。详见 [scoring.md](./references/scoring.md)。
 
+## 问题归因（写报告时使用）
+
+对每个 finding 按 5 层归类：🔵 被测 SKILL / 🟢 评分体系 / 🟡 数据集 / 🟠 评测工具链 / 🟣 运行环境。细则见 [issue-attribution.md](./references/issue-attribution.md)。
+
 ## 数据集
 
-| 数据集 | Case 数 | 场景类型 | 说明 |
-|--------|---------|---------|------|
-| `caw-agent-eval-seth-v2` | 14 | transfer/swap/lend/dca/... | 默认，Ethereum Sepolia 测试链 |
-| `caw-recipe-eval-seth-v1` | - | recipe | Recipe 多步骤场景，Sepolia 测试链 |
+| 数据集 | Case 数 | 场景 | 说明 |
+|--------|:-------:|-----|------|
+| `caw-agent-eval-seth-v2` | 14 | transfer / swap / lend / dca / ... | 默认，Ethereum Sepolia |
+| `caw-recipe-eval-seth-v1` | - | recipe | Recipe 多步骤场景，Sepolia |
 
-- 默认使用 `caw-agent-eval-seth-v2`，用户明确说"recipe 评测"时改用 `caw-recipe-eval-seth-v1`
-- 可通过 `--dataset-name` 指定其他数据集
-- 已有数据集和创建新数据集参见 [dataset-management.md](./references/dataset-management.md)
+- 默认 `caw-agent-eval-seth-v2`；用户明确说 "recipe 评测" 时改用 `caw-recipe-eval-seth-v1`
+- `--dataset-name` 可指定其他数据集
+- 数据集管理：[dataset-management.md](./references/dataset-management.md)
+- 数据集审查（11 条机械规则）：[dataset-review.md](./references/dataset-review.md)
 
 ## 服务器环境搭建
 
-新建 openclaw 服务器时（安装 openclaw / caw / langfuse / 钱包 onboarding / 充值）：
-
+新建 openclaw 评测服务器（GCP 实例 / openclaw / caw / onboarding / 充值 / 验证）：
 → [server-setup.md](./references/server-setup.md)
 
 ## Scripts
 
 | 脚本 | 用途 |
 |------|------|
-| `run_eval_cc.py` | Claude Code 评测编排（prepare/collect/upload/score/import-sessions） |
-| `run_eval_openclaw.py` | Openclaw 评测编排（prepare/collect/upload/pack） |
-| `eval_utils.py` | 公共工具（Langfuse 客户端/数据集/上传） |
-| `judge_cc.py` | LLM-as-Judge（prompt 构建 + API 调用） |
-| `assertions.py` | 结构化断言 + 门槛检查 |
+| `run_eval_cc.py` | CC 评测编排（dispatch / run / upload / score / metrics） |
+| `run_eval_openclaw.py` | Openclaw 评测编排（dispatch / run / upload / pack） |
 | `score_traces.py` | 评分管线（断言 + judge → 综合分 → Langfuse） |
+| `judge_cc.py` | LLM-as-Judge（prompt 构建） |
+| `assertions.py` | 结构化提取 + 门槛断言 |
+| `eval_utils.py` | 公共工具（Langfuse 客户端 / 数据集 / 批量上传） |
 | `upload_session.py` | session → Langfuse trace |
 | `generate_dataset.py` | 数据集生成 |
+| `validate_dataset.py` | 数据集 schema 校验 |
+| `runtime_compliance.py` | 评测运行时合规自检 |
+| `sync_to_servers.sh` | 服务器同步 + hash 校验 |

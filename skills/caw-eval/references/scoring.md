@@ -106,6 +106,8 @@ S3 不设门槛。执行方式多样（`caw tx transfer`、`caw tx call`、Pytho
 | pact_submit_count | pact submit 次数 | > 3 |
 | tx_command_count | tx transfer/call 次数 | > 6 |
 | error_count | 错误次数 | > 5 |
+| recipe_search_count | `caw recipe search` 调用次数 | — |
+| recipe_searched | 是否执行过 `caw recipe search`（0/1） | recipe-mode=openclaw 时预期 = 1 |
 
 ---
 
@@ -236,13 +238,13 @@ S2 Pact (assertion+judge) | 0.72
 
 ### 三种对比模式
 
-| 模式 | recipe 来源 | recipe search |
+| 模式 | recipe 来源 | agent 获取方式 |
 |------|:-----------:|:------------:|
-| OpenCLAW + recipe | dataset metadata 注入 | 禁用 |
-| CC + recipe | dataset metadata 注入 | 禁用 |
-| CC 无 recipe | 不提供 | 禁用 |
+| OpenCLAW + recipe | `/tmp/recipes.json`（通过 `CAW_RECIPE_FILE` 注入） | **必须执行 `caw recipe search`** |
+| CC + recipe | 直接拼到 prompt | 不需要 `caw recipe search` |
+| CC 无 recipe | 不提供 | 不需要 `caw recipe search` |
 
-所有模式的 recipe 内容来自 dataset item 的 `metadata.recipe` 字段，不需要使用 `caw recipe search`。
+> **注意**：`OpenCLAW + recipe` 模式下，recipe 只存在于 `/tmp/recipes.json`，agent 必须主动调用 `caw recipe search` 才能读取。如果 agent 未调用，等于完全没拿到 recipe。因此 **`recipe_searched`** 是该模式下衡量 agent 行为的关键诊断指标。
 
 ### 网络命令诊断指标
 
@@ -254,9 +256,13 @@ S2 Pact (assertion+judge) | 0.72
 | `caw.curl_count` | curl 命令数 |
 | `caw.web_search_count` | web search 次数 |
 | `caw.web_fetch_count` | web fetch 次数 |
-| `caw.recipe_search_count` | recipe search 次数 |
+| `caw.recipe_search_count` | recipe search 次数（= 调用 `caw recipe search` 的次数） |
+| `caw.recipe_searched` | 是否执行过 `caw recipe search`（0/1 布尔值） |
 
-**预期**：有 recipe 的模式网络命令应接近 0，无 recipe 模式可能出现较多。
+**预期**：
+- **OpenCLAW + recipe 模式**：`recipe_searched=1` 才能拿到 recipe；若为 0 则 agent 退化为"无 recipe 盲猜"
+- **CC + recipe 模式**：recipe 已拼 prompt，`recipe_searched` 预期 = 0
+- **CC 无 recipe 模式**：`recipe_searched` 预期 = 0
 
 ### Langfuse Score 格式（Recipe 模式）
 

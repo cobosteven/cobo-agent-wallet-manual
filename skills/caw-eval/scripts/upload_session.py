@@ -102,9 +102,15 @@ CAW_OP_TABLE = [
 ]
 
 CAW_BIN_PATTERN = re.compile(
-    r"(?:^|&&\s*)"
+    # 起点：行首 / `&&` / `;` / 换行 / 管道（典型场景：
+    # `export PATH=...; caw recipe search ...` 或 `caw a && caw b`）
+    r"(?:^|&&\s*|[;\n|]\s*)"
+    r"(?:\w+=\S+\s+)*"  # 允许 CAW_RECIPE_FILE=... 等 env 前缀
     r"(?:[^\s]*?/)?caw\s+"
-    r"([\s\S]*?)(?:\s+&&|\s*\Z)",  # [\s\S]*? 匹配含换行的参数（如多行 JSON policies）；\Z 匹配字符串末尾而非行尾
+    # 终点：`&&` / `;` / `|` / 行尾或字符串末尾。
+    # [\s\S]*? 匹配含换行的参数（如多行 JSON policies）；
+    # \Z 匹配字符串末尾而非行尾，避免误把 caw 子命令在续行中截断。
+    r"([\s\S]*?)(?:\s+&&|\s*[;|]|\s*\Z)",
     re.MULTILINE,
 )
 SKILL_INSTALL_PATTERN = re.compile(

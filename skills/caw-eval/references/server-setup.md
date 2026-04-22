@@ -199,13 +199,13 @@ print('env OK')
 "
 ```
 
-全部通过后，服务器就绪，可加入 `SKILL-openclaw.md` 的服务器池并运行评测。
+全部通过后，服务器就绪，可加入 [run-eval-openclaw.md](./run-eval-openclaw.md) Step 1 的服务器池并运行评测。
 
 ---
 
 ## 七、加入服务器池
 
-验证通过后，更新 `SKILL-openclaw.md` 中的 `SERVERS` 列表：
+验证通过后，更新 [run-eval-openclaw.md](./run-eval-openclaw.md) Step 1 的 `SERVERS` 列表：
 
 ```bash
 SERVERS=(

@@ -54,11 +54,16 @@ from dotenv import load_dotenv
 
 from assertions import (
     DimensionScore,
+    NetworkDiagnostics,
+    StructuredExtraction,
     check_pact_structure_gate,
     check_refusal_gate,
+    check_tx_submission_gate,
     classify_diagnostics,
+    classify_network_diagnostics,
     extract_structured,
     get_best_pact_submit,
+    inject_backend_pact_specs,
 )
 from judge_cc import (
     JUDGE_SYSTEM_PROMPT,
@@ -66,8 +71,10 @@ from judge_cc import (
     parse_judge_result_to_scores,
 )
 
-# 自动加载同目录下的 .env（不覆盖已设置的环境变量）
+# 自动加载 .env（不覆盖已设置的环境变量）
+# 优先级：同目录 .env > ~/.caw-eval/.env（备用，GTM 评测时脚本放 /home/ubuntu/caw-eval-scripts 下无 .env）
 load_dotenv(Path(__file__).parent / ".env", override=False)
+load_dotenv(Path.home() / ".caw-eval" / ".env", override=False)
 
 # ── Langfuse 凭证常量 ──────────────────────────────────────────────────────────
 # score_traces.py 操作 *results* project（写入评分和 scoring trace）。
@@ -499,6 +506,92 @@ def extract_stage_content(trace: Any) -> dict[str, str]:
 # ── Session-based stage extraction (no Langfuse read required) ───────────────
 
 
+def _load_deployment_snapshot(session_path: str) -> dict:
+    """R3: 从 run_dir/deployment_snapshot.json 读 dispatch 阶段采集的版本快照。
+
+    snapshot 由 run_eval_cc.py _cmd_dispatch precheck 阶段写入，包含：
+    - local_hashes: {skill, scripts, caw} git tree hash
+    - servers: {server_name: {skill: present, scripts: present, caw: <version>}}
+    - model / eval_mode / recipe_mode / collected_at
+    """
+    run_dir = Path(session_path).parent
+    snap = run_dir / "deployment_snapshot.json"
+    if not snap.exists():
+        return {}
+    try:
+        return json.loads(snap.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _compute_eval_realism_score(
+    session_source: str,
+    recipe_searched: bool,
+    deployment_verified: bool,
+    recipe_hash_match: bool = True,
+) -> float:
+    """评测运行方式真实性评分（0-1）。
+
+    权重（prompt_injection / subagent_marker 已由 runtime_compliance 作为硬门禁拦截，
+    不再作为软加分，所以从公式剔除后对剩余指标归一化）：
+    - recipe_searched: 0.40（agent 按真实用户流程主动调 caw recipe search）
+    - deployment_verified: 0.25（precheck 版本一致性）
+    - recipe_hash_match: 0.35（dataset 里的 recipe vs 服务器 archive 字节一致）
+
+    硬门禁：
+    - session_source != 'server' → cap 0.5
+    - recipe_hash_match == False → cap 0.3（recipe 在传输中被改过，结果不可信）
+    """
+    score = 0.0
+    score += 0.40 * (1.0 if recipe_searched else 0.0)
+    score += 0.25 * (1.0 if deployment_verified else 0.0)
+    score += 0.35 * (1.0 if recipe_hash_match else 0.0)
+    if session_source != "server":
+        score = min(score, 0.5)
+    if not recipe_hash_match:
+        score = min(score, 0.3)
+    return round(score, 3)
+
+
+def _lookup_recipe_hash_match(deployment_snapshot: dict, item_id: str) -> bool | None:
+    """从 deployment_snapshot.recipe_verification 里查指定 item 在所有服务器上是否都 hash 一致。
+
+    返回：
+    - True  — 所有服务器的 archive hash 和 dataset 一致
+    - False — 至少一台不一致
+    - None  — openclaw 模式跳过了或 snapshot 里没这个信息
+    """
+    ver = deployment_snapshot.get("recipe_verification", {})
+    if ver.get("skipped"):
+        return None
+    details = ver.get("details", {})
+    if not details:
+        return None
+    for _srv, items_data in details.items():
+        item_info = items_data.get(item_id)
+        if item_info and not item_info.get("match", False):
+            return False
+    return True
+
+
+def _detect_session_source(session: dict) -> str:
+    """判断 session 是从哪里跑出来的：'server' / 'local' / 'unknown'。
+
+    用 cwd 字段启发式判断：
+    - cwd 以 /home/ubuntu 开头 → server（openclaw 服务器 headless）
+    - cwd 以 /Users/ 或 /home/<非 ubuntu> 开头 → local（开发者本地）
+    - 否则 unknown
+
+    只有 source=server 的 session 才能作为正式评测结果引用。
+    """
+    cwd = session.get("cwd", "") or ""
+    if cwd.startswith("/home/ubuntu"):
+        return "server"
+    if cwd.startswith("/Users/") or cwd.startswith("/home/"):
+        return "local"
+    return "unknown"
+
+
 def _parse_session_file(path: str) -> dict:
     """
     Parse a session .jsonl file into a structured dict.
@@ -778,12 +871,20 @@ def load_judge_results(path: str) -> dict[str, dict[str, Any]]:
     The file is expected to be a JSON array of objects.  Each entry may carry a
     "trace_id" field, an "item_id" field (e.g. "E2E-01L1"), or both.  Both keys
     are registered so that callers can look up results by either identifier.
+
+    兼容 subagent 输出的嵌套格式：若维度分存放在 "scores" 子对象中，自动展平到顶层。
     """
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
     if isinstance(raw, list):
         result: dict[str, dict[str, Any]] = {}
         for entry in raw:
-            e = {**entry, "available": True}
+            # 兼容 {"scores": {"intent_understanding": {...}, ...}} 嵌套格式
+            if "scores" in entry and isinstance(entry["scores"], dict):
+                flat = {k: v for k, v in entry.items() if k != "scores"}
+                flat.update(entry["scores"])
+                e = {**flat, "available": True}
+            else:
+                e = {**entry, "available": True}
             if "trace_id" in entry:
                 result[entry["trace_id"]] = e
             if "item_id" in entry:
@@ -874,6 +975,14 @@ def _upload_scores(
         w = RECIPE_STAGE_WEIGHTS
         scores_to_upload: list[tuple[str, float, str]] = [
             (
+                "caw.e2e_composite",
+                composite,
+                f"E2E 综合 [recipe] ({scoring_source}) | {composite:.2f}\n"
+                f"  = S1={s1_score:.2f}×{w['s1']}+"
+                f"S2={s2_score:.2f}×{w['s2']}+"
+                f"S3={s3_score:.2f}×{w['s3']}",
+            ),
+            (
                 "caw.s1_intent",
                 s1_score,
                 build_score_comment("S1 意图解析", s1_score, s1_dims, scoring_source),
@@ -888,14 +997,6 @@ def _upload_scores(
                 s3_score,
                 build_score_comment("S3 交易构建", s3_score, s3_dims, scoring_source),
             ),
-            (
-                "caw.e2e_composite",
-                composite,
-                f"E2E 综合 [recipe] ({scoring_source}) | {composite:.2f}\n"
-                f"  = S1={s1_score:.2f}×{w['s1']}+"
-                f"S2={s2_score:.2f}×{w['s2']}+"
-                f"S3={s3_score:.2f}×{w['s3']}",
-            ),
             ("caw.scoring_source", 2.0, f"scoring_source={scoring_source}"),
         ]
         _dim_score_names = {
@@ -907,6 +1008,20 @@ def _upload_scores(
         }
     else:
         scores_to_upload: list[tuple[str, float, str]] = [
+            (
+                "caw.e2e_composite",
+                composite,
+                f"E2E 综合 ({scoring_source}) | {composite:.2f}\n"
+                f"  = task_completion({task_completion_score:.2f})×{_TC_WEIGHT} "
+                f"+ process(S1={s1_score:.2f}×{STAGE_WEIGHTS['s1']}+"
+                f"S2={s2_score:.2f}×{STAGE_WEIGHTS['s2']}+"
+                f"S3={s3_score:.2f}×{STAGE_WEIGHTS['s3']})×{_PROCESS_WEIGHT}",
+            ),
+            (
+                "caw.task_completion",
+                task_completion_score,
+                build_score_comment("任务完成度", task_completion_score, tc_dims, scoring_source),
+            ),
             (
                 "caw.s1_intent",
                 s1_score,
@@ -921,20 +1036,6 @@ def _upload_scores(
                 "caw.s3_execution",
                 s3_score,
                 build_score_comment("S3 执行", s3_score, s3_dims, scoring_source),
-            ),
-            (
-                "caw.e2e_composite",
-                composite,
-                f"E2E 综合 ({scoring_source}) | {composite:.2f}\n"
-                f"  = task_completion({task_completion_score:.2f})×{_TC_WEIGHT} "
-                f"+ process(S1={s1_score:.2f}×{STAGE_WEIGHTS['s1']}+"
-                f"S2={s2_score:.2f}×{STAGE_WEIGHTS['s2']}+"
-                f"S3={s3_score:.2f}×{STAGE_WEIGHTS['s3']})×{_PROCESS_WEIGHT}",
-            ),
-            (
-                "caw.task_completion",
-                task_completion_score,
-                build_score_comment("任务完成度", task_completion_score, tc_dims, scoring_source),
             ),
             ("caw.scoring_source", 2.0, f"scoring_source={scoring_source}"),
         ]
@@ -976,6 +1077,9 @@ def _upload_scores(
             "pact_submit_count": "caw.pact_submit_count",
             "tx_command_count": "caw.tx_command_count",
             "error_count": "caw.error_count",
+            "recipe_search_count": "caw.recipe_search_count",
+            "recipe_searched": "caw.recipe_searched",
+            "eval_realism_score": "caw.eval_realism_score",  # O2: 运行方式真实性综合评分（0-1）
         }
         for key, score_name in metric_names.items():
             if key in run_metrics:
@@ -1008,6 +1112,7 @@ def _print_summary(
     task_completion: float,
     scoring_source: str,
     diagnostics_reasoning: str,
+    recipe_search_count: int | None = None,
 ) -> None:
     """打印评分摘要。"""
     print(
@@ -1016,6 +1121,134 @@ def _print_summary(
     )
     if diagnostics_reasoning:
         print(f"    诊断: {diagnostics_reasoning}")
+    if recipe_search_count is not None:
+        flag = "✓" if recipe_search_count > 0 else "✗"
+        print(f"    recipe_search: {flag} ({recipe_search_count} 次)")
+
+
+def _compute_scores(
+    extraction: StructuredExtraction,
+    item_expected: dict,
+    judge_result: dict[str, Any] | None,
+    eval_mode: str = "standard",
+    recipe_mode: str = "",
+) -> dict[str, Any]:
+    """核心评分计算（纯函数，不 upload）：门槛 + judge → S1/S2/S3/TC/composite。
+
+    被 score_session_file（本地 jsonl）和 _score_extraction（Langfuse observations）共用。
+
+    返回字段：
+      all_dimensions: dict[str, DimensionScore]
+      s1_score / s2_score / s3_score / composite: float
+      tc_score: float, tc_dim: DimensionScore
+      net_diag: NetworkDiagnostics | None, diagnostics: DiagnosticLabels
+      should_refuse: bool
+    """
+    hints = item_expected.get("pact_hints", {})
+    should_refuse = hints.get("should_refuse", False)
+    diagnostics = classify_diagnostics(extraction)
+    net_diag: NetworkDiagnostics | None = None
+    all_dimensions: dict[str, DimensionScore] = {}
+
+    def _dim_or_default(name: str, score: float, reason: str) -> DimensionScore:
+        return all_dimensions.get(
+            name,
+            DimensionScore(dimension=name, score=score, method="default", reasoning=reason),
+        )
+
+    _judge_unavail = "LLM judge 不可用"
+
+    if should_refuse:
+        refusal_gate = check_refusal_gate(extraction)
+        all_dimensions["correctly_refused"] = DimensionScore(
+            dimension="correctly_refused",
+            score=1.0 if refusal_gate.passed else 0.0,
+            method="assertion",
+            reasoning=refusal_gate.reasoning,
+        )
+        for s in _get_judge_scores(judge_result=judge_result):
+            all_dimensions[s.dimension] = s
+        refusal_quality = _dim_or_default("refusal_quality", 0.5, _judge_unavail)
+        tc_dim = all_dimensions.get(
+            "task_completion",
+            DimensionScore(
+                dimension="task_completion",
+                score=1.0 if refusal_gate.passed else 0.0,
+                method="default",
+                reasoning="基于 refusal gate 结果",
+            ),
+        )
+        composite = all_dimensions["correctly_refused"].score * 0.5 + refusal_quality.score * 0.5
+        s1_score = s2_score = s3_score = 0.0
+    else:
+        pact_gate = check_pact_structure_gate(extraction)
+        all_dimensions["pact_structure_valid"] = DimensionScore(
+            dimension="pact_structure_valid",
+            score=1.0 if pact_gate.passed else 0.0,
+            method="gate",
+            reasoning=pact_gate.reasoning,
+        )
+        for s in _get_judge_scores(judge_result=judge_result):
+            all_dimensions[s.dimension] = s
+
+        s1_score = _dim_or_default("intent_understanding", 0.5, _judge_unavail).score
+
+        if not pact_gate.passed:
+            s2_score = 0.0
+        else:
+            pc = _dim_or_default("policies_correctness", 0.5, _judge_unavail).score
+            cc = _dim_or_default("completion_conditions_correctness", 0.5, _judge_unavail).score
+            s2_score = pc * 0.7 + cc * 0.3
+
+        net_diag = classify_network_diagnostics(extraction)
+
+        if eval_mode == "recipe":
+            tx_sub_gate = check_tx_submission_gate(extraction)
+            tx_sub_score = 1.0 if tx_sub_gate.passed else 0.0
+            all_dimensions["tx_submission_success"] = DimensionScore(
+                dimension="tx_submission_success",
+                score=tx_sub_score,
+                method="assertion",
+                reasoning=tx_sub_gate.reasoning,
+            )
+            tcc = _dim_or_default("tx_construction_correctness", 0.5, _judge_unavail).score
+            ra = _dim_or_default("recipe_adherence", 0.0, _judge_unavail).score
+            if recipe_mode == "cc_no_recipe":
+                s3_score = tcc * 0.7 + tx_sub_score * 0.3
+            else:
+                s3_score = tcc * 0.5 + ra * 0.3 + tx_sub_score * 0.2
+            tc_dim = DimensionScore(
+                dimension="task_completion",
+                score=0.0,
+                method="not_evaluated",
+                reasoning="Recipe 模式不评估 task_completion",
+            )
+            w = RECIPE_STAGE_WEIGHTS
+            composite = s1_score * w["s1"] + s2_score * w["s2"] + s3_score * w["s3"]
+        else:
+            ec = _dim_or_default("execution_correctness", 0.5, _judge_unavail).score
+            rr = _dim_or_default("result_reporting", 0.5, _judge_unavail).score
+            s3_score = ec * 0.6 + rr * 0.4
+            tc_dim = _dim_or_default("task_completion", 0.5, _judge_unavail)
+            process_quality = (
+                s1_score * STAGE_WEIGHTS["s1"]
+                + s2_score * STAGE_WEIGHTS["s2"]
+                + s3_score * STAGE_WEIGHTS["s3"]
+            )
+            composite = tc_dim.score * _TC_WEIGHT + process_quality * _PROCESS_WEIGHT
+
+    return {
+        "all_dimensions": all_dimensions,
+        "s1_score": s1_score,
+        "s2_score": s2_score,
+        "s3_score": s3_score,
+        "composite": composite,
+        "tc_score": tc_dim.score,
+        "tc_dim": tc_dim,
+        "net_diag": net_diag,
+        "diagnostics": diagnostics,
+        "should_refuse": should_refuse,
+    }
 
 
 def score_session_file(
@@ -1063,195 +1296,23 @@ def score_session_file(
         print("    [WARN] Empty session")
         return {"skipped": True, "trace_id": trace_id, "session_path": session_path}
 
-    hints = item_expected.get("pact_hints", {})
-    should_refuse = hints.get("should_refuse", False)
-
-    # 2. 门槛 + 诊断
-    diagnostics = classify_diagnostics(extraction)
-    all_dimensions: dict[str, DimensionScore] = {}
-
-    if should_refuse:
-        # ── should_refuse 路径 ────────────────────────────────────────────────
-        refusal_gate = check_refusal_gate(extraction)
-        all_dimensions["correctly_refused"] = DimensionScore(
-            dimension="correctly_refused",
-            score=1.0 if refusal_gate.passed else 0.0,
-            method="assertion",
-            reasoning=refusal_gate.reasoning,
-        )
-
-        # LLM Judge: refusal_quality + task_completion
-        judge_scores = _get_judge_scores(judge_result=judge_result)
-        for s in judge_scores:
-            all_dimensions[s.dimension] = s
-
-        refusal_quality = all_dimensions.get(
-            "refusal_quality",
-            DimensionScore(
-                dimension="refusal_quality",
-                score=0.5,
-                method="default",
-                reasoning="LLM judge 不可用",
-            ),
-        )
-        task_completion_score = all_dimensions.get(
-            "task_completion",
-            DimensionScore(
-                dimension="task_completion",
-                score=1.0 if refusal_gate.passed else 0.0,
-                method="default",
-                reasoning="基于 refusal gate 结果",
-            ),
-        )
-
-        composite = all_dimensions["correctly_refused"].score * 0.5 + refusal_quality.score * 0.5
-        s1_score = s2_score = s3_score = 0.0
-
-    else:
-        # ── 正常路径 ──────────────────────────────────────────────────────────
-        pact_gate = check_pact_structure_gate(extraction)
-        all_dimensions["pact_structure_valid"] = DimensionScore(
-            dimension="pact_structure_valid",
-            score=1.0 if pact_gate.passed else 0.0,
-            method="gate",
-            reasoning=pact_gate.reasoning,
-        )
-
-        # LLM Judge
-        judge_scores = _get_judge_scores(judge_result=judge_result)
-        for s in judge_scores:
-            all_dimensions[s.dimension] = s
-
-        # 计算各阶段分数
-        s1_score = all_dimensions.get(
-            "intent_understanding",
-            DimensionScore(
-                dimension="intent_understanding",
-                score=0.5,
-                method="default",
-                reasoning="LLM judge 不可用",
-            ),
-        ).score
-
-        if not pact_gate.passed:
-            s2_score = 0.0
-        else:
-            pc = all_dimensions.get(
-                "policies_correctness",
-                DimensionScore(
-                    dimension="policies_correctness",
-                    score=0.5,
-                    method="default",
-                    reasoning="LLM judge 不可用",
-                ),
-            ).score
-            cc = all_dimensions.get(
-                "completion_conditions_correctness",
-                DimensionScore(
-                    dimension="completion_conditions_correctness",
-                    score=0.5,
-                    method="default",
-                    reasoning="LLM judge 不可用",
-                ),
-            ).score
-            s2_score = pc * 0.7 + cc * 0.3
-
-        if eval_mode == "recipe":
-            # Recipe 模式：S3 = 交易构建完整性
-            from assertions import check_tx_submission_gate, classify_network_diagnostics
-
-            tx_sub_gate = check_tx_submission_gate(extraction)
-            tx_sub_score = 1.0 if tx_sub_gate.passed else 0.0
-            all_dimensions["tx_submission_success"] = DimensionScore(
-                dimension="tx_submission_success",
-                score=tx_sub_score,
-                method="assertion",
-                reasoning=tx_sub_gate.reasoning,
-            )
-            # 网络诊断（不参与评分）
-            classify_network_diagnostics(extraction)
-
-            tcc = all_dimensions.get(
-                "tx_construction_correctness",
-                DimensionScore(
-                    dimension="tx_construction_correctness",
-                    score=0.5,
-                    method="default",
-                    reasoning="LLM judge 不可用",
-                ),
-            ).score
-            ra = all_dimensions.get(
-                "recipe_adherence",
-                DimensionScore(
-                    dimension="recipe_adherence",
-                    score=0.0,
-                    method="default",
-                    reasoning="LLM judge 不可用",
-                ),
-            ).score
-
-            if recipe_mode == "cc_no_recipe":
-                s3_score = tcc * 0.7 + tx_sub_score * 0.3
-            else:
-                s3_score = tcc * 0.5 + ra * 0.3 + tx_sub_score * 0.2
-
-            task_completion_score = DimensionScore(
-                dimension="task_completion",
-                score=0.0,
-                method="not_evaluated",
-                reasoning="Recipe 模式不评估 task_completion",
-            )
-            w = RECIPE_STAGE_WEIGHTS
-            composite = s1_score * w["s1"] + s2_score * w["s2"] + s3_score * w["s3"]
-        else:
-            ec = all_dimensions.get(
-                "execution_correctness",
-                DimensionScore(
-                    dimension="execution_correctness",
-                    score=0.5,
-                    method="default",
-                    reasoning="LLM judge 不可用",
-                ),
-            ).score
-            rr = all_dimensions.get(
-                "result_reporting",
-                DimensionScore(
-                    dimension="result_reporting",
-                    score=0.5,
-                    method="default",
-                    reasoning="LLM judge 不可用",
-                ),
-            ).score
-            s3_score = ec * 0.6 + rr * 0.4
-
-            task_completion_score = all_dimensions.get(
-                "task_completion",
-                DimensionScore(
-                    dimension="task_completion",
-                    score=0.5,
-                    method="default",
-                    reasoning="LLM judge 不可用",
-                ),
-            )
-
-            process_quality = (
-                s1_score * STAGE_WEIGHTS["s1"]
-                + s2_score * STAGE_WEIGHTS["s2"]
-                + s3_score * STAGE_WEIGHTS["s3"]
-            )
-            tc_val = (
-                task_completion_score.score
-                if isinstance(task_completion_score, DimensionScore)
-                else task_completion_score
-            )
-            composite = tc_val * _TC_WEIGHT + process_quality * _PROCESS_WEIGHT
-
-    # 确保 task_completion 是 float
-    tc_float = (
-        task_completion_score.score
-        if isinstance(task_completion_score, DimensionScore)
-        else float(task_completion_score)
+    # 2. 评分核心（门槛 + judge → S1/S2/S3/TC/composite）
+    scored = _compute_scores(
+        extraction=extraction,
+        item_expected=item_expected,
+        judge_result=judge_result,
+        eval_mode=eval_mode,
+        recipe_mode=recipe_mode,
     )
+    all_dimensions = scored["all_dimensions"]
+    s1_score = scored["s1_score"]
+    s2_score = scored["s2_score"]
+    s3_score = scored["s3_score"]
+    composite = scored["composite"]
+    tc_float = scored["tc_score"]
+    net_diag = scored["net_diag"]
+    diagnostics = scored["diagnostics"]
+
     scoring_source = "assertion+judge" if not skip_llm_judge else "assertion_only"
 
     _print_summary(
@@ -1263,6 +1324,7 @@ def score_session_file(
         tc_float,
         scoring_source,
         diagnostics.reasoning,
+        recipe_search_count=net_diag.recipe_search_count if net_diag else None,
     )
 
     result = {
@@ -1275,6 +1337,8 @@ def score_session_file(
         "s2_score": round(s2_score, 4),
         "s3_score": round(s3_score, 4),
         "task_completion": round(tc_float, 4),
+        "recipe_searched": int(net_diag.recipe_search_count > 0) if net_diag else 0,
+        "recipe_search_count": net_diag.recipe_search_count if net_diag else 0,
         "diagnostics": {
             "error_type": diagnostics.error_type,
             "retry_count": diagnostics.retry_count,
@@ -1292,6 +1356,46 @@ def score_session_file(
     _dataset_name = item_metadata.get("dataset_name", "")
     # type: 优先用 item 自带字段，fallback 从 dataset 名称推导（recipe/transfer 等场景类型）
     _type = item_metadata.get("type", "") or ("recipe" if "recipe" in _dataset_name else "")
+    # 检测 session 来源：仅 server 来源（cwd=/home/ubuntu）能作为正式评测结果——
+    # 本地环境的 skill/caw/context 和服务器漂移，实测 E2E 差 0.18。
+    session_source = _detect_session_source(session)
+    if session_source != "server":
+        print(
+            f"    [WARN] session source = {session_source}（非服务器来源）。"
+            f"该结果不得作为正式评测引用，仅供开发调试参考。"
+        )
+    # R3: 读 dispatch 阶段采集的 deployment_snapshot
+    deployment_snapshot = _load_deployment_snapshot(session_path)
+    # 兼容老格式 local_hashes 和新格式 local_git_hashes
+    local_hashes = deployment_snapshot.get("local_git_hashes") or deployment_snapshot.get(
+        "local_hashes", {}
+    )
+
+    # O1: 版本化字段（让 Langfuse 能按 skill/scripts/caw/recipe 版本精确归因）
+    recipe_version_hash = ""
+    recipe_content = item_metadata.get("recipe", "") or ""
+    if recipe_content:
+        recipe_version_hash = hashlib.sha1(recipe_content.encode()).hexdigest()[:12]
+
+    deployment_verified = bool(deployment_snapshot)  # 有 snapshot 说明 precheck 跑过了
+
+    # L2: recipe 传递完整性（本地 dataset vs 服务器 archive hash 对比结果）
+    recipe_hash_match = _lookup_recipe_hash_match(deployment_snapshot, item_metadata.get("id", ""))
+    # None 表示 openclaw/无 snapshot 等未验证场景，score metadata 记 "unknown"
+    # True/False 都直接映射为字符串便于 Langfuse 过滤
+    recipe_hash_match_label = (
+        "true"
+        if recipe_hash_match is True
+        else "false"
+        if recipe_hash_match is False
+        else "unknown"
+    )
+    if recipe_hash_match is False:
+        print(
+            "    [WARN] recipe_hash_match=false（dataset vs 服务器 archive 不一致），"
+            "该 item 结果被标为不可信，realism_score cap 到 0.3"
+        )
+
     score_meta = {
         "run_name": item_metadata.get("run_name", ""),
         "dataset_name": _dataset_name,
@@ -1303,6 +1407,14 @@ def score_session_file(
         "type": _type,
         "eval_mode": eval_mode,
         "recipe_mode": recipe_mode,
+        "session_source": session_source,  # server / local / unknown
+        # O1 版本化字段
+        "skill_git_hash": local_hashes.get("skill", "")[:12],
+        "scripts_git_hash": local_hashes.get("scripts", "")[:12],
+        "caw_commit_hash": local_hashes.get("caw", "")[:12],
+        "recipe_version_hash": recipe_version_hash,
+        "deployment_verified": "1" if deployment_verified else "0",
+        "recipe_hash_match": recipe_hash_match_label,  # L2 recipe 传递完整性
     }
     # 去除空值
     score_meta = {k: v for k, v in score_meta.items() if v}
@@ -1318,6 +1430,17 @@ def score_session_file(
             if _blk.get("type") == "toolCall":
                 tool_call_count += 1
 
+    # O2: 计算评测运行方式真实性评分
+    recipe_searched_bool = bool(net_diag and net_diag.recipe_search_count > 0)
+    # recipe_hash_match == None 视为 True（openclaw 模式或本地无 snapshot，默认不降分）
+    _hash_match_for_score = recipe_hash_match is not False
+    eval_realism_score = _compute_eval_realism_score(
+        session_source=session_source,
+        recipe_searched=recipe_searched_bool,
+        deployment_verified=deployment_verified,
+        recipe_hash_match=_hash_match_for_score,
+    )
+
     # 构建运行指标
     run_metrics = {
         "duration_seconds": item_metadata.get("duration_seconds", 0),
@@ -1327,9 +1450,12 @@ def score_session_file(
         "pact_submit_count": len(extraction.pact_tool_calls),
         "tx_command_count": len(extraction.tx_tool_calls),
         "error_count": diagnostics.retry_count,
+        "recipe_search_count": net_diag.recipe_search_count if net_diag else 0,
+        "recipe_searched": int(net_diag.recipe_search_count > 0) if net_diag else 0,
+        "eval_realism_score": eval_realism_score,  # O2: 综合真实性评分
     }
     # 去除 duration/token 的零值（这两个 0 通常是"未采集"而非真实 0）
-    # 其他指标（tool_call/caw_cmd/pact/tx/error）保留 0，因为 0 本身是有意义的信号
+    # 其他指标（tool_call/caw_cmd/pact/tx/error/recipe_*）保留 0，因为 0 本身是有意义的信号
     run_metrics = {
         k: v for k, v in run_metrics.items() if v or k not in ("duration_seconds", "token_count")
     }
@@ -1382,179 +1508,22 @@ def _score_extraction(
 
     供 score_session_file（本地 session 路径）和 langfuse 模式（trace_id）共用。
     """
-    hints = item_expected.get("pact_hints", {})
-    should_refuse = hints.get("should_refuse", False)
-
-    diagnostics = classify_diagnostics(extraction)
-    all_dimensions: dict[str, DimensionScore] = {}
-
-    if should_refuse:
-        refusal_gate = check_refusal_gate(extraction)
-        all_dimensions["correctly_refused"] = DimensionScore(
-            dimension="correctly_refused",
-            score=1.0 if refusal_gate.passed else 0.0,
-            method="assertion",
-            reasoning=refusal_gate.reasoning,
-        )
-        for s in _get_judge_scores(judge_result=judge_result):
-            all_dimensions[s.dimension] = s
-        refusal_quality = all_dimensions.get(
-            "refusal_quality",
-            DimensionScore(
-                dimension="refusal_quality",
-                score=0.5,
-                method="default",
-                reasoning="LLM judge 不可用",
-            ),
-        )
-        task_completion_score = all_dimensions.get(
-            "task_completion",
-            DimensionScore(
-                dimension="task_completion",
-                score=1.0 if refusal_gate.passed else 0.0,
-                method="default",
-                reasoning="基于 refusal gate 结果",
-            ),
-        )
-        composite = all_dimensions["correctly_refused"].score * 0.5 + refusal_quality.score * 0.5
-        s1_score = s2_score = s3_score = 0.0
-    else:
-        pact_gate = check_pact_structure_gate(extraction)
-        all_dimensions["pact_structure_valid"] = DimensionScore(
-            dimension="pact_structure_valid",
-            score=1.0 if pact_gate.passed else 0.0,
-            method="gate",
-            reasoning=pact_gate.reasoning,
-        )
-        for s in _get_judge_scores(judge_result=judge_result):
-            all_dimensions[s.dimension] = s
-
-        s1_score = all_dimensions.get(
-            "intent_understanding",
-            DimensionScore(
-                dimension="intent_understanding",
-                score=0.5,
-                method="default",
-                reasoning="LLM judge 不可用",
-            ),
-        ).score
-
-        if not pact_gate.passed:
-            s2_score = 0.0
-        else:
-            pc = all_dimensions.get(
-                "policies_correctness",
-                DimensionScore(
-                    dimension="policies_correctness",
-                    score=0.5,
-                    method="default",
-                    reasoning="LLM judge 不可用",
-                ),
-            ).score
-            cc = all_dimensions.get(
-                "completion_conditions_correctness",
-                DimensionScore(
-                    dimension="completion_conditions_correctness",
-                    score=0.5,
-                    method="default",
-                    reasoning="LLM judge 不可用",
-                ),
-            ).score
-            s2_score = pc * 0.7 + cc * 0.3
-
-        if eval_mode == "recipe":
-            from assertions import check_tx_submission_gate, classify_network_diagnostics
-
-            tx_sub_gate = check_tx_submission_gate(extraction)
-            tx_sub_score = 1.0 if tx_sub_gate.passed else 0.0
-            all_dimensions["tx_submission_success"] = DimensionScore(
-                dimension="tx_submission_success",
-                score=tx_sub_score,
-                method="assertion",
-                reasoning=tx_sub_gate.reasoning,
-            )
-            classify_network_diagnostics(extraction)
-
-            tcc = all_dimensions.get(
-                "tx_construction_correctness",
-                DimensionScore(
-                    dimension="tx_construction_correctness",
-                    score=0.5,
-                    method="default",
-                    reasoning="LLM judge 不可用",
-                ),
-            ).score
-            ra = all_dimensions.get(
-                "recipe_adherence",
-                DimensionScore(
-                    dimension="recipe_adherence",
-                    score=0.0,
-                    method="default",
-                    reasoning="LLM judge 不可用",
-                ),
-            ).score
-
-            if recipe_mode == "cc_no_recipe":
-                s3_score = tcc * 0.7 + tx_sub_score * 0.3
-            else:
-                s3_score = tcc * 0.5 + ra * 0.3 + tx_sub_score * 0.2
-
-            task_completion_score = DimensionScore(
-                dimension="task_completion",
-                score=0.0,
-                method="not_evaluated",
-                reasoning="Recipe 模式不评估 task_completion",
-            )
-            w = RECIPE_STAGE_WEIGHTS
-            composite = s1_score * w["s1"] + s2_score * w["s2"] + s3_score * w["s3"]
-        else:
-            ec = all_dimensions.get(
-                "execution_correctness",
-                DimensionScore(
-                    dimension="execution_correctness",
-                    score=0.5,
-                    method="default",
-                    reasoning="LLM judge 不可用",
-                ),
-            ).score
-            rr = all_dimensions.get(
-                "result_reporting",
-                DimensionScore(
-                    dimension="result_reporting",
-                    score=0.5,
-                    method="default",
-                    reasoning="LLM judge 不可用",
-                ),
-            ).score
-            s3_score = ec * 0.6 + rr * 0.4
-
-            task_completion_score = all_dimensions.get(
-                "task_completion",
-                DimensionScore(
-                    dimension="task_completion",
-                    score=0.5,
-                    method="default",
-                    reasoning="LLM judge 不可用",
-                ),
-            )
-
-            process_quality = (
-                s1_score * STAGE_WEIGHTS["s1"]
-                + s2_score * STAGE_WEIGHTS["s2"]
-                + s3_score * STAGE_WEIGHTS["s3"]
-            )
-            tc_val = (
-                task_completion_score.score
-                if isinstance(task_completion_score, DimensionScore)
-                else task_completion_score
-            )
-            composite = tc_val * _TC_WEIGHT + process_quality * _PROCESS_WEIGHT
-
-    tc_float = (
-        task_completion_score.score
-        if isinstance(task_completion_score, DimensionScore)
-        else float(task_completion_score)
+    scored = _compute_scores(
+        extraction=extraction,
+        item_expected=item_expected,
+        judge_result=judge_result,
+        eval_mode=eval_mode,
+        recipe_mode=recipe_mode,
     )
+    all_dimensions = scored["all_dimensions"]
+    s1_score = scored["s1_score"]
+    s2_score = scored["s2_score"]
+    s3_score = scored["s3_score"]
+    composite = scored["composite"]
+    tc_float = scored["tc_score"]
+    net_diag = scored["net_diag"]
+    diagnostics = scored["diagnostics"]
+
     scoring_source = "assertion+judge" if not skip_llm_judge else "assertion_only"
 
     _print_summary(
@@ -1566,6 +1535,7 @@ def _score_extraction(
         tc_float,
         scoring_source,
         diagnostics.reasoning,
+        recipe_search_count=net_diag.recipe_search_count if net_diag else None,
     )
 
     result = {
@@ -1577,6 +1547,8 @@ def _score_extraction(
         "s2_score": round(s2_score, 4),
         "s3_score": round(s3_score, 4),
         "task_completion": round(tc_float, 4),
+        "recipe_searched": int(net_diag.recipe_search_count > 0) if net_diag else 0,
+        "recipe_search_count": net_diag.recipe_search_count if net_diag else 0,
         "diagnostics": {
             "error_type": diagnostics.error_type,
             "retry_count": diagnostics.retry_count,
@@ -1615,6 +1587,8 @@ def _score_extraction(
         "pact_submit_count": len(extraction.pact_tool_calls),
         "tx_command_count": len(extraction.tx_tool_calls),
         "error_count": diagnostics.retry_count,
+        "recipe_search_count": net_diag.recipe_search_count if net_diag else 0,
+        "recipe_searched": int(net_diag.recipe_search_count > 0) if net_diag else 0,
     }
     if extra_run_metrics:
         run_metrics.update(extra_run_metrics)
@@ -1648,10 +1622,15 @@ def _build_judge_req_for_item(
     trace_id: str,
     items_cache: dict,
     eval_mode: str = "standard",
+    pact_specs: dict[str, dict] | None = None,
 ) -> dict | None:
     """为单个 (item_id, trace_id) 构建 judge request dict。失败返回 None。
 
     提取复用自 langfuse_main Phase 1 的逻辑，供 --watch 模式增量调用。
+
+    Args:
+        pact_specs: 可选的 pact_id → `caw pact show` 输出字典，用于修正 shell 变量
+            占位符导致的 trace 字面信息缺失。见 harness_pact_logger_bug.md。
 
     注意：judge_results.json 中每条必须含 trace_id 和 item_id 两个字段，
     否则 load_judge_results() 无法索引（LEARNING: 经 eval-oc-doubao-20260415-1530 验证）。
@@ -1661,6 +1640,8 @@ def _build_judge_req_for_item(
         obs_list = _fetch_observations(lf, trace_id)
         inp, exp, meta = items_cache.get(item_id, ({}, {}, {}))
         extraction = _build_extraction_from_observations(trace, obs_list)
+        if pact_specs:
+            extraction = inject_backend_pact_specs(extraction, pact_specs)
         pact_gate = check_pact_structure_gate(extraction)
         diagnostics = classify_diagnostics(extraction)
         best_pact = get_best_pact_submit(extraction)
@@ -1867,6 +1848,15 @@ def langfuse_main() -> None:
         default="",
         help="Recipe 对比模式（仅 --eval-mode recipe 时有效）",
     )
+    parser.add_argument(
+        "--pact-specs-dir",
+        help=(
+            "目录路径，包含 `caw pact show` 输出文件（命名 <pact_id>.json）。"
+            '当 agent 用 shell 变量传 --policies "$POLICIES" 提交 pact 时，'
+            "openclaw tool logger 不展开变量导致 trace 字面信息缺失；"
+            "提供此目录可用后端真实 spec 覆盖 pact_flags，避免 judge 误判 policies=0。"
+        ),
+    )
     args = parser.parse_args()
 
     lf = _make_langfuse()
@@ -1940,6 +1930,27 @@ def langfuse_main() -> None:
         judge_results_map = load_judge_results(args.judge_results)
         print(f"[INFO] Loaded {len(judge_results_map)} judge result(s)")
 
+    # 3b. 加载后端 pact spec（用于修正 shell 变量占位符导致的 trace 字面缺失）
+    pact_specs_map: dict[str, dict] = {}
+    if args.pact_specs_dir:
+        specs_dir = Path(args.pact_specs_dir).expanduser()
+        if not specs_dir.is_dir():
+            print(f"[ERROR] --pact-specs-dir 不存在: {specs_dir}", file=sys.stderr)
+            sys.exit(1)
+        for sf in specs_dir.glob("*.json"):
+            try:
+                spec = json.loads(sf.read_text())
+                # 支持两种文件结构：
+                #   (a) 整个 pact show 输出（顶层含 "id" 和 "spec" 字段）
+                #   (b) 嵌套在 "result" 下的 pact show 输出
+                if isinstance(spec, dict) and "result" in spec and isinstance(spec["result"], dict):
+                    spec = spec["result"]
+                pid = spec.get("id") or sf.stem
+                pact_specs_map[pid] = spec
+            except Exception as e:
+                print(f"[WARN] skip {sf.name}: {e}", file=sys.stderr)
+        print(f"[INFO] Loaded {len(pact_specs_map)} pact spec(s) from {specs_dir}")
+
     # ── Phase 1: 生成 judge requests
     if args.dump_judge_requests:
         # --watch 模式：轮询 Langfuse，新 trace 出现即生成 judge request（配合 --fire-and-forget）
@@ -1972,6 +1983,7 @@ def langfuse_main() -> None:
                 trace_id,
                 items_cache,
                 eval_mode=getattr(args, "eval_mode", "standard"),
+                pact_specs=pact_specs_map or None,
             )
             if req:
                 requests.append(req)
@@ -2006,6 +2018,8 @@ def langfuse_main() -> None:
             sf_metadata.setdefault("duration_seconds", tmeta.get("duration_seconds", 0))
 
             extraction = _build_extraction_from_observations(trace, obs_list)
+            if pact_specs_map:
+                extraction = inject_backend_pact_specs(extraction, pact_specs_map)
             # tool_call_count: 所有 SPAN observations
             tool_call_count = sum(1 for o in obs_list if o.type == "SPAN")
 
@@ -2326,6 +2340,109 @@ def session_main() -> None:
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 
+def single_main() -> None:
+    """单条 trace 评分（GTM 按需评测专用）。
+
+    无需 dataset run，通过 --trace-id 和 --item-json 直接从 Langfuse 拉取 trace 评分。
+    输出 JSON 到 stdout，格式：{trace_id, item_id, scores, assertion_failures, judge_request}
+
+    用法:
+        python score_traces.py single \\
+          --trace-id <uuid> \\
+          --item-json '{"id":"E2E-GTM-001","user_message":"...","expected_output":{...},"metadata":{...}}' \\
+          [--eval-mode standard|recipe] [--recipe-mode openclaw|cc_with_recipe|cc_no_recipe]
+    """
+    import argparse as _ap
+
+    parser = _ap.ArgumentParser(description="单条 trace 评分（GTM 按需评测）")
+    parser.add_argument("subcommand", help=_ap.SUPPRESS)
+    parser.add_argument("--trace-id", required=True, help="Langfuse trace UUID")
+    parser.add_argument(
+        "--item-json",
+        required=True,
+        help="Item JSON（含 id / user_message / expected_output / metadata 字段）",
+    )
+    parser.add_argument(
+        "--eval-mode",
+        choices=["standard", "recipe"],
+        default="standard",
+    )
+    parser.add_argument(
+        "--recipe-mode",
+        choices=["cc_with_recipe", "cc_no_recipe", "openclaw"],
+        default="",
+    )
+    args = parser.parse_args()
+
+    item = json.loads(args.item_json)
+    item_id = item.get("id", "gtm-inline")
+    inp: dict = {"user_message": item.get("user_message", "")}
+    exp: dict = item.get("expected_output", item.get("expected", {}))
+    meta: dict = item.get("metadata", {})
+
+    items_cache: dict[str, tuple[dict, dict, dict]] = {item_id: (inp, exp, meta)}
+
+    lf = _make_langfuse()
+
+    # 1. 构建 judge request（无 LLM 调用，仅组装 prompt）
+    judge_req = _build_judge_req_for_item(
+        lf, item_id, args.trace_id, items_cache, eval_mode=args.eval_mode
+    )
+
+    # 2. 从 Langfuse 拉取 trace + observations
+    try:
+        trace = lf.api.trace.get(args.trace_id)
+        obs_list = _fetch_observations(lf, args.trace_id)
+    except Exception as e:
+        print(f"[ERROR] Failed to fetch trace {args.trace_id}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    extraction = _build_extraction_from_observations(trace, obs_list)
+    tool_call_count = len(obs_list)
+
+    # 3. 断言评分（skip_llm_judge=True，dry_run=True 不写 Langfuse）
+    score_result = _score_extraction(
+        extraction=extraction,
+        item_input=inp,
+        item_expected=exp,
+        item_metadata=meta,
+        trace_id=args.trace_id,
+        judge_result=None,
+        skip_llm_judge=True,
+        tool_call_count=tool_call_count,
+        dry_run=True,
+        lf=lf,
+        eval_mode=args.eval_mode,
+        recipe_mode=args.recipe_mode,
+    )
+
+    # 4. 提取失败的断言维度
+    assertion_failures = [
+        f"{k}: {v.get('reasoning', '')}"
+        for k, v in score_result.get("dimensions", {}).items()
+        if isinstance(v, dict)
+        and v.get("score", 1.0) < 0.5
+        and v.get("method") in ("gate", "assertion")
+    ]
+
+    output = {
+        "trace_id": args.trace_id,
+        "item_id": item_id,
+        "scores": {
+            "s1_intent": score_result.get("s1_score", 0.5),
+            "s2_pact": score_result.get("s2_score", 0.0),
+            "s3_execution": score_result.get("s3_score", 0.5),
+            "e2e_composite": score_result.get("composite", 0.0),
+            "task_completion": score_result.get("task_completion", 0.0),
+        },
+        "assertion_failures": assertion_failures,
+        "scoring_source": score_result.get("scoring_source", "assertion_only"),
+        "judge_request": judge_req,
+    }
+    # 给 GTM 评测端拼前缀，便于在多行诊断输出中精确捕获 JSON 行。
+    print("SCORES: " + json.dumps(output, ensure_ascii=False))
+
+
 def main() -> None:
     # Dispatch to subcommands
     if len(sys.argv) > 1 and sys.argv[1] == "session":
@@ -2334,12 +2451,16 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "langfuse":
         langfuse_main()
         return
+    if len(sys.argv) > 1 and sys.argv[1] == "single":
+        single_main()
+        return
 
     # No subcommand → show help
     print(
         "Usage:\n"
         "  python score_traces.py session  --session <path> [options]   # CC 评测：本地 .jsonl\n"
-        "  python score_traces.py langfuse --run-name X --dataset-name Y [options]  # openclaw 评测：从 Langfuse 拉数据\n\n"
+        "  python score_traces.py langfuse --run-name X --dataset-name Y [options]  # openclaw 评测：从 Langfuse 拉数据\n"
+        "  python score_traces.py single   --trace-id <uuid> --item-json '<json>'   # GTM 单条 trace 评分\n\n"
         "Use '<subcommand> --help' for details.",
         file=sys.stderr,
     )

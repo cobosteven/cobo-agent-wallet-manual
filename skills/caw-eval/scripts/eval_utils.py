@@ -145,6 +145,7 @@ def batch_upload_sessions(
     item_ids: list[str] | None = None,
     run_description: str = "",
     skip_link: bool = False,
+    item_context_override: dict[str, dict] | None = None,
 ) -> dict[str, str]:
     """批量上传 session 到 Langfuse 并（可选）关联 dataset run。
 
@@ -155,8 +156,13 @@ def batch_upload_sessions(
         run_description: 写入 Langfuse dataset run 的描述，建议包含 model/dataset/env 等信息。
         skip_link: True 时跳过 dataset_run_items 关联（trace 仍上传），适合调试少量 case 时
                    不污染 dataset run 列表。
+        item_context_override: 直接提供 item 上下文（GTM inline 模式），跳过 get_dataset_items 调用。
+                               格式：{item_id: {item_id, user_message, operation_type, difficulty}}
     """
     session_files = sorted(run_dir.glob("E2E-*.jsonl"))
+    if not session_files:
+        # 也支持非 E2E- 前缀的 session 文件（GTM inline 模式 item_id 可能是自定义格式）
+        session_files = sorted(run_dir.glob("*.jsonl"))
     if item_ids:
         session_files = [f for f in session_files if f.stem in item_ids]
 
@@ -166,20 +172,25 @@ def batch_upload_sessions(
 
     lf = get_langfuse_client()
 
-    # 建立 metadata_id (E2E-01L1) → langfuse dataset item UUID 映射
-    ds_items = get_dataset_items(dataset_name)
-    meta_to_langfuse: dict[str, str] = {item["id"]: item["langfuse_id"] for item in ds_items}
+    if item_context_override is not None:
+        # GTM inline 模式：item 不在 Langfuse dataset，跳过 get_dataset_items
+        meta_to_langfuse: dict[str, str] = {}
+        item_context: dict[str, dict] = item_context_override
+    else:
+        # 建立 metadata_id (E2E-01L1) → langfuse dataset item UUID 映射
+        ds_items = get_dataset_items(dataset_name)
+        meta_to_langfuse = {item["id"]: item["langfuse_id"] for item in ds_items}
 
-    # item 上下文，写入 trace metadata（不写入 input，input 只放 session 级信息）
-    item_context: dict[str, dict] = {
-        item["id"]: {
-            "item_id": item["id"],
-            "user_message": item.get("user_message", ""),
-            "operation_type": item.get("operation_type", ""),
-            "difficulty": item.get("difficulty", ""),
+        # item 上下文，写入 trace metadata（不写入 input，input 只放 session 级信息）
+        item_context = {
+            item["id"]: {
+                "item_id": item["id"],
+                "user_message": item.get("user_message", ""),
+                "operation_type": item.get("operation_type", ""),
+                "difficulty": item.get("difficulty", ""),
+            }
+            for item in ds_items
         }
-        for item in ds_items
-    }
 
     trace_map: dict[str, str] = {}
 

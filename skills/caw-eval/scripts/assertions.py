@@ -80,16 +80,40 @@ _QUOTED_FLAG_PATTERN = re.compile(
     re.DOTALL,
 )
 
+# 匹配 --flag $'value'（bash ANSI-C 引用，支持 \n \t \' \\ 等转义，内容可跨行）
+_DOLLAR_QUOTED_FLAG_PATTERN = re.compile(
+    r"""--(\S+)\s+\$'((?:[^'\\]|\\.)*)'""",
+    re.DOTALL,
+)
+
 # 匹配 --flag value（不带引号，取到下一个 --flag 或行尾）
 _UNQUOTED_FLAG_PATTERN = re.compile(
     r"""--(\S+)\s+(?![-'])(\S+)""",
 )
 
 
+def _unescape_ansi_c(s: str) -> str:
+    """bash ANSI-C 引用 $'...' 的转义展开：\\n → 换行, \\t → tab, \\' → ', \\\\ → \\."""
+    out = []
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if c == "\\" and i + 1 < len(s):
+            nxt = s[i + 1]
+            mapping = {"n": "\n", "t": "\t", "r": "\r", "'": "'", '"': '"', "\\": "\\", "0": "\0"}
+            if nxt in mapping:
+                out.append(mapping[nxt])
+                i += 2
+                continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def extract_pact_submit_flags(command: str) -> dict[str, str]:
     """从 pact submit 命令中提取 --intent, --policies, --completion-conditions, --execution-plan 等参数。
 
-    处理多种引用方式：双引号、单引号、无引号。
+    处理多种引用方式：双引号、单引号、无引号、bash ANSI-C (`$'...'`)。
     返回 {flag_name: value} 字典，flag_name 不含 -- 前缀。
     """
     # 规范化 shell 续行符（\[newline][spaces] → 单空格），避免正则匹配被多行格式打断
@@ -104,15 +128,22 @@ def extract_pact_submit_flags(command: str) -> dict[str, str]:
         "context",
     }
 
-    # 先用引号匹配
+    # 1. bash ANSI-C 引用 $'...'（必须在普通引号之前匹配，避免 $' 被当成 $ + '...'）
+    for m in _DOLLAR_QUOTED_FLAG_PATTERN.finditer(command):
+        flag_name = m.group(1)
+        value = m.group(2)
+        if flag_name in target_flags and value:
+            flags[flag_name] = _unescape_ansi_c(value)
+
+    # 2. 普通引号匹配
     for m in _QUOTED_FLAG_PATTERN.finditer(command):
         flag_name = m.group(1)
         value = m.group(2) if m.group(2) is not None else m.group(3)
-        if flag_name in target_flags and value:
+        if flag_name in target_flags and flag_name not in flags and value:
             # 反转义
             flags[flag_name] = value.replace('\\"', '"').replace("\\'", "'").replace("\\n", "\n")
 
-    # 补充无引号参数
+    # 3. 补充无引号参数
     for m in _UNQUOTED_FLAG_PATTERN.finditer(command):
         flag_name = m.group(1)
         value = m.group(2)
@@ -131,6 +162,49 @@ def _is_valid_json_array(text: str) -> bool:
         return False
 
 
+def _is_shell_variable(text: str) -> bool:
+    """检查是否为未展开的 shell 变量引用（如 $POLICIES、${POLICIES}）。"""
+    return bool(re.match(r"^\$\{?\w+\}?$", text.strip()))
+
+
+def _is_shell_logger_truncated(text: str) -> bool:
+    """检查字段是否因 shell quoting 导致 logger 截断（无法承载真实内容）。
+
+    常见情形：
+    - `$'...'`（bash ANSI-C 字符串）— logger 只保留前缀如 `$'#`
+    - 长度极短（< 4 字符）的单行片段但结尾残留单/双引号
+    - `<<EOF` / `<<-EOF` heredoc 标记（logger 无法跨行）
+    """
+    s = text.strip()
+    if not s:
+        return False
+    # ANSI-C 引用残片
+    if s.startswith("$'") and not s.rstrip().endswith("'"):
+        return True
+    if re.match(r"^\$\"", s) and not s.endswith('"'):
+        return True
+    if s.startswith("<<") and "EOF" in s:
+        return True
+    return False
+
+
+def _json_array_or_expanded_var(val: str, result_text: str) -> bool:
+    """检查 --policies / --completion-conditions 是否满足 gate 要求。
+
+    两种情况 pass：
+    1. 值本身是合法 JSON 数组。
+    2. 值是 shell 变量引用（$POLICIES / $COMPLETION 等），且 result_text 含 pact_id
+       —— 说明 shell 在运行时已展开变量，pact 实际提交成功，变量内容合法。
+    """
+    if _is_valid_json_array(val):
+        return True
+    if _is_shell_variable(val):
+        indirect = _extract_pact_flags_from_output(result_text)
+        if indirect.get("_pact_id"):
+            return True
+    return False
+
+
 def _is_server_error(result_text: str) -> bool:
     """检查结果是否为服务端错误（非 agent 构造问题）。"""
     server_patterns = [
@@ -143,6 +217,166 @@ def _is_server_error(result_text: str) -> bool:
     ]
     lower = result_text.lower()
     return any(p.lower() in lower for p in server_patterns)
+
+
+def _placeholder_fields(pact_flags: dict[str, str]) -> list[str]:
+    """返回 pact_flags 中因 logger/shell 限制看起来不可用的字段名列表。
+
+    两类情形都需要走 `caw pact show` 回放拿后端真实 spec：
+    1. shell 变量未展开（`$POLICIES` / `${POLICIES}`）— openclaw tool logger
+       保留了字面 argv 不展开变量
+    2. logger 截断（`$'#` / `<<EOF` 等）— agent 用 bash ANSI-C 字符串或
+       heredoc 传多行内容，logger 只抓到残片
+
+    见 harness_pact_logger_bug.md。
+    """
+    fields = []
+    for k in ("policies", "completion-conditions", "execution-plan", "intent"):
+        v = pact_flags.get(k, "")
+        if not v:
+            continue
+        if _is_shell_variable(v) or _is_shell_logger_truncated(v):
+            fields.append(k)
+    return fields
+
+
+def inject_backend_pact_specs(
+    extraction: StructuredExtraction,
+    pact_specs: dict[str, dict],
+) -> StructuredExtraction:
+    """用后端 `caw pact show` 的 spec 修复 trace 中不可见的 pact 字段。
+
+    Args:
+        extraction: 原始结构化提取结果
+        pact_specs: {pact_id: caw_pact_show_output_dict}
+
+    两条路径：
+
+    1. **占位符替换**（`_spec_source=backend_replay`）：trace 里成功识别到
+       `caw pact submit` 调用，但 pact_flags 里某些字段是 `$POLICIES` 等 shell 变量
+       占位符（openclaw logger pre-shell-expansion bug）。从 result_text 抓 pact_id
+       → 查 pact_specs → 用真实 spec 覆盖占位符字段。
+
+    2. **Fallback 注入**（`_spec_source=backend_replay_inferred`）：trace 里**完全
+       没识别到** `caw pact submit`（典型场景：logger 把整个 argv 错记为
+       `caw util abi decode` 等其他命令，parser 自然认不出）。但 trace 文本中
+       出现的 pact_id 在 pact_specs 里有匹配 → 构造一个 synthetic 的
+       ToolCallRecord 注入到 pact_tool_calls，让下游评分链路（断言 / Judge）
+       能拿到真实 spec 评分。
+    """
+    if not pact_specs:
+        return extraction
+
+    def _resolve_pact_id(call: ToolCallRecord) -> str:
+        """从 pact_flags 或 result_text 中拿 pact_id（result_text 兜底）。"""
+        return (
+            call.pact_flags.get("_pact_id")
+            or _extract_pact_flags_from_output(call.result_text).get("_pact_id")
+            or ""
+        )
+
+    matched_pact_ids: set[str] = set()
+
+    # ── 路径 1：占位符替换 / 字段为空但 pact_id 已知 ─────────────────────
+    # 触发条件二选一：
+    #   (a) pact_flags 里某些字段是 shell 占位符（`$POLICIES` 等）
+    #   (b) pact_flags 里关键字段（policies/completion/intent/execution-plan）全空，
+    #       但能从 pact_flags._pact_id 或 result_text 找到 pact_id —— 典型场景：
+    #       agent 用 caw shorthand subcommand（如 `caw pact submit-spec --file ...`）
+    #       提交，logger 无 --policies 等 flag 可记，导致字段全空但 pact_id 仍在。
+    for call in extraction.pact_tool_calls:
+        placeholders = _placeholder_fields(call.pact_flags)
+        all_empty = not any(
+            (call.pact_flags.get(k) or "").strip()
+            for k in ("policies", "completion-conditions", "execution-plan", "intent")
+        )
+        pact_id = _resolve_pact_id(call)
+        spec_full = pact_specs.get(pact_id) if pact_id else None
+        if not spec_full:
+            continue
+
+        if placeholders:
+            spec_source_tag = "backend_replay"
+            target_fields = set(placeholders)
+        elif all_empty:
+            spec_source_tag = "backend_replay_inferred"
+            target_fields = {"policies", "completion-conditions", "execution-plan", "intent"}
+        else:
+            continue
+
+        spec = spec_full.get("spec") or {}
+        if "policies" in target_fields and spec.get("policies") is not None:
+            call.pact_flags["policies"] = json.dumps(spec["policies"], ensure_ascii=False)
+        if (
+            "completion-conditions" in target_fields
+            and spec.get("completion_conditions") is not None
+        ):
+            call.pact_flags["completion-conditions"] = json.dumps(
+                spec["completion_conditions"], ensure_ascii=False
+            )
+        if "execution-plan" in target_fields and spec.get("execution_plan"):
+            call.pact_flags["execution-plan"] = spec["execution_plan"]
+        if "intent" in target_fields and spec_full.get("intent"):
+            call.pact_flags["intent"] = spec_full["intent"]
+        call.pact_flags["_spec_source"] = spec_source_tag
+        call.pact_flags["_pact_id"] = pact_id
+        matched_pact_ids.add(pact_id)
+
+    # ── 路径 2：fallback 注入（trace 里完全没识别到任何 pact submit） ──────
+    # 触发条件：所有 pact_tool_calls 都无法关联到 backend spec
+    # （包括从 result_text 兜底抓 pact_id 都对不上）。典型场景：openclaw logger
+    # 把整个 pact submit argv 错记为 `caw util abi decode` 等其他命令，parser
+    # 根本不会把它放进 pact_tool_calls。
+    existing_pact_ids: set[str] = set()
+    for c in extraction.pact_tool_calls:
+        pid = _resolve_pact_id(c)
+        if pid:
+            existing_pact_ids.add(pid)
+
+    if not (existing_pact_ids & set(pact_specs.keys())):
+        # 严格只匹配 pact submit 成功响应里出现的 pact_id：
+        # `"pact_id": "<uuid>"` 模式，避免误抓 trace 文本中漂浮的历史 UUID。
+        # 同一 trace 可能有多条 result_text 含多个历史 pact_id（caw pact list 等），
+        # 此处只取本次 submit 响应中的——通常出现在带 success=true 的 JSON 块里。
+        pact_id_pattern = re.compile(r'"pact_id"\s*:\s*"([0-9a-f-]{36})"')
+        candidates: list[str] = []
+        for c in extraction.all_tool_calls:
+            for m in pact_id_pattern.finditer(c.result_text or ""):
+                pid = m.group(1)
+                if pid in pact_specs and pid not in candidates:
+                    candidates.append(pid)
+        # 一个 trace 通常只有一个主 pact submit；如果出现多个，取第一个
+        # （时间顺序：all_tool_calls 已按调用顺序排）。
+        if candidates:
+            pact_id = candidates[0]
+            spec_full = pact_specs[pact_id]
+            spec = spec_full.get("spec") or {}
+            synthetic_flags: dict[str, str] = {
+                "_pact_id": pact_id,
+                "_spec_source": "backend_replay_inferred",
+            }
+            if spec_full.get("intent"):
+                synthetic_flags["intent"] = spec_full["intent"]
+            if spec.get("policies") is not None:
+                synthetic_flags["policies"] = json.dumps(spec["policies"], ensure_ascii=False)
+            if spec.get("completion_conditions") is not None:
+                synthetic_flags["completion-conditions"] = json.dumps(
+                    spec["completion_conditions"], ensure_ascii=False
+                )
+            if spec.get("execution_plan"):
+                synthetic_flags["execution-plan"] = spec["execution_plan"]
+            synthetic = ToolCallRecord(
+                name="caw pact submit (recovered)",
+                command="<recovered from backend pact spec>",
+                caw_op="caw.pact.submit",
+                category="auth",
+                pact_flags=synthetic_flags,
+                result_text=f'{{"result": {{"pact_id": "{pact_id}"}}, "success": true}}',
+            )
+            extraction.pact_tool_calls.append(synthetic)
+            matched_pact_ids.add(pact_id)
+
+    return extraction
 
 
 def _extract_pact_flags_from_output(result_text: str) -> dict[str, str]:
@@ -404,8 +638,10 @@ def check_pact_structure_gate(extraction: StructuredExtraction) -> GateResult:
 
         checks = {
             "intent": bool(pf.get("intent", "").strip()),
-            "policies": _is_valid_json_array(pf.get("policies", "")),
-            "completion-conditions": _is_valid_json_array(pf.get("completion-conditions", "")),
+            "policies": _json_array_or_expanded_var(pf.get("policies", ""), call.result_text),
+            "completion-conditions": _json_array_or_expanded_var(
+                pf.get("completion-conditions", ""), call.result_text
+            ),
             "execution-plan": bool(pf.get("execution-plan", "").strip()),
         }
         score = sum(checks.values())
@@ -557,16 +793,52 @@ def classify_network_diagnostics(extraction: StructuredExtraction) -> NetworkDia
 # ── 诊断标签 ─────────────────────────────────────────────────────────────────
 
 
+def _is_actual_error_response(result_text: str) -> bool:
+    """判断 tool result 是否为真实错误响应（而非 schema/help 输出中恰好含错误描述文字）。
+
+    caw CLI 的 JSON 响应约定：
+    - 成功响应有 `"success": true`（包括 `caw schema`/`caw help` 的帮助输出）
+    - 失败响应有 `"success": false` 或 `"error": true`
+
+    帮助类响应可能包含 `"exit_codes": {"5": "policy denied"}` 等错误描述字面，
+    不应被当作真实错误。
+    """
+    decoder = json.JSONDecoder()
+    text = result_text.strip()
+    pos = 0
+    while pos < len(text):
+        next_brace = text.find("{", pos)
+        if next_brace == -1:
+            return False
+        try:
+            data, end_pos = decoder.raw_decode(text, next_brace)
+        except json.JSONDecodeError:
+            pos = next_brace + 1
+            continue
+        pos = end_pos
+        if not isinstance(data, dict):
+            continue
+        if data.get("error") is True:
+            return True
+        if data.get("success") is False:
+            return True
+    return False
+
+
 def classify_diagnostics(extraction: StructuredExtraction) -> DiagnosticLabels:
-    """分类诊断标签：error_type + retry_count。"""
+    """分类诊断标签：error_type + retry_count。
+
+    只扫真实错误响应（`"success": false` / `"error": true`），避免把 `caw schema`
+    帮助输出里的 `"exit_codes": {"5": "policy denied"}` 误判为真实 denial。
+    """
     retry_count = len(extraction.pact_tool_calls)
 
-    # 从所有 tool call 结果中检测错误类型
     error_type = "none"
-    all_results = [c.result_text for c in extraction.all_tool_calls if c.result_text]
-
-    for result_text in all_results:
-        lower = result_text.lower()
+    for call in extraction.all_tool_calls:
+        text = call.result_text
+        if not text or not _is_actual_error_response(text):
+            continue
+        lower = text.lower()
         if (
             "policy_denied" in lower
             or "policy denied" in lower
@@ -612,8 +884,8 @@ def get_best_pact_submit(extraction: StructuredExtraction) -> Optional[ToolCallR
         struct_score = sum(
             [
                 bool(pf.get("intent", "").strip()),
-                _is_valid_json_array(pf.get("policies", "")),
-                _is_valid_json_array(pf.get("completion-conditions", "")),
+                _json_array_or_expanded_var(pf.get("policies", ""), call.result_text),
+                _json_array_or_expanded_var(pf.get("completion-conditions", ""), call.result_text),
                 bool(pf.get("execution-plan", "").strip()),
             ]
         )

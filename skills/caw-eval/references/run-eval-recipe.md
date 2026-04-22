@@ -1,51 +1,59 @@
 # Recipe 评测：执行步骤
 
-**本文件是 Recipe 评测（交易构建模式）的 Agent 执行指南。**
+**本文件是 Recipe 模式（交易构建评测）的 Agent 执行指南。**
+通过三种模式对比量化 recipe 的价值，不评估链上执行结果。
 
-Recipe 评测用于检验 recipe 内容是否好用、是否有问题。通过三种模式对比，量化 recipe 的价值。
+- 基础流程同 CC / Openclaw：见 [run-eval-cc.md](./run-eval-cc.md) / [run-eval-openclaw.md](./run-eval-openclaw.md)
+- 公共环境配置：见 [common-execution.md](./common-execution.md)
+- 本文档只说 Recipe 模式**特有的配置**
 
 ---
 
-## 概览
+## 三种对比模式
 
-### 三种对比模式
+| 模式 | `--recipe-mode` | 注入机制 | recipe 内容 |
+|------|:---------------:|---------|------|
+| **OpenCLAW + recipe** | `openclaw` | dispatch 自动给 gateway 注入 systemd env `CAW_RECIPE_FILE=/tmp/caw-eval-recipe.json`，每 item 覆写 | 指定测试 recipe |
+| **CC + recipe** | `cc_with_recipe` | 每 item 写 `/tmp/caw-eval-recipes/{run_name}/{item_id}.json`（`count=1` + 指定 recipe），`_run_single_cc_task` 启动 `claude` 前设进程 env | 指定测试 recipe |
+| **CC 无 recipe**（对照组） | `cc_no_recipe` | 同上但写空 recipe（`count=0, results=[]`） | 空（agent search 拿到空结果） |
 
-| 模式 | `--recipe-mode` | 说明 |
-|------|:---------------:|------|
-| **OpenCLAW + recipe** | `openclaw` | recipe 注入到 prompt，在 openclaw 服务器执行 |
-| **CC + recipe** | `cc_with_recipe` | recipe 注入到 prompt，在 Claude Code 执行 |
-| **CC 无 recipe** | `cc_no_recipe` | 不注入 recipe，纯靠 agent 自身知识（对照组） |
+**关键**：两种 CC 模式 agent **行为链路完全一致**（都自主调 `caw recipe search`），差异只在 search 返回的内容。**不得**在 prompt 里禁止 search —— 否则对照组不成立。
 
-### 评分公式
+**对照组意义**：`with 分数 − no 分数 ≈ 该 recipe 提供的价值`。
+
+**前置要求（OpenCLAW 模式）**：
+- `caw` 二进制须 ≥ 支持 `CAW_RECIPE_FILE` 的版本（D110257 已合入）
+- dispatch 会自动 SSH 每台服务器 `systemctl restart openclaw-gateway`（需 ubuntu 免密 sudo，默认都有）
+- 评测结束（非 fire-and-forget）自动 teardown，恢复 gateway 到原状态
+
+---
+
+## 评分公式
 
 ```
 综合分 = S1(意图) × 0.20 + S2(Pact) × 0.45 + S3(交易构建) × 0.35
+S2 = policies_correctness × 0.7 + completion_conditions_correctness × 0.3
+     （若 pact_structure_valid 门槛不通过 → S2 直接 = 0）
 S3 = tx_construction_correctness × 0.5 + recipe_adherence × 0.3 + tx_submission_success × 0.2
 ```
 
-无 Task Completion。仅评估交易构建，不评估链上执行。
-
-### 数据集
-
-- **`caw-recipe-eval-seth-v1`**：Recipe 场景，Ethereum Sepolia 测试链
-- 每个 item 的 `metadata.recipe` 字段包含完整 recipe 内容
-- recipe 内容直接注入到评测 prompt（有 recipe 模式）或不注入（无 recipe 模式）
+- 权重来源单一 source of truth：[scoring.md](./scoring.md)
+- 无 `task_completion`（仅评构建 / 提交，不评链上执行）
+- `cc_no_recipe` 模式：`recipe_adherence` 维度 N/A（score=0），S3 权重转给 tx_construction：
+  `S3 = tx_construction_correctness × 0.7 + tx_submission_success × 0.3`
 
 ---
 
-## Step 1: 检查环境
+## 数据集
 
-```bash
-export PATH="$HOME/.cobo-agentic-wallet/bin:$PATH"
-caw status          # 确认 healthy=true, signing_ready=true
-caw wallet balance  # 确认 SETH 有余额
-```
+- **`caw-recipe-eval-seth-v1`**：Recipe 场景，Ethereum Sepolia
+- 每个 item 的 `metadata.recipe` 字段含完整 recipe 内容
 
 ---
 
 ## Run Name 命名规范
 
-三种模式的 run_name **必须包含模式标识**，便于在 Langfuse 中区分：
+三种模式的 run_name **必须含模式标识**，便于 Langfuse 区分：
 
 | 模式 | run_name 示例 |
 |------|-------------|
@@ -53,38 +61,39 @@ caw wallet balance  # 确认 SETH 有余额
 | CC 无 recipe | `eval-cc-recipe-none-sonnet-20260416-1200` |
 | OpenCLAW + recipe | `eval-oc-recipe-with-doubao-20260416-1200` |
 
-命名格式：`eval-{环境}-recipe-{with|none}-{模型}-{时间戳}`
+格式：`eval-{环境}-recipe-{with|none}-{模型}-{时间戳}`
 
 ---
 
-## Step 2: 生成评测 prompt（三种模式各跑一次）
+## Dispatch 命令（三种模式）
 
 ```bash
 cd <repo>/cobo-agent-wallet
+export CLOUDSDK_PYTHON=/usr/bin/python3
+
+DATASET_NAME=caw-recipe-eval-seth-v1
 TS=$(date +%Y%m%d-%H%M)
 
 # 模式 1: CC + recipe
-# run_name: eval-cc-recipe-with-sonnet-${TS}
-.venv/bin/python sdk/skills/caw-eval/scripts/run_eval_cc.py prepare \
-  --dataset-name caw-recipe-eval-seth-v1 \
-  --eval-mode recipe --recipe-mode cc_with_recipe
+RUN_NAME=eval-cc-recipe-with-sonnet-${TS}
+.venv/bin/python sdk/skills/caw-eval/scripts/run_eval_cc.py dispatch \
+  --run-name "$RUN_NAME" \
+  --dataset-name "$DATASET_NAME" \
+  --eval-mode recipe --recipe-mode cc_with_recipe \
+  $(for s in "${SERVERS[@]}"; do echo --server "$s"; done)
 
-# 模式 2: CC 无 recipe
-# run_name: eval-cc-recipe-none-sonnet-${TS}
-.venv/bin/python sdk/skills/caw-eval/scripts/run_eval_cc.py prepare \
-  --dataset-name caw-recipe-eval-seth-v1 \
-  --eval-mode recipe --recipe-mode cc_no_recipe
+# 模式 2: CC 无 recipe（对照组）
+RUN_NAME=eval-cc-recipe-none-sonnet-${TS}
+.venv/bin/python sdk/skills/caw-eval/scripts/run_eval_cc.py dispatch \
+  --run-name "$RUN_NAME" \
+  --dataset-name "$DATASET_NAME" \
+  --eval-mode recipe --recipe-mode cc_no_recipe \
+  $(for s in "${SERVERS[@]}"; do echo --server "$s"; done)
 
-# 模式 3: OpenCLAW + recipe（通过 dispatch 子命令）
-# 见 Step 2b
-```
-
-### Step 2b: OpenCLAW 模式（通过 dispatch）
-
-```bash
-DATASET_NAME=caw-recipe-eval-seth-v1
-RUN_NAME=eval-oc-recipe-with-${MODEL_SHORT}-$(date +%Y%m%d-%H%M)
-
+# 模式 3: OpenCLAW + recipe
+MODEL_SHORT=doubao
+MODEL_FULL=volcengine/doubao-seed-2.0-code
+RUN_NAME=eval-oc-recipe-with-${MODEL_SHORT}-${TS}
 .venv/bin/python sdk/skills/caw-eval/scripts/run_eval_openclaw.py dispatch \
   --run-name "$RUN_NAME" \
   --dataset-name "$DATASET_NAME" \
@@ -96,42 +105,51 @@ RUN_NAME=eval-oc-recipe-with-${MODEL_SHORT}-$(date +%Y%m%d-%H%M)
 
 ---
 
-## Step 3: 执行评测
+## 评分（各模式）
 
-对每个 case 启动后台 Sonnet subagent（同标准评测 Step 3，参考 [run-eval-cc.md](./run-eval-cc.md) Step 3）。
-
-注意：recipe 模式的 prompt 已包含"交易构建模式"约束，agent 会在交易提交成功后停止，不会继续轮询。
-
----
-
-## Step 4-8: 收集 → 上传 → 评分 → 报告
-
-与标准评测流程相同（参考 [run-eval-cc.md](./run-eval-cc.md) Step 4-9），但评分时需加 `--eval-mode` 和 `--recipe-mode`：
+评分命令同 [run-eval-cc.md Step 6-8](./run-eval-cc.md) / [run-eval-openclaw.md Step 3-4](./run-eval-openclaw.md)，但需加 `--eval-mode recipe` + `--recipe-mode <mode>`：
 
 ```bash
-# 评分（以 CC + recipe 为例）
+# CC 模式（读本地 session）
 .venv/bin/python sdk/skills/caw-eval/scripts/score_traces.py session \
-  --session ~/.caw-eval/runs/{run_name}/ \
-  --dataset-name caw-recipe-eval-seth-v1 \
+  --session ~/.caw-eval/runs/$RUN_NAME/ \
+  --dataset-name "$DATASET_NAME" \
   --eval-mode recipe --recipe-mode cc_with_recipe \
-  --dump-judge-requests ~/.caw-eval/runs/{run_name}/judge_req.json
+  --dump-judge-requests ~/.caw-eval/runs/$RUN_NAME/judge_req.json
 
-# 应用 judge 结果
-.venv/bin/python sdk/skills/caw-eval/scripts/score_traces.py session \
-  --session ~/.caw-eval/runs/{run_name}/ \
-  --dataset-name caw-recipe-eval-seth-v1 \
-  --eval-mode recipe --recipe-mode cc_with_recipe \
-  --judge-results ~/.caw-eval/runs/{run_name}/judge_results.json \
-  --report
+# OpenCLAW 模式（从 Langfuse 拉数据 + 后端 pact spec 回放）
+.venv/bin/python sdk/skills/caw-eval/scripts/score_traces.py langfuse \
+  --run-name "$RUN_NAME" \
+  --dataset-name "$DATASET_NAME" \
+  --eval-mode recipe --recipe-mode openclaw \
+  --pact-specs-dir ~/.caw-eval/runs/$RUN_NAME/pact_specs \
+  --dump-judge-requests ~/.caw-eval/runs/$RUN_NAME/judge_req.json
 ```
+
+`--pact-specs-dir` 说明：dispatch 已在每个 item 跑完后自动把服务器端 `caw pact show` 输出归档到 `~/.caw-eval/runs/<run>/pact_specs/<pact_id>.json` 并 scp 回本地。传入此目录可让 score_traces 在遇到 shell 变量占位符（如 `--policies "$POLICIES"`）时用后端真实 spec 评分，而不是按字面判 0 分。详见 [harness_pact_logger_bug memory](~/.claude/projects/-Users-rocen-etl-cobo-agent-wallets/memory/harness_pact_logger_bug.md) 和 [dispatch 归档逻辑](../scripts/run_eval_openclaw.py)。
+
+应用评分时同样加这些 flag。
 
 ---
 
-## Step 9: 三模式对比报告
+## Recipe Search 诊断（必看）
 
-三次 run 完成后，生成对比报告。报告模板：
+OpenCLAW 模式下，recipe 只存在 `/tmp/caw-eval-recipe.json`，agent **必须**主动调用 `caw recipe search` 才能拿到内容。评分脚本会上传诊断指标：
 
-### 对比报告模板
+| 指标 | 含义 | 预期 |
+|------|------|------|
+| `caw.recipe_searched` | 是否执行过 `caw recipe search`（0/1） | **openclaw 模式应 = 1**，否则 agent 等于盲猜 |
+| `caw.recipe_search_count` | 调用次数 | ≥ 1 |
+
+**`recipe_searched=0` 而 E2E 较低** → 根因很可能是 agent 未 search，不是 recipe 内容有问题。写报告时区分：
+- ❌ agent 没 search → SKILL / Prompt 指令问题（不能归咎于 recipe）
+- ✅ agent search 了但结果不好 → recipe 内容或 agent 使用 recipe 的能力问题
+
+---
+
+## 三模式对比报告模板
+
+三次 run 完成后生成对比报告：
 
 ```markdown
 # Recipe 评测对比报告
@@ -154,15 +172,13 @@ RUN_NAME=eval-oc-recipe-with-${MODEL_SHORT}-$(date +%Y%m%d-%H%M)
 | recipe_adherence | - | - | N/A |
 | tx_submission | - | - | - |
 
-## 3. 网络命令使用对比
+## 3. 网络命令使用对比（诊断）
 
 | 指标 | OpenCLAW | CC+Recipe | CC 无 Recipe |
 |------|:-------:|:---------:|:----------:|
-| 网络命令总数 | - | - | - |
-| curl 调用 | - | - | - |
-| web_search | - | - | - |
-| web_fetch | - | - | - |
 | recipe search | - | - | - |
+| curl 调用 | - | - | - |
+| web_search / web_fetch | - | - | - |
 
 ## 4. Recipe 质量分析
 
@@ -179,11 +195,14 @@ RUN_NAME=eval-oc-recipe-with-${MODEL_SHORT}-$(date +%Y%m%d-%H%M)
 
 ---
 
-## Troubleshooting
+## Troubleshooting（Recipe 专有）
 
 | 问题 | 解决 |
 |------|------|
 | recipe 内容未注入 | 确认 dataset item 的 `metadata.recipe` 字段非空 |
-| agent 仍然执行了链上交易 | 检查 prompt 是否包含"交易构建模式"约束 |
-| recipe_adherence 全为 0 | CC 无 recipe 模式下正常（N/A），有 recipe 模式应检查 judge prompt |
-| agent 使用了 caw recipe search | prompt 已禁用，若仍使用说明 agent 未遵循约束，可在报告中标注 |
+| agent 仍然执行了链上交易（不该） | 检查 prompt 是否含"交易构建模式"约束段 |
+| `recipe_adherence` 全为 0 | `cc_no_recipe` 模式下正常（N/A）；有 recipe 模式应检查 judge prompt |
+| openclaw 模式 `recipe_searched=0` 占比高 | SKILL.md "Recipe search first" 指令需强化；也可能模型本身跳过 search 倾向强 |
+| dispatch 报 recipe_hash_match=false | 服务器 archive 和本地 dataset 字节不一致；重新跑 sync_to_servers.sh + dispatch |
+
+其余通用问题见 [common-execution.md](./common-execution.md)。
