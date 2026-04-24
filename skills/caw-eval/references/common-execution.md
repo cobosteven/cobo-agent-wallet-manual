@@ -6,15 +6,17 @@
 
 ## gcloud Python 兼容性
 
-如果 `gcloud` 报 `ModuleNotFoundError: No module named 'imp'`，系统 Python ≥ 3.12 和 gcloud SDK ≤ 377 不兼容。
+gcloud ≥ 500 需要 **Python 3.10+**（源码用 PEP 604 `X | None` 语法）。macOS 自带 `/usr/bin/python3` 是 3.9，会报 `unsupported operand type(s) for |: 'type' and 'NoneType'`。用 homebrew 装的 Python：
 
 ```bash
 # 一次性 export，dispatch 命令执行前必须带
-export CLOUDSDK_PYTHON=/usr/bin/python3   # macOS 自带 Python 3.9
-# 若不存在，用 brew install python@3.11 后改成 /opt/homebrew/bin/python3.11
+export CLOUDSDK_PYTHON=/opt/homebrew/bin/python3.11
+# 若无 brew Python，先 brew install python@3.11
 ```
 
-验证：`CLOUDSDK_PYTHON=/usr/bin/python3 gcloud version` 应正常输出版本号。
+验证：`CLOUDSDK_PYTHON=/opt/homebrew/bin/python3.11 gcloud version` 应正常输出版本号。
+
+**历史兼容（仅升级前适用）**：gcloud ≤ 377 与 Python ≥ 3.12 不兼容（`ModuleNotFoundError: No module named 'imp'`），当时需要指向 `/usr/bin/python3`（3.9）。升级 gcloud 到 565+ 后反转：3.9 不再可用，必须 3.10+。
 
 ---
 
@@ -57,18 +59,12 @@ caw:       /home/ubuntu/.cobo-agentic-wallet/bin/caw
 
 ```bash
 cd <repo>
-git fetch origin master
-
-# 本地无未提交改动时：直接 rebase
-git rev-list --count HEAD..origin/master   # 若 >0 则落后
 git pull --rebase origin master
-
-# 若本地有正在修改的 eval 文件：stash → pull → pop
-git status -sb
-git stash push -m "pre-eval-sync" -- cobo-agent-wallet/sdk/skills/caw-eval
-git pull --rebase origin master
-git stash pop   # 有冲突就手动解
 ```
+
+**不要对本地未提交修改做 stash/pop**。直接 `git pull`：
+- 无冲突：继续下一步
+- 有冲突：**停下来**，把冲突文件列表告诉用户让其手动解决（Agent 不替用户解 eval 文件的冲突，因为这些修改通常是用户正在调试的工作副本）
 
 校验：`git rev-list --left-right --count HEAD...origin/master` 应输出 `0\t0`（完全同步）或仅本地领先。落后 origin 时不得进入下一步。
 
@@ -93,7 +89,7 @@ bash sdk/skills/caw-eval/scripts/sync_to_servers.sh --component scripts --verify
 ### Fallback：手动 tar pipe（无 Go 工具链、无 sync_to_servers.sh 时）
 
 ```bash
-export CLOUDSDK_PYTHON=/usr/bin/python3
+export CLOUDSDK_PYTHON=/opt/homebrew/bin/python3.11
 REPO=~/etl/cobo-agent-wallets
 
 for spec in "${SERVERS[@]}"; do
@@ -142,7 +138,8 @@ mkdir -p ~/.agents/skills/caw-eval/scripts/
 
 | 问题 | 解决 |
 |------|------|
-| `gcloud` 报 `No module named 'imp'` | `export CLOUDSDK_PYTHON=/usr/bin/python3`（本文"gcloud Python 兼容性"段） |
+| `gcloud` 报 `unsupported operand type(s) for \|: 'type' and 'NoneType'` | gcloud ≥ 565 需 Python 3.10+，`export CLOUDSDK_PYTHON=/opt/homebrew/bin/python3.11`（本文"gcloud Python 兼容性"段） |
+| `gcloud` 报 `No module named 'imp'`（仅 gcloud ≤ 377） | 已废弃场景：升级 gcloud 到 565+ 并用 Python 3.10+ |
 | 某台 IAP 连接失败 | 单独跑一次 `gcloud compute ssh ...` 确认，必要时 `gcloud auth login` |
 | `AttributeError: 'Langfuse' object has no attribute 'api'` | 服务器 langfuse 版本过新：`pip3 install --user --break-system-packages "langfuse==4.0.6"` |
 | `Agent "eval-xxx" already exists` | 上次异常残留。脚本已内置预清理；手动：`openclaw agents delete eval-xxx --force` |

@@ -33,7 +33,13 @@ S1 只有一个 LLM 维度。参数正确性由 S2（pact 参数）和 S3（tx �
 |------|:----:|:----:|---------|
 | pact_structure_valid | 门槛 | 断言 | 至少一次 `caw pact submit` 且参数结构完整。**不通过 → S2 直接 = 0** |
 | policies_correctness | 0.7 | LLM | `--policies` JSON 是否与用户意图匹配：chain_in/token_in/contract 是否正确、deny_if 限额是否合理、scope 是否最小化 |
-| completion_conditions_correctness | 0.3 | LLM | `--completion-conditions` JSON 是否合理：type 选择（tx_count/amount_spent_usd/time_elapsed）、threshold 值 |
+| completion_conditions_correctness | 0.3 | LLM | `--completion-conditions` JSON 是否合理：type 选择（tx_count/amount_spent_usd/time_elapsed）、threshold 值（含"合理降级"规则，见下） |
+
+**threshold 合理降级规则**（仅 ERC20 contract_call 场景，checklist 期望值 = approve + op 最坏情况 tx 数）：
+
+- Agent `threshold < 期望` + session 有 allowance 查询证据（`0xdd62ed3e` eth_call 或 `caw token allowance`，返回值 ≥ 操作金额）→ 合理降级，不扣分
+- Agent `threshold < 期望` + 无证据 → 盲目降级，扣 0.3-0.5
+- 其他偏差（`threshold > 期望`、type 错误）按原口径评分
 
 **门槛断言细则**（pact_structure_valid）：
 - 至少存在一次 `caw pact submit` 调用

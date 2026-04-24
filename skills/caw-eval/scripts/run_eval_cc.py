@@ -263,6 +263,8 @@ async def _revoke_active_pacts_async() -> None:
         if proc.returncode != 0:
             return
         pacts = json.loads(stdout.decode()).get("result", {}).get("pacts", [])
+        ok = 0
+        failed: list[str] = []
         for p in pacts:
             pid = p.get("id", "")
             if not pid:
@@ -271,13 +273,21 @@ async def _revoke_active_pacts_async() -> None:
                 str(_CAW_BIN),
                 "pact",
                 "revoke",
+                "--pact-id",
                 pid,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             await asyncio.wait_for(rp.communicate(), timeout=10)
+            if rp.returncode == 0:
+                ok += 1
+            else:
+                failed.append(pid[:8])
         if pacts:
-            print(f"  revoked {len(pacts)} active pact(s)")
+            status = f"revoked {ok}/{len(pacts)} active pact(s)"
+            if failed:
+                status += f" (failed: {', '.join(failed)})"
+            print(f"  {status}")
     except (asyncio.TimeoutError, json.JSONDecodeError, OSError):
         pass
 
@@ -316,11 +326,19 @@ async def _run_single_cc_task(
     # 让 caw recipe search 自动读本地文件，不再依赖 prompt 前缀。
     # 两种模式下 archive 文件内容不同（测试目标 recipe vs 空对照），
     # agent 行为一致：都按真实用户流程自主 search。
+    #
+    # 同时注入 CAW_TELEMETRY=0：caw 在 CAW_RECIPE_FILE 分支里 emit 后会把 telEnabled
+    # 改为 false，但此时 telemetryPreRun 已经替换了 os.Stdout 并起了 tee goroutine；
+    # telemetryPostRun 看到 telEnabled=false 直接早退，不排空 pipe，导致进程退出时
+    # tee goroutine 被强杀，CC Bash 拿到 0 字节 → "(Bash completed with no output)"。
+    # CAW_TELEMETRY=0 在 init 阶段就关掉，telemetryPreRun 直接跳过整个 stdout 劫持，
+    # 与 OC 评测路径（systemd drop-in 同时设这两个 env）对齐。
     child_env = os.environ.copy()
     if recipe_mode in ("cc_with_recipe", "cc_no_recipe") and run_name:
         archive_file = _recipe_archive_path(run_name, item_id)
         if archive_file.exists():
             child_env["CAW_RECIPE_FILE"] = str(archive_file)
+            child_env["CAW_TELEMETRY"] = "0"
 
     print(f"STAGE: claude_start item={item_id} sid={session_id}", flush=True)
     proc = await asyncio.create_subprocess_exec(
@@ -775,9 +793,21 @@ async def _dispatch_worker_cc(
                 stderr=asyncio.subprocess.STDOUT,
                 env=_gcloud_env(),
             )
-            rc = await proc.wait()
+            # SSH 层硬超时：item_timeout + 60s 余量，防止 IAP tunnel / 远端僵尸拖死整个 dispatch
+            ssh_timeout = timeout + 60
+            try:
+                rc = await asyncio.wait_for(proc.wait(), timeout=ssh_timeout)
+            except asyncio.TimeoutError:
+                f.write(f"\n# SSH timeout after {ssh_timeout}s, killing local ssh subprocess\n")
+                f.flush()
+                proc.kill()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=10)
+                except asyncio.TimeoutError:
+                    pass
+                rc = -1
 
-        status = "ok" if rc == 0 else f"ssh_rc_{rc}"
+        status = "ok" if rc == 0 else ("ssh_timeout" if rc == -1 else f"ssh_rc_{rc}")
         if rc == 0:
             remote_session = f"/tmp/caw-eval-cc-sessions/{item_id}.jsonl"
             local_session = local_run_dir / f"{item_id}.jsonl"
@@ -894,27 +924,33 @@ async def _remote_content_hash(srv: dict, remote_path: str, is_file: bool) -> st
     return stdout.strip() or "error"
 
 
-def _write_recipe_manifest(items: list[dict], run_dir: Path) -> dict:
+def _write_recipe_manifest(items: list[dict], run_dir: Path, recipe_mode: str = "") -> dict:
     """L2a: 本地对每个 item 的 recipe 算 sha256，写 recipe_manifest.json。
 
     dispatch 后的 postcheck 用这个作为 ground truth 和服务器上 archive 文件对比。
+    cc_no_recipe 模式下，服务器写空 archive（_write_empty_recipe_archive），
+    所以 manifest 必须强制记成空，否则 postcheck 会恒 FAIL（本地期望 dataset recipe hash，
+    服务器实际是空字符串的 sha256）。
     """
     import hashlib as _hl
+
+    expect_empty = recipe_mode == "cc_no_recipe"
 
     manifest: dict[str, dict] = {}
     for item in items:
         recipe_content = item.get("recipe", "") or ""
-        if recipe_content:
+        if recipe_content and not expect_empty:
             manifest[item["id"]] = {
                 "recipe_hash": _hl.sha256(recipe_content.encode()).hexdigest()[:16],
                 "recipe_length": len(recipe_content),
                 "has_recipe": True,
             }
         else:
+            # 两种情况：(1) dataset 本身没 recipe；(2) cc_no_recipe 模式强制空 archive
             manifest[item["id"]] = {
-                "recipe_hash": "",
+                "recipe_hash": _hl.sha256(b"").hexdigest()[:16],
                 "recipe_length": 0,
-                "has_recipe": False,  # cc_no_recipe 模式，archive 应为空
+                "has_recipe": False,
             }
     manifest_file = run_dir / "recipe_manifest.json"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -928,19 +964,30 @@ async def _verify_recipe_archives(
     run_name: str,
     recipe_mode: str,
     local_manifest: dict,
+    item_server_map: dict[str, str],
 ) -> dict:
-    """L2b: dispatch 完成后 SSH 每台服务器读 archive，算 hash 对比本地 manifest。
+    """L2b: dispatch 完成后 SSH 读每个 item 真正运行过的那台服务器的 archive。
 
     对 cc_with_recipe / cc_no_recipe：
       - 读 /tmp/caw-eval-recipes/{run}/{item}.json
       - 抽 result.data.results[0].content（空则视为 no_recipe）
       - sha256 对比本地 manifest
-    任一 item 在任一服务器不一致 → 记录到 mismatches。
+    dispatch 是动态队列，每个 item 只运行在 1 台服务器上，archive 也只写在那台；
+    若按笛卡尔积 M×N 探测其他服务器会产生大量"文件不存在"的伪 mismatch。
+    item_server_map: item_id → server_name，由 _dispatch_worker_cc 成功跑完后写入。
+    未出现在映射里的 item（如 ssh_timeout / no_session）跳过验证。
     """
     if recipe_mode not in ("cc_with_recipe", "cc_no_recipe"):
         return {"mode": recipe_mode, "skipped": True}
 
-    results: dict = {"mode": recipe_mode, "mismatches": [], "all_match": True, "details": {}}
+    results: dict = {
+        "mode": recipe_mode,
+        "mismatches": [],
+        "all_match": True,
+        "details": {},
+        "skipped_items": [],
+    }
+    server_by_name = {s["name"]: s for s in servers}
 
     # 服务器端算 archive 的 content hash（Python inline）
     def _probe_cmd(remote_path: str) -> str:
@@ -958,46 +1005,49 @@ async def _verify_recipe_archives(
             "PYEOF"
         )
 
-    for srv in servers:
-        srv_name = srv["name"]
-        results["details"][srv_name] = {}
-        for item in items:
-            item_id = item["id"]
-            expected = local_manifest.get(item_id, {})
-            remote_path = f"/tmp/caw-eval-recipes/{run_name}/{item_id}.json"
-            rc, stdout, _ = await _ssh_exec_ubuntu(srv, _probe_cmd(remote_path))
-            line = stdout.strip().splitlines()[-1] if stdout.strip() else ""
+    for item in items:
+        item_id = item["id"]
+        srv_name = item_server_map.get(item_id)
+        srv = server_by_name.get(srv_name) if srv_name else None
+        if srv is None:
+            results["skipped_items"].append(item_id)
+            continue
 
-            if line.startswith("error="):
-                # archive 文件不存在或解析失败
-                match = False
-                actual_hash = ""
-                actual_len = 0
-                err = line[6:]
-            elif line.startswith("hash="):
-                # 解析 `hash=xxx len=N`
-                parts = dict(p.split("=", 1) for p in line.split() if "=" in p)
-                actual_hash = parts.get("hash", "")
-                actual_len = int(parts.get("len", "0"))
-                match = actual_hash == expected.get("recipe_hash", "")
-                err = ""
-            else:
-                match = False
-                actual_hash = ""
-                actual_len = 0
-                err = f"unexpected output: {line!r}"
+        expected = local_manifest.get(item_id, {})
+        remote_path = f"/tmp/caw-eval-recipes/{run_name}/{item_id}.json"
+        rc, stdout, _ = await _ssh_exec_ubuntu(srv, _probe_cmd(remote_path))
+        line = stdout.strip().splitlines()[-1] if stdout.strip() else ""
 
-            results["details"][srv_name][item_id] = {
-                "expected_hash": expected.get("recipe_hash", ""),
-                "actual_hash": actual_hash,
-                "expected_len": expected.get("recipe_length", 0),
-                "actual_len": actual_len,
-                "match": match,
-                "error": err,
-            }
-            if not match:
-                results["mismatches"].append(f"{item_id}@{srv_name}")
-                results["all_match"] = False
+        if line.startswith("error="):
+            # archive 文件不存在或解析失败
+            match = False
+            actual_hash = ""
+            actual_len = 0
+            err = line[6:]
+        elif line.startswith("hash="):
+            # 解析 `hash=xxx len=N`
+            parts = dict(p.split("=", 1) for p in line.split() if "=" in p)
+            actual_hash = parts.get("hash", "")
+            actual_len = int(parts.get("len", "0"))
+            match = actual_hash == expected.get("recipe_hash", "")
+            err = ""
+        else:
+            match = False
+            actual_hash = ""
+            actual_len = 0
+            err = f"unexpected output: {line!r}"
+
+        results["details"].setdefault(srv_name, {})[item_id] = {
+            "expected_hash": expected.get("recipe_hash", ""),
+            "actual_hash": actual_hash,
+            "expected_len": expected.get("recipe_length", 0),
+            "actual_len": actual_len,
+            "match": match,
+            "error": err,
+        }
+        if not match:
+            results["mismatches"].append(f"{item_id}@{srv_name}")
+            results["all_match"] = False
 
     return results
 
@@ -1205,7 +1255,7 @@ async def _cmd_dispatch(
         print("\n=== 3/4 precheck SKIPPED（--no-precheck） ===")
 
     # L2a: dispatch 前写本地 recipe_manifest.json（recipe hash 的 ground truth）
-    recipe_manifest = _write_recipe_manifest(items, local_run_dir)
+    recipe_manifest = _write_recipe_manifest(items, local_run_dir, recipe_mode)
     if recipe_mode in ("cc_with_recipe", "cc_no_recipe"):
         print(
             f"  [OK] recipe_manifest.json -> {len(recipe_manifest)} items "
@@ -1237,19 +1287,26 @@ async def _cmd_dispatch(
     ]
     await asyncio.gather(*workers)
 
-    # L2b: postcheck —— SSH 读服务器上的 archive，对比本地 manifest
+    # L2b: postcheck —— 按 item→server 映射，只探测真正运行过该 item 的那台服务器
     if recipe_mode in ("cc_with_recipe", "cc_no_recipe"):
         print("\n=== Recipe archive postcheck（本地 dataset vs 服务器 archive hash 对比）===")
+        item_to_server = {
+            iid: srv_name for iid, (srv_name, status) in item_results.items() if status == "ok"
+        }
         verify_result = await _verify_recipe_archives(
-            free_servers, items, run_name, recipe_mode, recipe_manifest
+            free_servers, items, run_name, recipe_mode, recipe_manifest, item_to_server
         )
         all_match = verify_result.get("all_match", True)
         mismatches = verify_result.get("mismatches", [])
+        skipped = verify_result.get("skipped_items", [])
+        checked = len(items) - len(skipped)
+        skip_note = f"（跳过 {len(skipped)} 个未成功跑完的 item）" if skipped else ""
         if all_match:
-            print(f"  [OK] 所有 {len(items)}×{len(free_servers)} archive hash 和 dataset 一致")
+            print(f"  [OK] {checked}/{len(items)} item archive hash 与 dataset 一致{skip_note}")
         else:
             print(
-                f"  [FAIL] {len(mismatches)} 处不一致：{mismatches[:5]}{'...' if len(mismatches) > 5 else ''}"
+                f"  [FAIL] {checked}/{len(items)} 中 {len(mismatches)} 处不一致{skip_note}："
+                f"{mismatches[:5]}{'...' if len(mismatches) > 5 else ''}"
             )
             print("         具体差异见 deployment_snapshot.json / recipe_verification 段")
         # 写入 deployment_snapshot

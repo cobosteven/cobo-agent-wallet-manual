@@ -33,10 +33,12 @@ from typing import Optional
 # ── caw 操作分类表 ─────────────────────────────────────────────────────────────
 
 CAW_OP_TABLE = [
+    # onboard（更具体的子命令必须在 bare "onboard" 之前，否则被前缀匹配吃掉）
     (["onboard bootstrap"], "caw.onboard.bootstrap", "onboarding"),
     (["onboard health"], "caw.onboard.health", "onboarding"),
     (["onboard self-test"], "caw.onboard.self_test", "onboarding"),
     (["onboard"], "caw.onboard", "onboarding"),
+    # tx
     (["tx transfer"], "caw.tx.transfer", "transaction"),
     (["tx call"], "caw.tx.call", "transaction"),
     (["tx sign-message"], "caw.tx.sign_message", "transaction"),
@@ -46,6 +48,7 @@ CAW_OP_TABLE = [
     (["tx estimate-call-fee"], "caw.tx.estimate_call_fee", "query"),
     (["tx list"], "caw.tx.list", "query"),
     (["tx get"], "caw.tx.get", "query"),
+    # wallet
     (["wallet balance"], "caw.wallet.balance", "query"),
     (["wallet list"], "caw.wallet.list", "query"),
     (["wallet get"], "caw.wallet.get", "query"),
@@ -55,9 +58,11 @@ CAW_OP_TABLE = [
     (["wallet rename"], "caw.wallet.rename", "wallet"),
     (["wallet archive"], "caw.wallet.archive", "wallet"),
     (["wallet update"], "caw.wallet.update", "wallet"),
+    # address
     (["address create"], "caw.address.create", "wallet"),
     (["address list"], "caw.address.list", "query"),
     (["status"], "caw.status", "query"),
+    # pending / pact / approval（approval 当前 main.go 中注释掉，保留以防恢复）
     (["pending approve"], "caw.pending.approve", "auth"),
     (["pending reject"], "caw.pending.reject", "auth"),
     (["pending list"], "caw.pending.list", "auth"),
@@ -68,12 +73,11 @@ CAW_OP_TABLE = [
     (["pact events"], "caw.pact.events", "auth"),
     (["pact list"], "caw.pact.list", "auth"),
     (["pact revoke"], "caw.pact.revoke", "auth"),
-    (["pact update-conditions"], "caw.pact.update_conditions", "auth"),
-    (["pact update-policies"], "caw.pact.update_policies", "auth"),
     (["approval create"], "caw.approval.create", "auth"),
     (["approval resolve"], "caw.approval.resolve", "auth"),
     (["approval list"], "caw.approval.list", "auth"),
     (["approval get"], "caw.approval.get", "auth"),
+    # track / node
     (["track"], "caw.track", "monitor"),
     (["node status"], "caw.node.status", "node"),
     (["node start"], "caw.node.start", "node"),
@@ -82,21 +86,39 @@ CAW_OP_TABLE = [
     (["node health"], "caw.node.health", "node"),
     (["node info"], "caw.node.info", "node"),
     (["node logs"], "caw.node.logs", "node"),
+    # meta
     (["meta chain-info"], "caw.meta.chain_info", "meta"),
     (["meta search-tokens"], "caw.meta.search_tokens", "meta"),
     (["meta prices"], "caw.meta.prices", "meta"),
     (["meta chains"], "caw.meta.chains", "meta"),
     (["meta tokens"], "caw.meta.tokens", "meta"),
+    # faucet / update
     (["faucet deposit"], "caw.faucet.deposit", "dev"),
     (["faucet tokens"], "caw.faucet.tokens", "dev"),
     (["update"], "caw.update", "meta"),
+    # recipe（仅 search，list/get 保留以防后续引入）
     (["recipe search"], "caw.recipe.search", "knowledge"),
     (["recipe list"], "caw.recipe.list", "knowledge"),
     (["recipe get"], "caw.recipe.get", "knowledge"),
+    # fetch / schema / export-key / demo
     (["fetch"], "caw.fetch", "util"),
     (["export-key"], "caw.export_key", "wallet"),
     (["demo"], "caw.demo", "dev"),
     (["schema"], "caw.schema", "meta"),
+    # util（754016d4/42ce7ec1 引入，更具体的子命令必须排前）
+    (["util abi encode"], "caw.util.abi_encode", "util"),
+    (["util abi decode"], "caw.util.abi_decode", "util"),
+    (["util abi selector"], "caw.util.abi_selector", "util"),
+    (["util abi call"], "caw.util.abi_call", "util"),
+    (["util eth-call"], "caw.util.eth_call", "util"),
+    (["util base64"], "caw.util.base64", "util"),
+    # payment（mpp）
+    (["payment session list"], "caw.payment.session_list", "payment"),
+    (["payment session close-all"], "caw.payment.session_close_all", "payment"),
+    (["payment session close"], "caw.payment.session_close", "payment"),
+    (["payment session withdraw"], "caw.payment.session_withdraw", "payment"),
+    (["payment gateway"], "caw.payment.gateway", "payment"),
+    # meta
     (["version", "--version"], "caw.version", "meta"),
     (["--help", "-h"], "caw.help", "meta"),
 ]
@@ -326,14 +348,33 @@ def extract_caw_flags(subcmd: str) -> dict:
     subcmd = re.sub(r"\\\n\s*", " ", subcmd)
     flags = {}
     for flag, key in [
+        # 目的/来源地址：2026-04-16 T91804 后 --to → --dst-address，--src-addr → --src-address
+        # 但 --to 仍用于 util eth-call / util abi call 表示合约地址，所以保留抓取（语义靠 caw_op 区分）
+        (r"--dst-address\s+(\S+)", "dst_address"),
+        (r"--src-address\s+(\S+)", "src_address"),
         (r"--to\s+(\S+)", "to_address"),
+        # pact / tx / operation id（T91804 位置参数 → flag 形式）
+        (r"--pact-id\s+(\S+)", "pact_id"),
+        (r"--tx-id\s+(\S+)", "tx_id"),
+        (r"--operation-id\s+(\S+)", "operation_id"),
+        # token / amount / chain
         (r"--token-id\s+(\S+)", "token_id"),
         (r"--amount\s+(\S+)", "amount"),
         (r"--chain\s+(\S+)", "chain"),
+        (r"--chain-id\s+(\S+)", "chain_id"),
+        # 请求标识
         (r"--request-id\s+(\S+)", "request_id"),
         (r"--wallet-id\s+(\S+)", "wallet_id"),
-        (r"--env\s+(\S+)", "env"),
+        # 合约调用
         (r"--contract\s+(\S+)", "contract"),
+        (r"--calldata\s+(\S+)", "calldata"),
+        (r"--data\s+(\S+)", "data"),
+        # ABI / recipe
+        (r"--method\s+\"([^\"]+)\"", "method"),
+        (r"--signature\s+\"([^\"]+)\"", "signature"),
+        (r"--query\s+\"([^\"]+)\"", "query"),
+        # 其他
+        (r"--env\s+(\S+)", "env"),
         (r"--context\s+'([^']+)'", "context"),
     ]:
         hit = re.search(flag, subcmd)

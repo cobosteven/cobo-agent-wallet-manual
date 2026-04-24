@@ -35,11 +35,13 @@ Session 数据通过 Langfuse API 读取，**无需 scp 下载**。
 [[ "$(hostname)" == *openclaw* ]] && echo "env=openclaw" || echo "env=local"
 ```
 
-`env=local` 才能跑本流程。然后 `export CLOUDSDK_PYTHON=/usr/bin/python3`。
+`env=local` 才能跑本流程。然后 `export CLOUDSDK_PYTHON=/opt/homebrew/bin/python3.11`。
 
 ---
 
 ## Step 1: 服务器池选择 + 模型对齐检查
+
+> **Openclaw 服务器 sessions prune**: 9 台评测服务器每周日 03:00 UTC 由 `/etc/cron.d/openclaw-prune` 自动清理 sessions.json 孤儿，防止 `agents add` 超 30s 静默失败（参数：window-days=7, keep-backups=4）。脚本**只部署在服务器**：`~/.agents/skills/caw-eval/scripts/prune_openclaw_sessions.sh`（本地 repo 不保留，`sync_to_servers.sh` 已排除）。遇 `agents add` 超时 → SSH 上去 `sudo bash -c "sudo systemctl stop openclaw-gateway && bash /home/ubuntu/.agents/skills/caw-eval/scripts/prune_openclaw_sessions.sh --smoke-test"` 手动触发。需要改清理规则：从任一服务器 `sudo cat` 取回脚本 → 修改 → 用 `gcloud compute scp` 推回各台。
 
 服务器按模型分组（每组 3 台，格式 `name:zone:project`）：
 
@@ -152,7 +154,7 @@ swap 涉及 wrap→approve→swap 三步链上交易，单台约 2-5 分钟。
 
 见 [common-execution.md 的"服务器同步"段](./common-execution.md)。
 
-**先 `git pull` 拉最新 master**（见 common-execution.md "前置：拉取最新 master"），再执行 sync，否则服务器上跑的是过时 skill/scripts。
+**先 `git pull` 拉最新 master**（见 common-execution.md "前置：拉取最新 master"），再执行 sync，否则服务器上跑的是过时 skill/scripts。**不要 stash 本地未提交修改**；若 `git pull` 有冲突，停下来让用户手动解。
 
 推荐：
 
@@ -289,18 +291,29 @@ print(f'merged {len(results)} judge results')
 
 ### 5.1 步骤
 1. Read `~/.caw-eval/runs/{run_name}/judge_results.json` 按 e2e_composite 排序
-2. 低分 case（任一维度 <0.7）再 Read `judge_req.json` 里对应 item 的 `session_text` / `pact_section` 追根因
-3. 疑似 SKILL 指令缺陷时 Read `cobo-agent-wallet/sdk/skills/cobo-agentic-wallet-sandbox/` 对应文件验证
+2. **写 P0/P1 finding 之前**，先 grep 对应 case 的 session 原文（`req_<ITEM>.txt`）拿 error excerpt——这是最便宜的证据来源，比读源码快 10 倍：
+   ```bash
+   grep -B1 -A5 -iE "error|validation|failed|denied|exception|revert" \
+     ~/.caw-eval/runs/{run_name}/req_<ITEM>.txt | head -40
+   ```
+3. 低分 case（任一维度 <0.7）再 Read `judge_req.json` 里对应 item 的 `session_text` / `pact_section` 追根因
+4. 疑似**产品源码**（后端 / CLI）问题时 Read `cobo-agent-wallet/src/app/` 或 `cobo-agent-wallet/sdk/go/` 对应文件验证（归 🔴 产品代码）
+5. 疑似 SKILL 指令缺陷时 Read `cobo-agent-wallet/sdk/skills/cobo-agentic-wallet-sandbox/` 对应文件验证
    - Openclaw 模式 skill 路径是 `cobo-agentic-wallet-sandbox`（非 `-dev`）
-4. 输出到 `cobo-agent-wallet/sdk/skills/caw-eval/reports/eval-report-{run_name}.md`
+6. 输出到 `cobo-agent-wallet/sdk/skills/caw-eval/reports/eval-report-{run_name}.md`
 
 ### 5.2 分析要求
+- **深度分析硬性要求（所有 finding 适用）**：见 [issue-attribution.md "深度分析硬性要求"](./issue-attribution.md#深度分析硬性要求所有-finding-适用不分层)
+  - 四段式 **现象 → 证据（含 file:line/字段/log 锚点）→ 根因 → Action Item**
+  - **每条 finding 必须严格按 [issue-attribution.md 强制 Markdown 模板](./issue-attribution.md#强制-markdown-模板每条-finding-必用)**（证据是独立一行，不能塞进根因段里混合叙事）
+  - 证据必须本会话真实 Read 过；找不到证据的 finding 降级为 `🔍 疑似` 且首条 Action 是"验证步骤"（见 [降级版模板](./issue-attribution.md#强制-markdown-模板每条-finding-必用)）
+  - 🔵/🟢/🟡/🟤/🟠/🔴/🟣 任意层的根因都要读相应证据，不要因层次分布"看起来不对"就跳层归因
+- **问题归因（必做）**：每条 finding 按 7 层标注（🔵 SKILL / 🟢 评分体系 / 🟡 数据集 / 🟤 Recipe / 🟠 评测工具链 / 🔴 产品代码 / 🟣 运行环境），细则见 [issue-attribution.md](./issue-attribution.md)
+  - 报告里**同时**出现在两处：(a) 每条 finding 标注（行内 emoji）(b) 单独一节"归因分层汇总"聚合统计
+  - 🟠 vs 🔴 判别：问题代码在 `sdk/skills/caw-eval/scripts/` 里 → 🟠；在 `src/app/` 或 `sdk/go/` 里 → 🔴
 - Sonnet baseline 对比（如有同数据集历史 run）
-- **问题归因**：每条 finding 按 5 层标注（🔵 SKILL / 🟢 评分体系 / 🟡 数据集 / 🟠 评测工具链 / 🟣 运行环境），细则见 [issue-attribution.md](./issue-attribution.md)
 - P0/P1/P2 按"风险严重度 × 发生频率 × 修复成本"排序
 - 上线建议三选一：可上 / 有条件上 / 建议延期
-- 断言必须指向具体 case / tx / 代码行
-- 失败 case 用"现象 → 根因 → Action Item"三段式
 
 ### 5.3 报告结构
 1. 总览（E2E + 任务完成率 + baseline 对比）
@@ -311,7 +324,8 @@ print(f'merged {len(results)} judge results')
 6. 高频失败模式
 7. 与基线对比分析
 8. 改进建议（P0/P1/P2）
-9. 修复收益预测
+9. **归因分层汇总（必做）** — 按 🔵/🟢/🟡/🟤/🟠/🔴/🟣 七层分组列出所有 finding，每层一个子表：`优先级 | Finding | 涉及 Case | 责任方 | Action Item`；末尾给每层的条目数和 P0/P1/P2 分布，便于快速看懂"问题主要出在哪层"
+10. 修复收益预测
 
 ### 5.4 Openclaw 模式特点（相比 CC 评测）
 - session 数据在 Langfuse：通过 `judge_req.json`（含 session_text）获取，无需本地 .jsonl

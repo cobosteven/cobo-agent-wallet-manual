@@ -85,7 +85,9 @@ local_hash_skill() {
 }
 local_hash_scripts() {
   if [[ -d "$SCRIPTS_LOCAL" ]]; then
-    (cd "$SCRIPTS_LOCAL" && find . -type f ! -name '*.pyc' ! -name '.DS_Store' -print0 2>/dev/null | LC_ALL=C sort -z | xargs -0 shasum -a 256 2>/dev/null | shasum -a 256 | cut -c 1-64)
+    # prune_openclaw_sessions.sh: 只部署在服务器上（被 /etc/cron.d/openclaw-prune 调用），
+    # 本地 repo 不保留源码。hash 计算时两端都排除，避免 "remote-only" 导致永久 mismatch
+    (cd "$SCRIPTS_LOCAL" && find . -type f ! -name '*.pyc' ! -name '.DS_Store' ! -name 'prune_openclaw_sessions.sh' -print0 2>/dev/null | LC_ALL=C sort -z | xargs -0 shasum -a 256 2>/dev/null | shasum -a 256 | cut -c 1-64)
   else
     echo "missing"
   fi
@@ -120,7 +122,8 @@ remote_hash() {
       cmd="test -d $SKILL_REMOTE && (cd $SKILL_REMOTE && find . -type f ! -name '.DS_Store' -print0 2>/dev/null | LC_ALL=C sort -z | xargs -0 shasum -a 256 2>/dev/null | shasum -a 256 | cut -c 1-64) || echo absent"
       ;;
     scripts)
-      cmd="test -d $SCRIPTS_REMOTE && (cd $SCRIPTS_REMOTE && find . -type f ! -name '*.pyc' ! -name '.DS_Store' -print0 2>/dev/null | LC_ALL=C sort -z | xargs -0 shasum -a 256 2>/dev/null | shasum -a 256 | cut -c 1-64) || echo absent"
+      # prune_openclaw_sessions.sh 部署在服务器但本地无；两端都排除以免永久 mismatch
+      cmd="test -d $SCRIPTS_REMOTE && (cd $SCRIPTS_REMOTE && find . -type f ! -name '*.pyc' ! -name '.DS_Store' ! -name 'prune_openclaw_sessions.sh' -print0 2>/dev/null | LC_ALL=C sort -z | xargs -0 shasum -a 256 2>/dev/null | shasum -a 256 | cut -c 1-64) || echo absent"
       ;;
     caw-cli)
       cmd="test -f $CAW_REMOTE && shasum -a 256 $CAW_REMOTE | cut -c 1-64 || echo absent"

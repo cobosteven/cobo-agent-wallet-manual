@@ -1,7 +1,7 @@
 ---
 name: caw-eval
 metadata:
-  version: "2026.04.21.1"
+  version: "2026.04.22.1"
 description: |
   在本地 Mac 编排 CAW (Cobo Agentic Wallet) Agent 评测，并把 headless claude / openclaw agent
   dispatch 到远端服务器执行，最终产出评分数据和分析报告。
@@ -55,6 +55,10 @@ description: |
 ```
 
 - 时间：14 case / 4 台 ≈ 30 分钟
+- **服务器池**（详见 [run-eval-cc.md Step 2](./references/run-eval-cc.md)）：
+  - CC + Recipe：5 台（test4-test8）
+  - CC 无 Recipe / 标准 CC：4 台（070641 + test1-test3）
+  - 两池互不干扰，Recipe 对比可并行
 - 详细步骤：[run-eval-cc.md](./references/run-eval-cc.md)
 - Recipe 三模式对比：[run-eval-recipe.md](./references/run-eval-recipe.md)
 
@@ -95,7 +99,7 @@ S3 = tx_construction_correctness × 0.5 + recipe_adherence × 0.3 + tx_submissio
 
 ## 问题归因（写报告时使用）
 
-对每个 finding 按 5 层归类：🔵 被测 SKILL / 🟢 评分体系 / 🟡 数据集 / 🟠 评测工具链 / 🟣 运行环境。细则见 [issue-attribution.md](./references/issue-attribution.md)。
+对每个 finding 按 7 层归类：🔵 被测 SKILL / 🟢 评分体系 / 🟡 数据集 / 🟤 Recipe / 🟠 评测工具链 / 🔴 产品代码 / 🟣 运行环境。细则见 [issue-attribution.md](./references/issue-attribution.md)。
 
 ## 数据集
 

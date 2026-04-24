@@ -16,20 +16,43 @@
 
 ```bash
 [[ "$(hostname)" == *openclaw* ]] && echo "env=openclaw" || echo "env=local"
-export CLOUDSDK_PYTHON=/usr/bin/python3   # gcloud Python 兼容性
+export CLOUDSDK_PYTHON=/opt/homebrew/bin/python3.11   # gcloud ≥ 565 要求 Python 3.10+
 ```
 
 ## Step 2: 选目标服务器 + 同步 skill/scripts/caw-cli
 
-服务器列表（格式 `name:zone:project`）同 [run-eval-openclaw.md Step 1](./run-eval-openclaw.md)。CC 评测通常可复用任一组服务器。
-
-**先 `git pull` 拉最新 master**（见 [common-execution.md "前置：拉取最新 master"](./common-execution.md)），再执行 sync。
+CC 评测按模式使用专用服务器池（与 openclaw 弱模型池区分，避免互相干扰）。格式 `name:zone:project`：
 
 ```bash
-export SERVERS=(
-  "<server>:<zone>:<project>"
-  # ...
+# ── CC + Recipe（recipe_mode=cc_with_recipe）：3 台（04-23 新建） ────────
+SERVERS_CC_RECIPE=(
+  "luochong-openclew-dev-v1-20260423-080555-test09:asia-east2-c:openclaw-keq9xwm4"
+  "luochong-openclew-dev-v1-20260423-080800-test10:asia-east2-c:openclaw-keq9xwm4"
+  "luochong-openclew-dev-v1-20260423-080854-test11:asia-east2-c:openclaw-keq9xwm4"
 )
+
+# ── CC 无 Recipe / 标准 CC 评测（recipe_mode=cc_no_recipe 或不带 recipe 模式）：3 台（04-23 新建） ──
+SERVERS_CC_NO_RECIPE=(
+  "luochong-openclew-dev-v1-20260423-080943-test12:asia-east2-c:openclaw-keq9xwm4"
+  "luochong-openclew-dev-v1-20260423-081051-test13:asia-east2-c:openclaw-keq9xwm4"
+  "luochong-openclew-dev-v1-20260423-081206-test14:asia-east2-c:openclaw-keq9xwm4"
+)
+
+
+# 按模式选择
+SERVERS=("${SERVERS_CC_RECIPE[@]}")     # CC + recipe
+# SERVERS=("${SERVERS_CC_NO_RECIPE[@]}") # CC 无 recipe / 标准 CC 评测
+```
+
+**重要**：
+- **Recipe 对比评测必须两组同时跑**：`cc_with_recipe` 走 `SERVERS_CC_RECIPE`、`cc_no_recipe` 走 `SERVERS_CC_NO_RECIPE`，两个 dispatch 可并行，结果分别落在各自 run_name。
+- **标准 CC 评测**（非 recipe）默认走 `SERVERS_CC_NO_RECIPE`。
+- 不要跨池混用——两组服务器状态（caw 二进制版本、余额、历史 session）可能不同。
+- openclaw 弱模型池见 [run-eval-openclaw.md Step 1](./run-eval-openclaw.md)，与本池独立。
+
+**先 `git pull` 拉最新 master**（见 [common-execution.md "前置：拉取最新 master"](./common-execution.md)），再执行 sync。**不要 stash 本地未提交修改**；若 `git pull` 有冲突，停下来让用户手动解。
+
+```bash
 export SERVERS_ENV="${SERVERS[*]}"   # 空格分隔
 
 bash sdk/skills/caw-eval/scripts/sync_to_servers.sh --component all --verify --servers-env SERVERS_ENV
@@ -175,18 +198,29 @@ open(f"{run_dir}/judge_results.json", "w").write(json.dumps(results, indent=2, e
 ### 9.1 步骤
 1. Read `~/.caw-eval/runs/{run_name}/judge_results.json` 按 e2e_composite 排序
 2. Read `~/.caw-eval/runs/{run_name}/session_metrics.json` 填"运行指标"章节（CC 模式有）
-3. 低分 case（e2e_composite < 0.6）Read 对应 `~/.caw-eval/runs/{run_name}/E2E-*.jsonl` 追根因
-4. 疑似 SKILL 指令缺陷时 Read `cobo-agent-wallet/sdk/skills/cobo-agentic-wallet-sandbox-dev/` 对应文件验证
+3. **写 P0/P1 finding 之前**，先 grep 对应 case 的 session 原文拿 error excerpt——最便宜的证据来源：
+   ```bash
+   grep -B1 -A5 -iE "error|validation|failed|denied|exception|revert" \
+     ~/.caw-eval/runs/{run_name}/E2E-<ITEM>.jsonl | head -40
+   ```
+4. 低分 case（e2e_composite < 0.6）Read 对应 `~/.caw-eval/runs/{run_name}/E2E-*.jsonl` 追根因
+5. 疑似**产品源码**（后端 / CLI）问题时 Read `cobo-agent-wallet/src/app/` 或 `cobo-agent-wallet/sdk/go/` 对应文件验证（归 🔴 产品代码）
+6. 疑似 SKILL 指令缺陷时 Read `cobo-agent-wallet/sdk/skills/cobo-agentic-wallet-sandbox-dev/` 对应文件验证
    - CC 模式 skill 路径是 `cobo-agentic-wallet-sandbox-dev`（非 openclaw 的 `-sandbox`）
-5. 输出到 `cobo-agent-wallet/sdk/skills/caw-eval/reports/eval-report-{run_name}.md`
+7. 输出到 `cobo-agent-wallet/sdk/skills/caw-eval/reports/eval-report-{run_name}.md`
 
 ### 9.2 分析要求
+- **深度分析硬性要求（所有 finding 适用）**：见 [issue-attribution.md "深度分析硬性要求"](./issue-attribution.md#深度分析硬性要求所有-finding-适用不分层)
+  - 四段式 **现象 → 证据（含 file:line/字段/log 锚点）→ 根因 → Action Item**
+  - **每条 finding 必须严格按 [issue-attribution.md 强制 Markdown 模板](./issue-attribution.md#强制-markdown-模板每条-finding-必用)**（证据是独立一行，不能塞进根因段里混合叙事）
+  - 证据必须本会话真实 Read 过；找不到证据的 finding 降级为 `🔍 疑似` 且首条 Action 是"验证步骤"（见 [降级版模板](./issue-attribution.md#强制-markdown-模板每条-finding-必用)）
+  - 🔵/🟢/🟡/🟤/🟠/🔴/🟣 任意层的根因都要读相应证据，不要因层次分布"看起来不对"就跳层归因
+- **问题归因（必做）**：每条 finding 按 7 层标注（🔵 SKILL / 🟢 评分体系 / 🟡 数据集 / 🟤 Recipe / 🟠 评测工具链 / 🔴 产品代码 / 🟣 运行环境），细则见 [issue-attribution.md](./issue-attribution.md)
+  - 报告里**同时**出现在两处：(a) 每条 finding 标注（行内 emoji）(b) 单独一节"归因分层汇总"聚合统计
+  - 🟠 vs 🔴 判别：问题代码在 `sdk/skills/caw-eval/scripts/` 里 → 🟠；在 `src/app/` 或 `sdk/go/` 里 → 🔴
 - L2 数据集 baseline 对比（如有）
-- **问题归因**：每条 finding 按 5 层标注（🔵 SKILL / 🟢 评分体系 / 🟡 数据集 / 🟠 评测工具链 / 🟣 运行环境），细则见 [issue-attribution.md](./issue-attribution.md)
 - P0/P1/P2 按"风险严重度 × 发生频率 × 修复成本"排序
 - 上线建议三选一：可上 / 有条件上 / 建议延期
-- 断言必须指向具体 case / tx / 代码行
-- 失败 case 用"现象 → 根因 → Action Item"三段式
 
 ### 9.3 报告结构
 1. 总览（E2E + 任务完成率 + baseline 对比）
@@ -196,7 +230,8 @@ open(f"{run_dir}/judge_results.json", "w").write(json.dumps(results, indent=2, e
 5. 按场景类型分析（transfer/swap/lend/dca/...）
 6. 阶段瓶颈分析（S1/S2/S3）
 7. 改进建议（P0/P1/P2）
-8. 上线建议
+8. **归因分层汇总（必做）** — 按 🔵/🟢/🟡/🟤/🟠/🔴/🟣 七层分组列出所有 finding，每层一个子表：`优先级 | Finding | 涉及 Case | 责任方 | Action Item`；末尾给每层的条目数和 P0/P1/P2 分布，便于快速看懂"问题主要出在哪层"
+9. 上线建议
 
 ---
 

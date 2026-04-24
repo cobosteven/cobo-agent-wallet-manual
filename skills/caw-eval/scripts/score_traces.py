@@ -56,6 +56,7 @@ from assertions import (
     DimensionScore,
     NetworkDiagnostics,
     StructuredExtraction,
+    check_allowance_evidence,
     check_pact_structure_gate,
     check_refusal_gate,
     check_tx_submission_gate,
@@ -207,56 +208,67 @@ def _build_extraction_from_observations(
     pact_calls: list = []
     tx_calls: list = []
 
+    from assertions import (
+        _extract_pact_flags_from_output,
+        _extract_tx_call_from_output,
+    )
+
+    def _handle_indirect(command_str: str, obs) -> None:
+        """从 obs 输出里识别 shell 脚本间接提交的 pact / tx，加对应 record。"""
+        result_text = _stringify_obs_output(obs)
+        if not result_text or '"status"' not in result_text:
+            return
+        tool_name = (obs.name or "").split(":", 1)[0] if obs.name else "exec"
+        # pact submit 间接识别
+        if '"pact_id"' in result_text:
+            pact_flags = _extract_pact_flags_from_output(result_text)
+            if pact_flags:
+                record = ToolCallRecord(
+                    call_id=obs.id or "",
+                    name=tool_name,
+                    command=command_str or "(indirect via script)",
+                    caw_op="caw.pact.submit",
+                    category="auth",
+                    pact_flags=pact_flags,
+                    result_text=result_text,
+                    is_error=False,
+                )
+                all_calls.append(record)
+                pact_calls.append(record)
+        # tx call / transfer 间接识别
+        if '"request_id"' in result_text:
+            tx_indirect = _extract_tx_call_from_output(result_text)
+            if tx_indirect.get("_indirect"):
+                tx_synth = {
+                    k: tx_indirect[k]
+                    for k in ("transaction_id", "request_id", "status")
+                    if k in tx_indirect
+                }
+                record = ToolCallRecord(
+                    call_id=obs.id or "",
+                    name=tool_name,
+                    command=command_str or "(indirect via script)",
+                    caw_op="caw.tx.call",
+                    category="transaction",
+                    result_text=result_text,
+                    tx_result=tx_synth,
+                    is_error=False,
+                )
+                all_calls.append(record)
+                tx_calls.append(record)
+
     for obs in observations:
         # 只关注 SPAN 类型工具调用（exec/Bash 等）
         if obs.type != "SPAN":
             continue
         command_str = _extract_command_from_obs(obs)
         if not command_str:
-            # 命令为空但有输出的 exec span（可能是 ./script.sh 间接调用 caw pact submit）
-            result_text = _stringify_obs_output(obs)
-            if result_text and '"pact_id"' in result_text and '"status"' in result_text:
-                from assertions import _extract_pact_flags_from_output
-
-                pact_flags = _extract_pact_flags_from_output(result_text)
-                if pact_flags:
-                    tool_name = (obs.name or "").split(":", 1)[0] if obs.name else "exec"
-                    record = ToolCallRecord(
-                        call_id=obs.id or "",
-                        name=tool_name,
-                        command="(indirect via script)",
-                        caw_op="caw.pact.submit",
-                        category="auth",
-                        pact_flags=pact_flags,
-                        result_text=result_text,
-                        is_error=False,
-                    )
-                    all_calls.append(record)
-                    pact_calls.append(record)
+            _handle_indirect(command_str, obs)
             continue
 
         parsed = parse_caw_command(command_str)
         if not parsed:
-            # 命令不含 caw（如 ./script.sh），检查输出是否含 pact submit 结果
-            result_text = _stringify_obs_output(obs)
-            if result_text and '"pact_id"' in result_text and '"status"' in result_text:
-                from assertions import _extract_pact_flags_from_output
-
-                pact_flags = _extract_pact_flags_from_output(result_text)
-                if pact_flags:
-                    tool_name = (obs.name or "").split(":", 1)[0] if obs.name else "exec"
-                    record = ToolCallRecord(
-                        call_id=obs.id or "",
-                        name=tool_name,
-                        command=command_str,
-                        caw_op="caw.pact.submit",
-                        category="auth",
-                        pact_flags=pact_flags,
-                        result_text=result_text,
-                        is_error=False,
-                    )
-                    all_calls.append(record)
-                    pact_calls.append(record)
+            _handle_indirect(command_str, obs)
             continue
 
         caw_op, category, subcmd = parsed
@@ -334,6 +346,34 @@ def _build_session_text_from_observations(
                 parts.append("")
             else:
                 # 非命令型 SPAN（如 read/write/process）
+                # file_read/file_write：只渲染路径、limit、offset 和字节数，不拼文件原文
+                # （SKILL.md 等 reference 文件容易把 session_text 撑爆）。
+                # 保留 limit/offset 让 judge 能识别"截断读"场景（如 gpt-5.4 对 SKILL.md
+                # 用 limit=250 导致看不到 line 322 的 eth-call 文档）
+                tool_head = name.split(":", 1)[0] if name else ""
+                if tool_head in ("file_read", "file_write"):
+                    inp_dict: dict = {}
+                    if isinstance(obs.input, dict):
+                        inp_dict = obs.input
+                    elif isinstance(obs.input, str):
+                        try:
+                            inp_dict = json.loads(obs.input) or {}
+                        except Exception:
+                            inp_dict = {}
+                    path = inp_dict.get("path") or inp_dict.get("file_path") or ""
+                    limit = inp_dict.get("limit")
+                    offset = inp_dict.get("offset")
+                    extra = ""
+                    if limit is not None:
+                        extra += f" limit={limit}"
+                    if offset is not None and offset != 1:
+                        extra += f" offset={offset}"
+                    n_bytes = len(_stringify_obs_output(obs))
+                    parts.append(
+                        f"[TOOL {tool_head}] path={path}{extra} ({n_bytes} bytes, content omitted)"
+                    )
+                    parts.append("")
+                    continue
                 in_str = json.dumps(obs.input, ensure_ascii=False) if obs.input else ""
                 out_str = _stringify_obs_output(obs)
                 if in_str or out_str:
@@ -347,9 +387,51 @@ def _build_session_text_from_observations(
                 text = " ".join(str(x) for x in out if isinstance(x, str))
             elif isinstance(out, str):
                 text = out
-            if text.strip():
+            md = obs.metadata if isinstance(obs.metadata, dict) else {}
+            stop_reason = md.get("stop_reason") or md.get("stopReason") or ""
+            is_error_stop = isinstance(stop_reason, str) and stop_reason.lower() in (
+                "error",
+                "failed",
+                "terminated",
+            )
+            if is_error_stop:
+                provider = md.get("provider", "?")
+                tool_calls = md.get("tool_calls_count", 0)
+                resp_id = str(md.get("response_id", ""))[:16]
+                parts.append(
+                    f"[ASSISTANT_ERROR] stop_reason={stop_reason} provider={provider} "
+                    f"tool_calls={tool_calls} response_id={resp_id}"
+                )
+                parts.append("")
+            elif text.strip():
                 parts.append(f"[ASSISTANT] {text}")
                 parts.append("")
+
+    # Summarize terminal error pattern so judge sees it even if truncated midstream
+    error_generations = [
+        o
+        for o in observations
+        if o.type == "GENERATION"
+        and isinstance(o.metadata, dict)
+        and str(o.metadata.get("stop_reason") or o.metadata.get("stopReason") or "").lower()
+        in ("error", "failed", "terminated")
+    ]
+    if error_generations:
+        trailing = 0
+        for o in reversed(observations):
+            if o.type != "GENERATION":
+                continue
+            md2 = o.metadata if isinstance(o.metadata, dict) else {}
+            sr = str(md2.get("stop_reason") or md2.get("stopReason") or "").lower()
+            if sr in ("error", "failed", "terminated"):
+                trailing += 1
+            else:
+                break
+        parts.append(
+            f"[SESSION_END_NOTE] GENERATION error_stops={len(error_generations)} "
+            f"(trailing_consecutive={trailing}); session likely terminated by provider."
+        )
+        parts.append("")
 
     full = "\n".join(parts)
     if len(full) > max_chars:
@@ -1647,9 +1729,19 @@ def _build_judge_req_for_item(
         best_pact = get_best_pact_submit(extraction)
         hints = exp.get("pact_hints", {})
         is_refuse = hints.get("should_refuse", False)
+        allowance_ev = check_allowance_evidence(extraction)
+        if allowance_ev["has_evidence"]:
+            allow_line = (
+                f"[diag] allowance_evidence: queries={allowance_ev['query_count']}, "
+                f"values_seen={allowance_ev['values_seen']}, "
+                f"sources={allowance_ev['sources']}"
+            )
+        else:
+            allow_line = "[diag] allowance_evidence: none"
         assertion_lines = [
             f"[gate] pact_structure_valid={'pass' if pact_gate.passed else 'fail'} — {pact_gate.reasoning}",
             f"[diag] error_type={diagnostics.error_type}, retry_count={diagnostics.retry_count}",
+            allow_line,
         ]
         session_text = _build_session_text_from_observations(trace, obs_list)
         prompt = build_judge_prompt(
@@ -2227,9 +2319,19 @@ def session_main() -> None:
                 hints = sf_expected.get("pact_hints", {})
                 is_refuse = hints.get("should_refuse", False)
 
+                allowance_ev = check_allowance_evidence(extraction)
+                if allowance_ev["has_evidence"]:
+                    allow_line = (
+                        f"[diag] allowance_evidence: queries={allowance_ev['query_count']}, "
+                        f"values_seen={allowance_ev['values_seen']}, "
+                        f"sources={allowance_ev['sources']}"
+                    )
+                else:
+                    allow_line = "[diag] allowance_evidence: none"
                 assertion_lines = [
                     f"[gate] pact_structure_valid={'pass' if pact_gate.passed else 'fail'} — {pact_gate.reasoning}",
                     f"[diag] error_type={diagnostics.error_type}, retry_count={diagnostics.retry_count}",
+                    allow_line,
                 ]
 
                 prompt = build_judge_prompt(

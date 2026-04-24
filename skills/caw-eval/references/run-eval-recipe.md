@@ -69,7 +69,7 @@ S3 = tx_construction_correctness × 0.5 + recipe_adherence × 0.3 + tx_submissio
 
 ```bash
 cd <repo>/cobo-agent-wallet
-export CLOUDSDK_PYTHON=/usr/bin/python3
+export CLOUDSDK_PYTHON=/opt/homebrew/bin/python3.11
 
 DATASET_NAME=caw-recipe-eval-seth-v1
 TS=$(date +%Y%m%d-%H%M)

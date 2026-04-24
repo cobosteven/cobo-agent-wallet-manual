@@ -228,6 +228,8 @@ async def _revoke_active_pacts(item_id: str) -> None:
             return
         pact_data = json.loads(stdout.decode())
         pacts = pact_data.get("result", {}).get("pacts", [])
+        ok = 0
+        failed: list[str] = []
         for p in pacts:
             pid = p.get("id", "")
             if not pid:
@@ -236,13 +238,21 @@ async def _revoke_active_pacts(item_id: str) -> None:
                 _CAW_BIN,
                 "pact",
                 "revoke",
+                "--pact-id",
                 pid,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             await asyncio.wait_for(rp.communicate(), timeout=10)
+            if rp.returncode == 0:
+                ok += 1
+            else:
+                failed.append(pid[:8])
         if pacts:
-            print(f"  [{item_id}] revoked {len(pacts)} active pact(s)")
+            status = f"revoked {ok}/{len(pacts)} active pact(s)"
+            if failed:
+                status += f" (failed: {', '.join(failed)})"
+            print(f"  [{item_id}] {status}")
     except Exception:
         pass  # 清理失败不阻塞评测
 
@@ -1153,9 +1163,21 @@ async def _dynamic_worker(
                 stdout=f,
                 stderr=asyncio.subprocess.STDOUT,
             )
-            rc = await proc.wait()
+            # SSH 层硬超时：item_timeout + 60s 余量，防止 IAP tunnel / 远端僵尸拖死整个 dispatch
+            ssh_timeout = timeout + 60
+            try:
+                rc = await asyncio.wait_for(proc.wait(), timeout=ssh_timeout)
+            except asyncio.TimeoutError:
+                f.write(f"\n# SSH timeout after {ssh_timeout}s, killing local ssh subprocess\n")
+                f.flush()
+                proc.kill()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=10)
+                except asyncio.TimeoutError:
+                    pass
+                rc = -1
 
-        status = "OK" if rc == 0 else f"FAIL rc={rc}"
+        status = "OK" if rc == 0 else ("SSH_TIMEOUT" if rc == -1 else f"FAIL rc={rc}")
         print(f"[DISPATCH← {server['name']}] item={item_id} {status}")
         item_results[item_id] = (server["name"], rc)
 
@@ -1266,6 +1288,73 @@ async def _cmd_dispatch(
     n = len(servers)
     log_dir = _RUNS_DIR / run_name / "dispatch-logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── CLI 健康预检：确保每台 openclaw agents add/delete 在 15s 内响应 ──────────
+    # 背景：openclaw 没有 session GC，sessions.json 累积后 agents add 可能超 30s 静默挂
+    #       （remote cmd_run 依旧 exit 0 → dispatch 误判为 OK）。启动前 smoke test，
+    #       慢于 threshold 的服务器直接剔除，避免 item 分下去后才失败。
+    #       修复方式：登录服务器跑 ~/.agents/skills/caw-eval/scripts/prune_openclaw_sessions.sh
+    SMOKE_TIMEOUT_SEC = 15
+    print("=== Openclaw CLI 健康预检（agents add/delete smoke）===")
+
+    async def _smoke_check(srv: dict) -> tuple[dict, bool]:
+        smoke_name = f"smoke-{int(datetime.now(timezone.utc).timestamp())}-{srv['name'][-8:]}"
+        inner = (
+            "export PATH=/home/ubuntu/.npm-global/bin:$PATH; "
+            f"timeout {SMOKE_TIMEOUT_SEC} openclaw agents add {smoke_name} "
+            "--workspace /home/ubuntu/.openclaw/workspace --non-interactive --json >/dev/null 2>&1 "
+            f"&& timeout {SMOKE_TIMEOUT_SEC} openclaw agents delete {smoke_name} --force --json >/dev/null 2>&1 "
+            "&& echo smoke-ok || echo smoke-fail"
+        )
+        ssh_cmd = [
+            "gcloud",
+            "compute",
+            "ssh",
+            "--zone",
+            srv["zone"],
+            srv["name"],
+            "--tunnel-through-iap",
+            "--project",
+            srv["project"],
+            "--",
+            f"sudo su - ubuntu -c {shlex.quote(inner)}",
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *ssh_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=SMOKE_TIMEOUT_SEC * 3 + 10
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            return srv, False
+        return srv, "smoke-ok" in stdout.decode()
+
+    smoke_results = await asyncio.gather(*(_smoke_check(s) for s in servers))
+    healthy_servers: list[dict] = []
+    for srv, ok in smoke_results:
+        if ok:
+            print(f"  {srv['name']}: OK")
+            healthy_servers.append(srv)
+        else:
+            print(
+                f"  {srv['name']}: FAIL — 跳过（agents add/delete 超 {SMOKE_TIMEOUT_SEC}s；"
+                f"SSH 上去跑 sudo ~/.agents/skills/caw-eval/scripts/prune_openclaw_sessions.sh 清 sessions.json）"
+            )
+    if not healthy_servers:
+        print("[ABORT] 所有服务器 CLI 健康预检失败，无法分发")
+        sys.exit(2)
+    if len(healthy_servers) < len(servers):
+        print(
+            f"[WARN] 跳过 {len(servers) - len(healthy_servers)} 台，"
+            f"继续用剩下 {len(healthy_servers)} 台跑评测\n"
+        )
+    servers = healthy_servers
+    n = len(servers)
+    print()
 
     # ── 预清理：并行 SSH 到各服务器，删除所有历史残留 eval agent + session 目录 ──
     print("=== 预清理历史残留 eval agent / session 目录 ===")
