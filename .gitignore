@@ -46,7 +46,6 @@ ehthumbs.db
 skills/caw-eval/reports/
 
 # Sync script (local tool, not distributed)
-sync-skill.sh
 .claude
 .agents
 skills-lock.json
