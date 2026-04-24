@@ -228,6 +228,8 @@ Translate the user's request into `caw pact submit` flags. Each row maps one asp
 | `--policies <json>` | yes | JSON array of detailed risk control policy definitions: chain/token/contract allowlists, per-tx caps, rolling limits, review thresholds. | See [Policy Reference](#policy-reference---policies). |
 | `--completion-conditions <json>` | yes | JSON array of completion conditions. | See [Completion Conditions](#completion-conditions---completion-conditions). |
 | `--execution-plan <text>` | yes | Concrete on-chain steps the agent will perform post-approval. | See [Execution Plan](#execution-plan---execution-plan). |
+| `--name <text>` | no | Human-readable name for this pact. | Derive a short label from the intent, e.g. `"Weekly ETH DCA"` or `"USDC transfer to 0xABC"`. |
+| `--recipe-slugs <slug,...>` | no | Comma-separated slugs of recipes used when designing this pact. | Use the `slug` field from each matching result returned by `caw recipe search` in Step 2. Omit if no recipe matched. |
 
 
 ### Complete Example
@@ -238,6 +240,7 @@ User request: "Help me transfer 1000 USDC to 0xABC...123 on Base"
 caw pact submit \
   --intent "Transfer 1000 USDC to 0xABC...123 on Base" \
   --original-intent "Help me transfer 1000 USDC to 0xABC...123 on Base" \
+  --name "USDC transfer to 0xABC...123" \
   --policies '[
     {
       "name": "usdc-transfer",
@@ -266,6 +269,8 @@ Transfer 1000 USDC to 0xABC...123 on Base.
 - Per-tx cap: $1001
 - One-time transfer only"
 ```
+
+If a recipe was matched in Step 2, also pass `--recipe-slugs <slug>` where `<slug>` is the `slug` field from the matching result in `caw recipe search` output.
 
 ### Execution Plan (`--execution-plan`)
 
