@@ -107,11 +107,11 @@ You write 4–8 steps covering: preconditions, main operations, monitoring, erro
 
 > Thinking mode: least privilege
 
-Your job: Derive `--policies` and `--completion-conditions` from the intent and execution plan.
+Your job: Derive `--policies` and `--completion-conditions` strictly from what the user described. Do not infer, add, or assume beyond the stated intent.   
 
 **Policy** — use the recipe from Step 2 as a guide. Anything not explicitly matched by a `when` condition will be denied — there is no implicit pass-through. See [Policy Reference](#policy-reference---policies) for supported fields and schema.
 
-**Completion conditions** — when should the pact be considered done? Derive from the intent (e.g. one-time → `tx_count: 1`, monthly DCA for 6 months → `time_elapsed: 15552000` or `tx_count: 6`). See [Completion Conditions](#completion-conditions---completion-conditions) for supported types.
+**Completion conditions** — when should the pact be considered done? Derive from the intent (e.g. one-time → `{"type": "tx_count", "threshold": "1"}`, monthly DCA for 6 months → `{"type": "time_elapsed", "threshold": "15552000"}` or `{"type": "tx_count", "threshold": "1"}`). See [Completion Conditions](#completion-conditions---completion-conditions) for supported types.
 
 
 ### Step 5 — Assemble Pact
@@ -193,7 +193,10 @@ Policy — allow Uniswap V3 router on Base, cap at 3 txs/24h (one-time swap, cap
       "effect": "allow",
       "when": {
         "chain_in": ["BASE_ETH"],
-        "target_in": [{ "chain_id": "BASE_ETH", "contract_addr": "0x2626664c2603336E57B271c5C0b26F421741e481" }]
+        "target_in": [
+          { "chain_id": "BASE_ETH", "contract_addr": "0x2626664c2603336E57B271c5C0b26F421741e481" },
+          { "chain_id": "BASE_ETH", "contract_addr": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" }
+        ]
       },
       "deny_if": {
         "usage_limits": { "rolling_24h": { "tx_count_gt": 3 } }
@@ -203,13 +206,15 @@ Policy — allow Uniswap V3 router on Base, cap at 3 txs/24h (one-time swap, cap
 ]
 ```
 
-Completion condition — one-time swap: `tx_count: 1`
+The first entry is the Uniswap V3 router; the second is the USDC token contract (target of the ERC-20 `approve()` call before the swap).
+
+Completion condition — one-time swap: `{"type": "tx_count", "threshold": "1"}`
 
 
 **Step 5 — Assemble and verify:**
 
 - ✅ Intent ($5000 USDC→ETH on Base), plan, and policy all aligned
-- ✅ Policy grants exactly what the plan needs: Uniswap V3 router on Base
+- ✅ Policy grants exactly what the plan needs: Uniswap V3 router + USDC token contract on Base
 - ✅ Completion condition is testable: after 1 tx
 
 After reading: execute transactions under the active pact via `caw tx transfer`, `caw tx call`, or `caw tx sign-message`. If a transaction returns `status=PendingApproval`, see [pending-approval.md](./pending-approval.md).

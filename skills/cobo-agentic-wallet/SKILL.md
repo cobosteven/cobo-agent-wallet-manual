@@ -1,7 +1,7 @@
 ---
 name: cobo-agentic-wallet-sandbox
 metadata:
-  version: "1.0.1"
+  version: "1.0.2"
 description: "Create and manage agentic wallets with Cobo. Use for autonomous onchain operations via the caw CLI: token transfers, contract calls, pact creation and approval, DeFi execution (Uniswap, Aave, Jupiter), and wallet onboarding on EVM chains and Solana. Triggers on requests involving caw, MPC wallet, TSS node, agent wallet, Cobo, pact, or any crypto wallet operation for AI agents. NOT for fiat payments or bank transfers."
 ---
 
@@ -160,7 +160,7 @@ Poll pact status with `caw pact show --pact-id <pact-id>` and check `.status` un
 All transactions (transfers, contract calls, message signing) run inside a pact. Shared decision rules:
 
 - **Balance preflight for fund-using intent**: If the user's goal will spend funds, run `caw wallet balance` before execution. Verify the requested token amount is available and that the wallet has enough native token to pay network fees. If balance is insufficient, stop and report the current balance and shortfall instead of attempting the operation.
-- **Recipe preflight for contract interactions**: Before calling any contract, search for a matching recipe (`caw recipe search`). From the recipe: take contract addresses from the `Fact` section; build calldata from the `ABI` section using `caw util abi encode`, then verify with `caw util abi decode` before submitting. Do not guess selectors, addresses, or argument encoding. If any parameter or contract detail is not covered by the recipe, consult the URLs in the recipe's `References` section. If still unclear, search the protocol's official documentation or ask the user.
+- **Recipe preflight for contract interactions**: Before calling any contract, search for a matching recipe (`caw recipe search`). From the recipe: take contract addresses from the `Fact` section; build calldata from the `ABI` section using `caw util abi encode`. Before submitting, verify contract state with `caw util eth-call` — use `--abi erc20` for standard ERC-20 queries (balanceOf, allowance, decimals) or pass a full ABI JSON for protocol-specific view functions. Do not guess selectors, addresses, or argument encoding. If any parameter or contract detail is not covered by the recipe, consult the URLs in the recipe's `References` section. If still unclear, search the protocol's official documentation or ask the user.
 - **`--request-id` idempotency**: Always set a unique, deterministic request ID per logical transaction (e.g. `invoice-001`, `swap-20240318-1`). Retrying with the same `--request-id` is safe — the server deduplicates.
 - **`--pact-id` (required flag)**: `caw tx transfer`, `caw tx call`, and `caw tx sign-message` all require `--pact-id <uuid>`. The CLI resolves the wallet UUID and API key from the pact automatically — do not pass `--wallet-id` separately.
 - **Sequential execution for same-address transactions (nonce ordering)**: On EVM chains, each transaction from the same address must use an incrementing nonce. **Wait for each transaction to reach `Completed` status (tx is confirmed on-chain) before submitting the next one.** Poll with `caw tx get --request-id <request-id>` and check `.status` — the lifecycle is `Initiated → Submitted → PendingAuthorization → PendingSignature → Broadcasting → Confirming → Completed`. `.status` is a literal string field — match it with exact string equality against one of: `Initiated`, `Submitted`, `PendingScreening`, `PendingAuthorization`, `PendingSignature`, `Broadcasting`, `Confirming`, `Completed`, `Failed`, `Rejected`, `Pending`. Do not do substring or prefix matching.
@@ -202,12 +202,17 @@ After a read, always surface next steps (per Principle 3) — do not just dump d
 
 ## Operating Discipline
 ### CLI conventions
-- **Before using an unfamiliar command**: Run `caw schema` (no args) if you haven't this session — it returns a full index of every command and what it does. Then run `caw schema <command>` (e.g. `caw schema tx transfer`) to get exact flags, required parameters, and exit codes. Do not guess flag names or assume parameters from memory.
+- **Before using an unfamiliar command**: Run `caw schema` (no args) if you haven't this session — it returns a full index of every command and what it does. For exact flags and required parameters, run `caw schema <command>` (e.g. `caw schema tx transfer`). Do not guess flag names or assume parameters from memory.
 - **If a command fails with a parameter error**: Run `caw schema <subcmd>` to get required flags. Do not call `caw help` — it does not show parameter details.
 - **After pact submit or tx call**: Always verify with `caw pact show --pact-id <id>` or `caw tx get --tx-id <record-uuid>` / `caw tx get --request-id <request-id>` before retrying. `exit=0` means the command ran, not that the operation succeeded.
 - **`wallet_uuid` is never a CLI argument** — all wallet commands resolve the wallet UUID from the active profile automatically. Use `caw wallet current` to check, or `caw wallet current --wallet-id <wallet-uuid>` to switch profiles.
 - **`caw` is your tool, not the user's**: Run `caw` commands silently and present results in plain language. Do not show raw CLI commands or JSON output to the user — they want outcomes, not terminal logs. Exception: if the user explicitly asks "what command did you run?"
 - **Use `caw meta chains` and `caw meta tokens`** to look up chain and token IDs — do not guess from memory.
+- **Never inline `caw util abi encode` output** — always capture into a shell variable and pass by reference. Transcribing long hex strings causes silent truncation.
+  ```bash
+  CALLDATA=$(caw util abi encode --method "..." --args '[...]' | jq -r .calldata)
+  caw tx call --pact-id $PACT_ID --calldata "$CALLDATA"
+  ```
 
 ### Exit Code Check
 `exit 0` means the command **ran** — it does NOT mean the operation succeeded. Always parse the JSON and check `.success` before reporting completion.

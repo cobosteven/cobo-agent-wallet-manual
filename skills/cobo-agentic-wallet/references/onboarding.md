@@ -69,6 +69,8 @@ To check pairing completion without waiting for a notification, run `caw wallet 
 caw wallet pair-status
 ```
 
+> **Note:** `pair-status` only tracks the **initial PAIR claim** (filters by `token_purpose=pair`). It does not reflect restore progress — see [Restore](#restore--re-pair-an-already-paired-wallet) below.
+
 Alternatively, run `caw status` and read the `wallet_paired` field (boolean). `true` means pairing has been completed.
 
 Act on the status:
@@ -82,3 +84,13 @@ Act on the status:
 If the user is unreachable before the code expires, stop polling and notify when they return.
 
 **Pair status tracking**: After running `caw wallet pair`, poll with `caw wallet pair-status` to detect when pairing completes. When status is `paired` or `expired`, continue any established next steps from the conversation context.
+
+## Restore — Re-Pair an Already-Paired Wallet
+
+If `caw wallet pair` is run on a wallet that **already has a human owner**, the response carries `token_purpose=restore` (instead of `pair`). The 8-digit code rebuilds the existing owner's MPC key share — useful after a device change or app reinstall. **Ownership does not change.**
+
+When the response shows `token_purpose=restore`:
+
+- **Surface the `suggestion` field returned by `caw wallet pair` verbatim** — it carries scenario-specific guidance (`RESTORE_PAIR_SUBMIT_SUCCESS`) that already differs from the initial-pair message.
+- **Address the message to the current wallet owner**, not a new user. The same person enters the code in the Cobo Agentic Wallet app on the device that needs the rebuilt share.
+- **Do not poll `caw wallet pair-status`.** That command strictly tracks the initial PAIR claim and will not reflect restore progress. Watch for the owner's confirmation in the app, and the owner will run the follow-up reshare from their phone to install the new share.
