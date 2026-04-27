@@ -11,6 +11,10 @@
 #   sync_to_servers.sh --component <scripts|skill|caw-cli|recipes|all> --verify
 #   sync_to_servers.sh --component all --verify [--servers-env SERVERS_GPT]
 #
+# 环境变量：
+#   CAW_SKIP_BUILD=1  跳过本地 caw 编译，直接用 $CAW_BUILD 现成产物（默认每次都重编译，
+#                     避免 stale binary 静默 SKIP；只在你确定二进制已最新时使用）
+#
 # 要求：
 #   本地：git、gcloud auth login、Go 工具链（caw-cli 需要）
 #   服务器：已装 caw + ~/.agents/skills/ 结构
@@ -162,10 +166,12 @@ push_scripts() {
 }
 
 build_caw_if_needed() {
-  if [[ ! -f "$CAW_BUILD" ]] || [[ "${CAW_REBUILD:-0}" == "1" ]]; then
-    log "[caw-cli] 交叉编译 linux/amd64"
-    (cd "$SDK_DIR" && GOOS=linux GOARCH=amd64 make build-caw) >&2
+  if [[ "${CAW_SKIP_BUILD:-0}" == "1" ]]; then
+    log "[caw-cli] CAW_SKIP_BUILD=1，跳过本地编译（用现有 $CAW_BUILD）"
+    return 0
   fi
+  log "[caw-cli] 交叉编译 linux/amd64（避免 stale binary，使用现成产物请加 CAW_SKIP_BUILD=1）"
+  (cd "$SDK_DIR" && GOOS=linux GOARCH=amd64 make build-caw) >&2
 }
 
 push_caw_cli() {

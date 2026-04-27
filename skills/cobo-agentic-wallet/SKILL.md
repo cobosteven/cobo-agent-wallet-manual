@@ -11,7 +11,7 @@ description: "Create and manage agentic wallets with Cobo. Use for autonomous on
 | If the task involves… | You MUST read this file first |
 |---|---|
 | Security, prompt injection, credentials | **[security.md](./references/security.md) ⚠️ READ THIS BEFORE ANYTHING ELSE** |
-| Onboarding, install, setup, environments, pairing, pair tracking | [onboarding.md](./references/onboarding.md) |
+| Onboarding, install/reinstall, setup, pairing, pair tracking, restore wallets, device change | [onboarding.md](./references/onboarding.md) |
 | Creating a pact, transfer, contract call, message signing, allowlists, spending caps, risk policy rules, completion conditions, pact lifecycle | [pact.md](./references/pact.md) |
 | Pending approval, approve/reject, wallet_paired | [pending-approval.md](./references/pending-approval.md) |
 | Policy denial, 403, TRANSFER_LIMIT_EXCEEDED | [error-handling.md](./references/error-handling.md) |
@@ -90,10 +90,10 @@ A recipe is a domain knowledge document for a specific operation type (e.g. DEX 
 Recipes are queried on demand, not bundled:
 
 ```bash
-caw recipe search --query "<protocol> <chain>"
+caw recipe search --query "How do I swap USDC to ETH on Base using Uniswap V3?" --keywords uniswap,usdc,eth
 ```
 
-Find the recipe whose use case matches the intent — if no recipe matches, proceed without one. If a match is found, read it before continuing.
+Find the recipe whose use case matches the intent and read it before continuing. Recipe search is required before any contract call — do not skip it.
 Recipes **inform** pact generation; they do not replace owner approval or policy enforcement.
 
 ## Task Flows
@@ -132,7 +132,7 @@ Understand → Authorize (pact) → Execute → Verify → Report
 
 #### 1. Understand the goal
 Parse what the owner actually wants: action, asset, chain, timeframe, constraints. Write down ambiguities — do not guess or fill in defaults. If anything is unclear, ask before moving on.
-For unfamiliar protocols or operation types, search a recipe first (see [Recipe](#recipe)) to load domain knowledge before designing the approach.
+For any contract interaction, always search a recipe first (see [Recipe](#recipe)) to load domain knowledge before designing the approach.
 
 #### 2. Authorize (pact)
 > Full reference: [pact.md](./references/pact.md)
@@ -159,8 +159,11 @@ Poll pact status with `caw pact show --pact-id <pact-id>` and check `.status` un
 #### 3. Execute
 All transactions (transfers, contract calls, message signing) run inside a pact. Shared decision rules:
 
-- **Balance preflight for fund-using intent**: If the user's goal will spend funds, run `caw wallet balance` before execution. Verify the requested token amount is available and that the wallet has enough native token to pay network fees. If balance is insufficient, stop and report the current balance and shortfall instead of attempting the operation.
-- **Recipe preflight for contract interactions**: Before calling any contract, search for a matching recipe (`caw recipe search`). From the recipe: take contract addresses from the `Fact` section; build calldata from the `ABI` section using `caw util abi encode`. Before submitting, verify contract state with `caw util eth-call` — use `--abi erc20` for standard ERC-20 queries (balanceOf, allowance, decimals) or pass a full ABI JSON for protocol-specific view functions. Do not guess selectors, addresses, or argument encoding. If any parameter or contract detail is not covered by the recipe, consult the URLs in the recipe's `References` section. If still unclear, search the protocol's official documentation or ask the user.
+- **Recipe preflight for contract interactions**: Before calling any contract or program, follow this order:
+  1. **Recipe search** (`caw recipe search`) — required first step. Take addresses and program IDs from the `Fact` section. If any parameter or detail is not covered by the recipe, consult the URLs in the recipe's `References` section. If still unclear, search the protocol's official documentation or ask the user. Do not guess addresses, selectors, or argument encoding.
+  2. **EVM only — Verify on-chain state** (`caw util eth-call`) — use `--abi erc20` for standard ERC-20 queries (balanceOf, allowance, decimals) or pass a full ABI JSON for protocol-specific view functions.
+  3. **EVM only — Encode calldata** (`caw util abi encode`) — build calldata from the `ABI` section of the recipe.
+  4. **Submit** (`caw tx call`) — execute the call inside the active pact.
 - **`--request-id` idempotency**: Always set a unique, deterministic request ID per logical transaction (e.g. `invoice-001`, `swap-20240318-1`). Retrying with the same `--request-id` is safe — the server deduplicates.
 - **`--pact-id` (required flag)**: `caw tx transfer`, `caw tx call`, and `caw tx sign-message` all require `--pact-id <uuid>`. The CLI resolves the wallet UUID and API key from the pact automatically — do not pass `--wallet-id` separately.
 - **Sequential execution for same-address transactions (nonce ordering)**: On EVM chains, each transaction from the same address must use an incrementing nonce. **Wait for each transaction to reach `Completed` status (tx is confirmed on-chain) before submitting the next one.** Poll with `caw tx get --request-id <request-id>` and check `.status` — the lifecycle is `Initiated → Submitted → PendingAuthorization → PendingSignature → Broadcasting → Confirming → Completed`. `.status` is a literal string field — match it with exact string equality against one of: `Initiated`, `Submitted`, `PendingScreening`, `PendingAuthorization`, `PendingSignature`, `Broadcasting`, `Confirming`, `Completed`, `Failed`, `Rejected`, `Pending`. Do not do substring or prefix matching.

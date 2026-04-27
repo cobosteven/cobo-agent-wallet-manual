@@ -17,7 +17,7 @@ Script 3: 对本地 session .jsonl 文件进行 S1-S3 各阶段评分（代码�
 
     # 直接从本地 session .jsonl 文件评分（带 item 上下文）
     python score_traces.py session --session /path/to/session.jsonl \
-        --item-id E2E-01L1 --dataset-name caw-agent-eval-seth-v2 \
+        --item-id E2E-01L1 --dataset-name standard-test-v3 \
         --judge-results /tmp/judge_results.json
 
 评分架构 (V2 — 代码断言 + LLM Judge):
@@ -62,6 +62,9 @@ from assertions import (
     check_tx_submission_gate,
     classify_diagnostics,
     classify_network_diagnostics,
+    compute_efficiency_action_score,
+    compute_efficiency_duration_score,
+    expected_caw_commands,
     extract_structured,
     get_best_pact_submit,
     inject_backend_pact_specs,
@@ -978,13 +981,24 @@ def load_judge_results(path: str) -> dict[str, dict[str, Any]]:
 # ── 评分管线（代码断言 + LLM Judge）──────────────────────────────────────────
 
 
-# 阶段权重: E2E = task_completion x 0.3 + (S1 x 0.15 + S2 x 0.45 + S3 x 0.40) x 0.7
+# 标准模式权重:
+#   E2E = task_completion × 0.25
+#       + process × 0.60                     （process = S1×0.15 + S2×0.45 + S3×0.40，内部比例不变）
+#       + efficiency_action × 0.10
+#       + efficiency_duration × 0.05
 STAGE_WEIGHTS = {"s1": 0.15, "s2": 0.45, "s3": 0.40}
-_TC_WEIGHT = 0.30
-_PROCESS_WEIGHT = 0.70
+_TC_WEIGHT = 0.25
+_PROCESS_WEIGHT = 0.60
 
-# Recipe 模式权重: E2E = S1 x 0.20 + S2 x 0.45 + S3 x 0.35 (无 task_completion)
-RECIPE_STAGE_WEIGHTS = {"s1": 0.20, "s2": 0.45, "s3": 0.35}
+# Recipe 模式权重:
+#   E2E = S1 × 0.15 + S2 × 0.45 + S3 × 0.25
+#       + efficiency_action × 0.10
+#       + efficiency_duration × 0.05
+RECIPE_STAGE_WEIGHTS = {"s1": 0.15, "s2": 0.45, "s3": 0.25}
+
+# Efficiency 维度权重（标准 + Recipe 共享）
+_EFFICIENCY_ACTION_WEIGHT = 0.10
+_EFFICIENCY_DURATION_WEIGHT = 0.05
 
 
 def build_score_comment(
@@ -1053,6 +1067,11 @@ def _upload_scores(
         k: v for k, v in dimensions.items() if k in ("correctly_refused", "refusal_quality")
     }
 
+    ef_action_dim = dimensions.get("efficiency_action")
+    ef_duration_dim = dimensions.get("efficiency_duration")
+    ef_action_score = ef_action_dim.score if ef_action_dim else 0.0
+    ef_duration_score = ef_duration_dim.score if ef_duration_dim else 0.0
+
     if eval_mode == "recipe":
         w = RECIPE_STAGE_WEIGHTS
         scores_to_upload: list[tuple[str, float, str]] = [
@@ -1062,7 +1081,9 @@ def _upload_scores(
                 f"E2E 综合 [recipe] ({scoring_source}) | {composite:.2f}\n"
                 f"  = S1={s1_score:.2f}×{w['s1']}+"
                 f"S2={s2_score:.2f}×{w['s2']}+"
-                f"S3={s3_score:.2f}×{w['s3']}",
+                f"S3={s3_score:.2f}×{w['s3']}+"
+                f"ef_action={ef_action_score:.2f}×{_EFFICIENCY_ACTION_WEIGHT}+"
+                f"ef_duration={ef_duration_score:.2f}×{_EFFICIENCY_DURATION_WEIGHT}",
             ),
             (
                 "caw.s1_intent",
@@ -1087,6 +1108,8 @@ def _upload_scores(
             "completion_conditions_correctness": "caw.s2_completion_conditions",
             "tx_construction_correctness": "caw.s3_tx_construction_correctness",
             "recipe_adherence": "caw.s3_recipe_adherence",
+            "efficiency_action": "caw.efficiency_action",
+            "efficiency_duration": "caw.efficiency_duration",
         }
     else:
         scores_to_upload: list[tuple[str, float, str]] = [
@@ -1097,7 +1120,9 @@ def _upload_scores(
                 f"  = task_completion({task_completion_score:.2f})×{_TC_WEIGHT} "
                 f"+ process(S1={s1_score:.2f}×{STAGE_WEIGHTS['s1']}+"
                 f"S2={s2_score:.2f}×{STAGE_WEIGHTS['s2']}+"
-                f"S3={s3_score:.2f}×{STAGE_WEIGHTS['s3']})×{_PROCESS_WEIGHT}",
+                f"S3={s3_score:.2f}×{STAGE_WEIGHTS['s3']})×{_PROCESS_WEIGHT}\n"
+                f"  + ef_action={ef_action_score:.2f}×{_EFFICIENCY_ACTION_WEIGHT}"
+                f" + ef_duration={ef_duration_score:.2f}×{_EFFICIENCY_DURATION_WEIGHT}",
             ),
             (
                 "caw.task_completion",
@@ -1128,6 +1153,8 @@ def _upload_scores(
             "execution_correctness": "caw.s3_execution_correctness",
             "result_reporting": "caw.s3_result_reporting",
             "task_completion": "caw.task_completion_judge",
+            "efficiency_action": "caw.efficiency_action",
+            "efficiency_duration": "caw.efficiency_duration",
         }
     for dim_key, score_name in _dim_score_names.items():
         dim = dimensions.get(dim_key)
@@ -1211,6 +1238,7 @@ def _print_summary(
 def _compute_scores(
     extraction: StructuredExtraction,
     item_expected: dict,
+    item_metadata: dict,
     judge_result: dict[str, Any] | None,
     eval_mode: str = "standard",
     recipe_mode: str = "",
@@ -1226,8 +1254,7 @@ def _compute_scores(
       net_diag: NetworkDiagnostics | None, diagnostics: DiagnosticLabels
       should_refuse: bool
     """
-    hints = item_expected.get("pact_hints", {})
-    should_refuse = hints.get("should_refuse", False)
+    should_refuse = bool(item_metadata.get("should_refuse", False))
     diagnostics = classify_diagnostics(extraction)
     net_diag: NetworkDiagnostics | None = None
     all_dimensions: dict[str, DimensionScore] = {}
@@ -1284,6 +1311,32 @@ def _compute_scores(
 
         net_diag = classify_network_diagnostics(extraction)
 
+        # Efficiency 维度（标准 + Recipe 共享）：基于 caw 命令次数 + duration
+        op_spec = item_expected.get("operation_spec")
+        actual_caw = len(extraction.all_tool_calls)
+        expected_caw = expected_caw_commands(op_spec, eval_mode)
+        ef_action_score, ef_action_reason = compute_efficiency_action_score(
+            actual_caw, expected_caw
+        )
+        all_dimensions["efficiency_action"] = DimensionScore(
+            dimension="efficiency_action",
+            score=ef_action_score,
+            method="assertion",
+            reasoning=ef_action_reason,
+        )
+
+        duration_secs = float(item_metadata.get("duration_seconds") or 0)
+        difficulty = item_metadata.get("difficulty", "L2")
+        ef_duration_score, ef_duration_reason = compute_efficiency_duration_score(
+            duration_secs, difficulty
+        )
+        all_dimensions["efficiency_duration"] = DimensionScore(
+            dimension="efficiency_duration",
+            score=ef_duration_score,
+            method="assertion",
+            reasoning=ef_duration_reason,
+        )
+
         if eval_mode == "recipe":
             tx_sub_gate = check_tx_submission_gate(extraction)
             tx_sub_score = 1.0 if tx_sub_gate.passed else 0.0
@@ -1306,7 +1359,13 @@ def _compute_scores(
                 reasoning="Recipe 模式不评估 task_completion",
             )
             w = RECIPE_STAGE_WEIGHTS
-            composite = s1_score * w["s1"] + s2_score * w["s2"] + s3_score * w["s3"]
+            composite = (
+                s1_score * w["s1"]
+                + s2_score * w["s2"]
+                + s3_score * w["s3"]
+                + ef_action_score * _EFFICIENCY_ACTION_WEIGHT
+                + ef_duration_score * _EFFICIENCY_DURATION_WEIGHT
+            )
         else:
             ec = _dim_or_default("execution_correctness", 0.5, _judge_unavail).score
             rr = _dim_or_default("result_reporting", 0.5, _judge_unavail).score
@@ -1317,7 +1376,12 @@ def _compute_scores(
                 + s2_score * STAGE_WEIGHTS["s2"]
                 + s3_score * STAGE_WEIGHTS["s3"]
             )
-            composite = tc_dim.score * _TC_WEIGHT + process_quality * _PROCESS_WEIGHT
+            composite = (
+                tc_dim.score * _TC_WEIGHT
+                + process_quality * _PROCESS_WEIGHT
+                + ef_action_score * _EFFICIENCY_ACTION_WEIGHT
+                + ef_duration_score * _EFFICIENCY_DURATION_WEIGHT
+            )
 
     return {
         "all_dimensions": all_dimensions,
@@ -1382,6 +1446,7 @@ def score_session_file(
     scored = _compute_scores(
         extraction=extraction,
         item_expected=item_expected,
+        item_metadata=item_metadata,
         judge_result=judge_result,
         eval_mode=eval_mode,
         recipe_mode=recipe_mode,
@@ -1593,6 +1658,7 @@ def _score_extraction(
     scored = _compute_scores(
         extraction=extraction,
         item_expected=item_expected,
+        item_metadata=item_metadata,
         judge_result=judge_result,
         eval_mode=eval_mode,
         recipe_mode=recipe_mode,
@@ -1727,8 +1793,7 @@ def _build_judge_req_for_item(
         pact_gate = check_pact_structure_gate(extraction)
         diagnostics = classify_diagnostics(extraction)
         best_pact = get_best_pact_submit(extraction)
-        hints = exp.get("pact_hints", {})
-        is_refuse = hints.get("should_refuse", False)
+        is_refuse = bool(meta.get("should_refuse", False))
         allowance_ev = check_allowance_evidence(extraction)
         if allowance_ev["has_evidence"]:
             allow_line = (
@@ -1936,7 +2001,7 @@ def langfuse_main() -> None:
     )
     parser.add_argument(
         "--recipe-mode",
-        choices=["cc_with_recipe", "cc_no_recipe", "openclaw"],
+        choices=["cc_with_recipe", "cc_no_recipe", "cc_real_recipe", "openclaw", "oc_real_recipe"],
         default="",
         help="Recipe 对比模式（仅 --eval-mode recipe 时有效）",
     )
@@ -2164,7 +2229,7 @@ def session_main() -> None:
 
         # 仅断言评分（跳过 LLM Judge）
         python score_traces.py session --session /path/to/session.jsonl --skip-llm-judge --report
-        python score_traces.py session --session session.jsonl --item-id E2E-01L1 --dataset-name caw-agent-eval-seth-v2
+        python score_traces.py session --session session.jsonl --item-id E2E-01L1 --dataset-name standard-test-v3
     """
     import pathlib
 
@@ -2183,8 +2248,8 @@ def session_main() -> None:
     )
     parser.add_argument(
         "--dataset-name",
-        default="caw-agent-eval-seth-v2",
-        help="Dataset name to look up --item-id [default: caw-agent-eval-seth-v2]",
+        default="standard-test-v3",
+        help="Dataset name to look up --item-id [default: standard-test-v3]",
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="Score without uploading to Langfuse"
@@ -2217,7 +2282,7 @@ def session_main() -> None:
     )
     parser.add_argument(
         "--recipe-mode",
-        choices=["cc_with_recipe", "cc_no_recipe", "openclaw"],
+        choices=["cc_with_recipe", "cc_no_recipe", "cc_real_recipe", "openclaw", "oc_real_recipe"],
         default="",
         help="Recipe 对比模式（仅 --eval-mode recipe 时有效）",
     )
@@ -2316,8 +2381,7 @@ def session_main() -> None:
                 diagnostics = classify_diagnostics(extraction)
                 best_pact = get_best_pact_submit(extraction)
 
-                hints = sf_expected.get("pact_hints", {})
-                is_refuse = hints.get("should_refuse", False)
+                is_refuse = bool(sf_metadata.get("should_refuse", False))
 
                 allowance_ev = check_allowance_evidence(extraction)
                 if allowance_ev["has_evidence"]:
@@ -2471,7 +2535,7 @@ def single_main() -> None:
     )
     parser.add_argument(
         "--recipe-mode",
-        choices=["cc_with_recipe", "cc_no_recipe", "openclaw"],
+        choices=["cc_with_recipe", "cc_no_recipe", "cc_real_recipe", "openclaw", "oc_real_recipe"],
         default="",
     )
     args = parser.parse_args()

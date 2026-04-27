@@ -133,6 +133,7 @@ gcloud compute scp --zone "$ZONE" --project "$PROJECT" --tunnel-through-iap \
 评测需要的最低余额（Ethereum Sepolia）：
 - **SETH ≥ 0.1**（gas + transfer/swap 操作）
 - **SETH_USDC ≥ 14**（DeFi 类 case 需要 USDC）
+- **SETH_WETH ≥ 0.1**（unwrap / Aave borrow / approve→pull 等需要 WETH 余额）
 
 ```bash
 # 查询当前余额
@@ -156,9 +157,14 @@ caw faucet --token-id SETH
 # USDC 充值（swap ETH → USDC）：
 openclaw agent --agent main --message \
   "把 0.01 ETH 换成 USDC（Ethereum Sepolia，Uniswap V3）。已授权操作，直接创建 pact 并执行，不需要确认。完成后告诉我拿到了多少 USDC 和交易 hash。"
+
+# WETH 充值（wrap ETH → WETH，调 WETH9.deposit()）：
+openclaw agent --agent main --message \
+  "wrap 0.1 ETH 成 WETH（Ethereum Sepolia）。已授权操作，直接创建 pact 并执行，不需要确认。完成后告诉我交易 hash。"
 ```
 
 > 当前参考汇率：1 ETH ≈ \$2300，0.01 ETH ≈ 23 USDC。如需 14 USDC，swap 0.007 ETH 即可留出余量。
+> WETH wrap 是 1:1，wrap 0.1 ETH 即 0.1 WETH（不计 gas）。
 
 ---
 
@@ -182,7 +188,7 @@ for b in d.get('result', []):
     t, amt = b['token_id'], float(b.get('total', 0))
     if amt > 0: print(f'{t}: {amt}')
 "
-# 预期：SETH ≥ 0.1, SETH_USDC ≥ 14
+# 预期：SETH ≥ 0.1, SETH_USDC ≥ 14, SETH_WETH ≥ 0.1
 
 # ✅ Python 依赖正确
 python3 -c "import langfuse; assert langfuse.__version__ == '4.0.6', langfuse.__version__; print('langfuse OK')"

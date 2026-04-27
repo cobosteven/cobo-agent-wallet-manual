@@ -79,10 +79,6 @@ Your job: Find the recipe(s) that apply to this task type.
 
 A Recipe is a domain knowledge document for a specific operation type (e.g. DEX swap, lending, DCA). Find the recipe whose use case matches the intent — if no recipe matches, proceed without one. If a match is found, read it before continuing.
 
-```bash
-caw recipe search --query "<protocol-name> <chain>"
-# e.g. "uniswap base", "aave arbitrum", "jupiter solana"
-```
 
 **Output:** The relevant recipe(s) to apply in Steps 3, 4, and 5. Each result may include a `pact_template` — a pre-structured JSON with `{{placeholder}}` variables. If present, use it as the base for Step 5; fill every `{{placeholder}}` from the recipe's Facts and user intent before submitting.
 
@@ -169,7 +165,7 @@ Then submit via `caw pact submit`. Run `caw pact submit -h` to see the exact fla
 
 **Step 2 — Recipe:**
 
-`caw recipe search --query "uniswap base"` → matches Uniswap V3 on Base recipe.
+`caw recipe search --query "How do I swap USDC to ETH on Base"` → matches Uniswap V3 on Base recipe.
 
 **Step 3 — Plan:**
 

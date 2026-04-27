@@ -4,36 +4,71 @@
 
 ---
 
-## Dataset Structure
+## Dataset Structure (统一 schema v2)
 
 每个 dataset item 的格式：
 
 ```json
 {
-  "id": "E2E-01L1",
+  "id": "E2E-LQED",
   "input": {
-    "user_message": "帮我把 0.001 ETH 转到 0x742d35Cc6634C0532925a3b8D4C9A8a6b7c8f9e1 (Ethereum Sepolia)"
+    "user_message": "Swap 0.001 USDC to WETH on Sepolia using Uniswap V3 with 0.05% fee tier"
   },
   "expected_output": {
-    "pact_hints": {
-      "operation_type": "transfer",
-      "token": "SETH",
-      "chain": "SETH",
-      "amount": "0.001"
+    "schema_version": 2,
+    "operation_spec": {
+      "protocol": "uniswap-v3",
+      "transactions": [
+        {
+          "step": 1,
+          "type": "contract_call",
+          "contract": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+          "function": "approve",
+          "selector": "0x095ea7b3",
+          "params": {"spender": "0x3bFA...", "amount": "1000"}
+        },
+        {
+          "step": 2,
+          "type": "contract_call",
+          "contract": "0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E",
+          "function": "exactInputSingle",
+          "selector": "0x04e45aaf",
+          "params": {"...": "..."}
+        }
+      ]
     },
-    "success_criteria": "agent creates pact, calls caw tx transfer with correct params"
+    "pact_expectation": {
+      "intent_canonical": "Swap 0.001 USDC to WETH on Sepolia via Uniswap V3 with 0.05% fee tier",
+      "policies": {
+        "allowed_chains": ["SETH"],
+        "allowed_tokens": ["SETH_USDC"],
+        "allowed_contracts": ["0x1c7d...", "0x3bfa..."],
+        "max_amount_per_tx": {"token": "SETH_USDC", "value": 1000}
+      },
+      "completion": {"type": "tx_count", "threshold": 2}
+    }
   },
   "metadata": {
+    "id": "E2E-LQED",
+    "chain": "eth_sepolia",
+    "operation_type": "swap",
     "difficulty": "L1",
-    "operation_type": "transfer",
-    "chain": "ethereum_sepolia",
-    "category": "transfer",
-    "tags": ["native_token", "testnet"]
+    "category": "uniswap_v3",
+    "tags": ["uniswap", "swap", "sepolia"],
+    "eval_type": "recipe-eval",
+    "should_refuse": false,
+    "recipe_name": "uniswap-v3-swap",
+    "recipe": "<full recipe text from knowledge-hub>"
   }
 }
 ```
 
-**Item ID 格式：** `E2E-{scenario_id}{difficulty}` — e.g. `E2E-01L1`, `E2E-03L2`
+- `eval_type=recipe-eval` 必须有 `metadata.recipe + metadata.recipe_name`
+- `eval_type=standard-eval` 时 `metadata.recipe` 可有可无（标准模式 dispatch 不注入；judge 也不读）
+- `expected_output.{operation_spec, pact_expectation, schema_version}` 三字段均必填
+- 详见 [scripts/schemas.py](../scripts/schemas.py)
+
+**Item ID 格式：** 早期用 `E2E-{scenario_id}{difficulty}`（如 `E2E-01L1`），新数据集用随机短码（如 `E2E-LQED`）
 
 **测试网覆盖：**
 - EVM: Ethereum Sepolia (`SETH`), Base Sepolia (`TBASE_SETH`)
@@ -43,17 +78,31 @@
 
 ## 已有数据集
 
-| 数据集 | case 数 | 说明 |
-|--------|:-------:|------|
-| `caw-agent-eval-seth-v2` | 14 | **默认**，SETH 测试链，含完整 expected_output |
-| `caw-agent-eval-seth-v1` | 14 | 旧版，expected_output 不完整 |
-| `caw-agent-eval-v1` | 22 | 主网场景，sandbox 环境无法执行大部分 case |
+| 数据集 | case 数 | schema | 说明 |
+|--------|:-------:|--------|------|
+| `recipe-test-v3` | 7 | v2 | **Recipe 评测推荐**，`metadata.eval_type=recipe-eval` |
+| `standard-test-v3` | 7 | v2 | **标准评测推荐**，`metadata.eval_type=standard-eval`；与 recipe-test-v3 内容一致，做 A/B |
+| `caw-agent-eval-seth-v2` | 14 | v1（旧） | 旧 `pact_hints/stage_criteria` 格式，仅历史回放，不再维护 |
+| `caw-recipe-eval-seth-v1` | - | 部分 v2 | Recipe 多步骤；部分 item 缺 `metadata.eval_type`，validate_dataset 会报 FAIL |
+| `caw-agent-eval-seth-v1` | 14 | v1（旧） | 旧版，expected_output 不完整 |
+| `caw-agent-eval-v1` | 22 | v1（旧） | 主网场景，sandbox 环境无法执行大部分 case |
+
+`schema = v2` 的数据集需通过 [scripts/validate_dataset.py](../scripts/validate_dataset.py) `--strict` 校验：
+- `expected_output = {operation_spec, pact_expectation, schema_version: 2}` 三字段必填
+- `metadata.eval_type` ∈ `{"standard-eval", "recipe-eval"}`
+- `recipe-eval` 必须有 `metadata.recipe + metadata.recipe_name`
 
 ```bash
-# 验证数据集可访问
+# 校验
 cd <repo>/cobo-agent-wallet
+.venv/bin/python sdk/skills/caw-eval/scripts/validate_dataset.py \
+  --dataset-name recipe-test-v3 --strict
+.venv/bin/python sdk/skills/caw-eval/scripts/validate_dataset.py \
+  --dataset-name standard-test-v3 --strict
+
+# 验证数据集可访问
 .venv/bin/python sdk/skills/caw-eval/scripts/run_eval_cc.py prepare \
-  --dataset-name caw-agent-eval-seth-v2
+  --dataset-name recipe-test-v3
 ```
 
 ---
@@ -142,7 +191,7 @@ from langfuse import Langfuse
 
 lf = Langfuse()
 lf.create_dataset_item(
-    dataset_name="caw-agent-eval-seth-v2",
+    dataset_name="recipe-test-v3",
     id="E2E-10L1",
     input={"user_message": "..."},
     expected_output={"pact_hints": {...}, "success_criteria": "..."},

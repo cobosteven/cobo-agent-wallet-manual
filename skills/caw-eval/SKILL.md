@@ -33,7 +33,8 @@ description: |
 |--------|---------|-----------|
 | "跑评测" / "测评 CAW" / "eval" / "评分" / "claude code 评测" | **标准模式 + CC headless** | → [run-eval-cc.md](./references/run-eval-cc.md) |
 | "recipe 评测" / "recipe eval" | **Recipe 模式**（交易构建评测） | → [run-eval-recipe.md](./references/run-eval-recipe.md) |
-| "recipe 对比评测" / "recipe 对比" | **Recipe 三模式对比**（OpenClaw / CC+recipe / CC 无 recipe） | → [run-eval-recipe.md](./references/run-eval-recipe.md) |
+| "recipe 对比评测" / "recipe 对比" | **Recipe 五模式对比**（OpenClaw / OC 真实 / CC+recipe / CC 无 recipe / CC 真实） | → [run-eval-recipe.md](./references/run-eval-recipe.md) |
+| "real recipe" / "真实 recipe" / "live recipe" / "实测 recipe" / "backend recipe" | **真实 recipe 模式**（不注入 CAW_RECIPE_FILE，caw 调真实 backend） | → [run-eval-recipe.md](./references/run-eval-recipe.md) `cc_real_recipe` / `oc_real_recipe` |
 | "弱模型验证" / "openclaw 评测" / "模型兼容性" / "doubao/minimax/gpt-5.4 评测" | **Openclaw 弱模型评测**（多台并行 dispatch） | → [run-eval-openclaw.md](./references/run-eval-openclaw.md) |
 
 **默认走标准 CC 评测**（用户没明确说 "recipe" 或 "openclaw" 时）。
@@ -105,10 +106,15 @@ S3 = tx_construction_correctness × 0.5 + recipe_adherence × 0.3 + tx_submissio
 
 | 数据集 | Case 数 | 场景 | 说明 |
 |--------|:-------:|-----|------|
-| `caw-agent-eval-seth-v2` | 14 | transfer / swap / lend / dca / ... | 默认，Ethereum Sepolia |
-| `caw-recipe-eval-seth-v1` | - | recipe | Recipe 多步骤场景，Sepolia |
+| `recipe-test-v3` | 7 | uniswap-swap / aave-lend / weth-wrap | Recipe 评测（推荐），统一 schema v2 |
+| `standard-test-v3` | 7 | 同 recipe-test-v3 | 标准评测（推荐），同一份测试集 + 不同 eval_mode 做 A/B |
+| `caw-agent-eval-seth-v2` | 14 | transfer / swap / lend / dca / ... | 旧 schema（pact_hints/stage_criteria），仅历史回放 |
+| `caw-recipe-eval-seth-v1` | - | recipe 多步骤 | Sepolia 多步骤场景，部分 item 已部分新 schema |
 
-- 默认 `caw-agent-eval-seth-v2`；用户明确说 "recipe 评测" 时改用 `caw-recipe-eval-seth-v1`
+- 默认 `recipe-test-v3`（recipe 模式）/ `standard-test-v3`（标准模式）
+- `recipe-test-v3` 和 `standard-test-v3` 内容**完全一致**（只是 metadata.eval_type 不同），区别仅在运行时：
+  - `--eval-mode recipe`：dispatch 注入 `CAW_RECIPE_FILE`，judge 评 tx 构建（不评链上）
+  - `--eval-mode standard`：dispatch **不**注入 `CAW_RECIPE_FILE`（agent 自主 `caw recipe search`），judge 评全流程（含 task_completion）
 - `--dataset-name` 可指定其他数据集
 - 数据集管理：[dataset-management.md](./references/dataset-management.md)
 - 数据集审查（11 条机械规则）：[dataset-review.md](./references/dataset-review.md)

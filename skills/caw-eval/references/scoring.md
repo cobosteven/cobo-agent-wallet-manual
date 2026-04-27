@@ -3,17 +3,23 @@
 ## 综合分计算
 
 ```
-综合分 = task_completion × 0.3 + process_quality × 0.7
+综合分 = task_completion × 0.25
+       + process_quality × 0.60
+       + efficiency_action × 0.10
+       + efficiency_duration × 0.05
 
-process_quality = S1 × 0.15 + S2 × 0.45 + S3 × 0.4
+process_quality = S1 × 0.15 + S2 × 0.45 + S3 × 0.40   （内部比例不变）
 
 所有分数 0-1
 ```
 
 **设计思路**：
-- task_completion 占 30%：任务是否真正完成是最终衡量标准
-- process_quality 占 70%：流程质量（意图理解 → Pact 设计 → 执行）反映 Skill 的可靠性
-- S2 权重最高（45%）：Pact 是 CAW 的核心安全机制，policies 质量直接影响用户资金安全
+- task_completion 占 25%：任务是否真正完成是最终衡量标准
+- process_quality 占 60%：流程质量（意图理解 → Pact 设计 → 执行）反映 Skill 的可靠性
+- S2 权重最高（45% × 0.60 ≈ 27%）：Pact 是 CAW 的核心安全机制，policies 质量直接影响用户资金安全
+- efficiency 共 15%：agent 行为效率（caw 命令次数）+ end-user 体验耗时（wall clock）
+  - efficiency_action 模型无关，捕捉 agent thrash（重复搜索 / 多余 abi encode）
+  - efficiency_duration 偏向 UX 视角，跨模型有偏（慢模型本来就该被惩罚体验）
 
 ---
 
@@ -65,11 +71,50 @@ S1 只有一个 LLM 维度。参数正确性由 S2（pact 参数）和 S3（tx �
 
 S3 不设门槛。执行方式多样（`caw tx transfer`、`caw tx call`、Python 脚本），由 LLM 整体评判。
 
-### Task Completion（权重 30%）
+### Task Completion（权重 25%）
 
 | 维度 | 方式 | 评判内容 |
 |------|:----:|---------|
 | task_completion | LLM | 0 = 完全失败，0.5 = 部分完成，1 = 完全成功。检测到幻觉（声称成功但无 tx 证据）→ 0 |
+
+### Efficiency Action（权重 10%，模型无关）
+
+捕捉 agent 行为效率：caw 命令实际次数 vs 从 `operation_spec.transactions` 派生的合理上限。
+
+| 维度 | 方式 | 评判内容 |
+|------|:----:|---------|
+| efficiency_action | 断言 | `ratio = caw_command_count / expected`；ratio ≤ 1.0 → 1.0；1.0–2.5 线性衰减；≥ 2.5 → 0.0 |
+
+**expected 推导**（[assertions.py · expected_caw_commands](../scripts/assertions.py)）：
+```
+expected = base + per_tx × N + polling
+  base    = 4   （pact submit + 1-2 preflight + recipe search 等基础开销）
+  per_tx  = 2   （abi encode + tx call/transfer）
+  polling = N   （仅标准模式：每笔 tx 至少 1 次 caw pending get；recipe 模式 = 0）
+  N = len(operation_spec.transactions)
+```
+
+举例：
+- N=2, recipe 模式：expected = 8（实际 ≤ 8 给满分；20 即 0 分）
+- N=5, 标准模式：expected = 19
+
+### Efficiency Duration（权重 5%，end-user UX 视角）
+
+按 `metadata.difficulty` 分桶设 target/cap：
+
+| difficulty | target (≤ → 1.0) | cap (≥ → 0.0) | 说明 |
+|---|---|---|---|
+| L1 | 60s | 240s | 简单 transfer/approve/wrap |
+| L2 | 150s | 420s | swap / 简单 lend |
+| L3 | 300s | 600s | 多步骤组合（cap 与运行指标 600s 异常阈值对齐） |
+
+| 维度 | 方式 | 评判内容 |
+|------|:----:|---------|
+| efficiency_duration | 断言 | duration ≤ target → 1.0；target < duration < cap 线性衰减；≥ cap → 0.0 |
+
+**注意**：跨模型不公平（Opus 天然慢于 Haiku），但故意如此 —— 这个维度直接代表 agent 终端用户的等待体验。模型间公平比较请看 efficiency_action。
+
+duration_seconds 缺失（=0 或未采集）→ 给中性 0.5 + reasoning="no duration data"。
 
 ---
 
@@ -147,7 +192,7 @@ S3 不设门槛。执行方式多样（`caw tx transfer`、`caw tx call`、Pytho
 
 ```bash
 .venv/bin/python sdk/skills/caw-eval/scripts/score_traces.py \
-  --dataset-name caw-agent-eval-seth-v2 \
+  --dataset-name standard-test-v3 \
   --run-name {run_name} \
   --report
 ```
@@ -156,10 +201,11 @@ S3 不设门槛。执行方式多样（`caw tx transfer`、`caw tx call`、Pytho
 
 ## Langfuse Score 格式
 
-每个 trace 上传 13 条 scores，每条携带 metadata：
+每个 trace 上传 15+ 条 scores，每条携带 metadata：
 
 ```
 评分：caw.s1_intent, caw.s2_pact, caw.s3_execution, caw.e2e_composite, caw.task_completion, caw.scoring_source
+效率：caw.efficiency_action, caw.efficiency_duration
 运行指标：caw.duration_seconds, caw.token_count, caw.tool_call_count, caw.caw_command_count, caw.pact_submit_count, caw.tx_command_count, caw.error_count
 ```
 
@@ -168,7 +214,7 @@ S3 不设门槛。执行方式多样（`caw tx transfer`、`caw tx call`、Pytho
 ```json
 {
   "run_name": "eval-cc-sonnet-20260411",
-  "dataset_name": "caw-agent-eval-seth-v2",
+  "dataset_name": "standard-test-v3",
   "item_id": "E2E-01L1",
   "operation_type": "transfer",
   "difficulty": "L1",
@@ -227,10 +273,16 @@ S2 Pact (assertion+judge) | 0.72
 ### 综合分计算
 
 ```
-综合分 = S1(意图) × 0.20 + S2(Pact) × 0.45 + S3(交易构建) × 0.35
+综合分 = S1 × 0.15
+       + S2 × 0.45
+       + S3 × 0.25
+       + efficiency_action × 0.10
+       + efficiency_duration × 0.05
 ```
 
 **无 Task Completion**（交易不执行，无法评判任务是否完成）。
+
+efficiency_action 与 efficiency_duration 的口径与标准模式一致；唯一区别是 `expected_caw_commands` 在 Recipe 模式下不计 polling 开销（不评链上确认）。
 
 ### S3 交易构建子维度
 
@@ -274,6 +326,7 @@ S2 Pact (assertion+judge) | 0.72
 
 ```
 评分：caw.s1_intent, caw.s2_pact, caw.s3_tx_construction, caw.e2e_composite
+效率：caw.efficiency_action, caw.efficiency_duration
 子维度：caw.s1_intent_understanding, caw.s2_policies_correctness, caw.s2_completion_conditions,
        caw.s3_tx_construction_correctness, caw.s3_recipe_adherence
 ```

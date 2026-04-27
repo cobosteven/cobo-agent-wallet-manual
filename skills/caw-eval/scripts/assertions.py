@@ -1088,3 +1088,75 @@ def _count_json_items(text: str) -> int:
     except (json.JSONDecodeError, TypeError):
         pass
     return 0
+
+
+# ── Efficiency 评分（action 模型无关 / duration UX 参考） ──────────────────────
+
+# difficulty → (target_seconds, cap_seconds)
+# duration ≤ target → 1.0；≥ cap → 0.0；中间线性。
+# 初版经验值，跑 sonnet baseline 后可校准。
+DURATION_BASELINES: dict[str, tuple[int, int]] = {
+    "L1": (60, 240),
+    "L2": (150, 420),
+    "L3": (300, 600),
+}
+
+
+def expected_caw_commands(operation_spec: dict | None, eval_mode: str) -> int:
+    """估算合理的 caw 命令次数：base + per_tx × N + polling。
+
+    - base=4: pact submit + 1-2 preflight (eth_call/getPool/quote) + recipe search 等基础开销
+    - per_tx=2: 每笔 tx 一般需要 abi encode + tx call/transfer
+    - polling=N (仅标准模式): 每笔 tx 至少 1 次 caw pending get 等待链上确认
+                              Recipe 模式不评链上确认，无 polling 开销
+
+    operation_spec 缺失时返回退化默认值 8，对应 1-2 笔 tx 的基础开销。
+    """
+    if not operation_spec:
+        return 8
+    n_tx = len(operation_spec.get("transactions", []))
+    base = 4
+    per_tx = 2
+    polling = n_tx if eval_mode == "standard" else 0
+    return base + per_tx * n_tx + polling
+
+
+def compute_efficiency_action_score(actual_count: int, expected_count: int) -> tuple[float, str]:
+    """ratio = actual / expected。
+    - ratio ≤ 1.0: 1.0（高效）
+    - 1.0 < ratio < 2.5: 线性衰减（1.0 → 0.0）
+    - ratio ≥ 2.5: 0.0（严重 thrash）
+    """
+    if expected_count <= 0:
+        return 0.5, f"no baseline (expected={expected_count})"
+    ratio = actual_count / expected_count
+    if ratio <= 1.0:
+        score = 1.0
+    elif ratio >= 2.5:
+        score = 0.0
+    else:
+        score = 1.0 - (ratio - 1.0) / 1.5
+    return score, (
+        f"caw_cmd={actual_count} vs expected={expected_count} (ratio={ratio:.2f}) → {score:.2f}"
+    )
+
+
+def compute_efficiency_duration_score(duration_secs: float, difficulty: str) -> tuple[float, str]:
+    """按 difficulty 设 target/cap：
+    - duration ≤ target: 1.0
+    - duration ≥ cap: 0.0
+    - 中间线性
+    duration 未采集（=0/缺失）返回中性 0.5 + N/A reasoning。
+    """
+    if not duration_secs or duration_secs <= 0:
+        return 0.5, "no duration data → 0.5 (neutral)"
+    target, cap = DURATION_BASELINES.get(difficulty, DURATION_BASELINES["L2"])
+    if duration_secs <= target:
+        score = 1.0
+    elif duration_secs >= cap:
+        score = 0.0
+    else:
+        score = 1.0 - (duration_secs - target) / (cap - target)
+    return score, (
+        f"duration={duration_secs:.0f}s ({difficulty}: target={target}s, cap={cap}s) → {score:.2f}"
+    )

@@ -17,42 +17,30 @@ from pydantic import ValidationError
 
 
 def _load_from_langfuse(dataset_name: str) -> list[dict]:
-    """从 Langfuse 拉指定 dataset 的全部 items。"""
-    from eval_utils import get_dataset_items
+    """从 Langfuse 拉指定 dataset 的全部 items（保留原始 expected_output / metadata 结构）。
 
-    items = get_dataset_items(dataset_name)
-    # eval_utils 返回的 dict 格式和 generate_dataset 输出略有差异，标准化一下
+    schema 校验需要完整的 operation_spec / pact_expectation / eval_type 等字段，
+    不能用 eval_utils.get_dataset_items() 的扁平化输出（那是给评测 harness 用的）。
+    """
+    from eval_utils import get_langfuse_client
+
+    lf = get_langfuse_client()
+    dataset = lf.get_dataset(dataset_name)
+    items = sorted(dataset.items, key=lambda i: i.id)
     normalized: list[dict] = []
-    for it in items:
-        # eval_utils 把 input 展平了，要还原成 {input: {user_message}, expected: {...}, metadata: {...}}
-        if "input" in it and isinstance(it["input"], dict):
-            normalized.append(it)
-        else:
-            normalized.append(
-                {
-                    "id": it.get("id", ""),
-                    "input": {"user_message": it.get("user_message", "")},
-                    "expected": {
-                        "pact_hints": it.get("pact_hints", {}),
-                        "success_criteria": it.get("success_criteria", ""),
-                        "stage_criteria": it.get("stage_criteria", {}),
-                        "operation_spec": it.get("operation_spec"),
-                        "pact_expectation": it.get("pact_expectation"),
-                    },
-                    "metadata": {
-                        "id": it.get("id", ""),
-                        "chain": it.get("chain", ""),
-                        "operation_type": it.get("operation_type", ""),
-                        "difficulty": it.get("difficulty", "L1"),
-                        "wallet_paired": it.get("wallet_paired", False),
-                        "auto_approve_owner": it.get("auto_approve_owner", True),
-                        "recipe_name": it.get("recipe_name"),
-                        "recipe_version": it.get("recipe_version"),
-                        "recipe": it.get("recipe"),
-                        "variant": it.get("variant"),
-                    },
-                }
-            )
+    for item in items:
+        inp = item.input if isinstance(item.input, dict) else {"user_message": item.input or ""}
+        exp = item.expected_output if isinstance(item.expected_output, dict) else {}
+        meta = item.metadata if isinstance(item.metadata, dict) else {}
+        item_id = meta.get("id") or item.id
+        normalized.append(
+            {
+                "id": item_id,
+                "input": inp,
+                "expected": exp,
+                "metadata": meta,
+            }
+        )
     return normalized
 
 

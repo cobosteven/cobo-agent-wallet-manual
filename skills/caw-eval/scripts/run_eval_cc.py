@@ -159,8 +159,11 @@ def build_eval_prompt(
 
     Args:
         eval_mode: "standard" 标准模式, "recipe" recipe 评测模式
-        recipe_mode: "cc_with_recipe" / "cc_no_recipe" / "openclaw"（仅 recipe 模式有效）
-        run_name: run 名，cc_with_recipe 模式下用于定位 per-item recipe 归档文件
+        recipe_mode: "cc_with_recipe" / "cc_no_recipe" / "cc_real_recipe" / "openclaw"（仅 recipe 模式有效）
+            - cc_with_recipe: 写注入文件 + 设 CAW_RECIPE_FILE，agent search 拿到指定 recipe
+            - cc_no_recipe:   写空注入文件 + 设 CAW_RECIPE_FILE，对照组（recipe=空）
+            - cc_real_recipe: 不写文件、不设 CAW_RECIPE_FILE，agent search 调真实 backend
+        run_name: run 名，cc_with_recipe / cc_no_recipe 模式下用于定位 per-item recipe 归档文件
         target_env: "local"（本地 Mac / VSCode，用 dev skill）或
                     "server"（headless 服务器跑评测，用 sandbox skill + 加 Environment 段）
     """
@@ -333,12 +336,19 @@ async def _run_single_cc_task(
     # tee goroutine 被强杀，CC Bash 拿到 0 字节 → "(Bash completed with no output)"。
     # CAW_TELEMETRY=0 在 init 阶段就关掉，telemetryPreRun 直接跳过整个 stdout 劫持，
     # 与 OC 评测路径（systemd drop-in 同时设这两个 env）对齐。
+    #
+    # 标准模式 / 其他模式：显式清除可能残留的 CAW_RECIPE_FILE / CAW_TELEMETRY，
+    # 让 caw recipe search 走正常后端接口拉真实 recipe 注册表（标准模式评测的基线）。
+    # 不清会被 os.environ.copy() 带进来被动污染评测语义。
     child_env = os.environ.copy()
     if recipe_mode in ("cc_with_recipe", "cc_no_recipe") and run_name:
         archive_file = _recipe_archive_path(run_name, item_id)
         if archive_file.exists():
             child_env["CAW_RECIPE_FILE"] = str(archive_file)
             child_env["CAW_TELEMETRY"] = "0"
+    else:
+        child_env.pop("CAW_RECIPE_FILE", None)
+        child_env.pop("CAW_TELEMETRY", None)
 
     print(f"STAGE: claude_start item={item_id} sid={session_id}", flush=True)
     proc = await asyncio.create_subprocess_exec(
@@ -1555,7 +1565,7 @@ def main() -> None:
     # ── upload ────────────────────────────────────────────────────────────────
     p_upload = sub.add_parser("upload", help="批量上传 session 到 Langfuse")
     p_upload.add_argument("--run-name", required=True)
-    p_upload.add_argument("--dataset-name", default="caw-agent-eval-seth-v2")
+    p_upload.add_argument("--dataset-name", default="standard-test-v3")
     p_upload.add_argument("--item-id", nargs="*", help="只上传指定 item")
     p_upload.add_argument("--skill", default="cobo-agentic-wallet-dev")
     p_upload.add_argument(
@@ -1576,7 +1586,7 @@ def main() -> None:
     # ── score ─────────────────────────────────────────────────────────────────
     p_score = sub.add_parser("score", help="对 session 评分")
     p_score.add_argument("--run-name", required=True)
-    p_score.add_argument("--dataset-name", default="caw-agent-eval-seth-v2")
+    p_score.add_argument("--dataset-name", default="standard-test-v3")
     p_score.add_argument("--report", action="store_true", help="打印评分报告")
     p_score.add_argument("--dump-judge-requests", help="导出 LLM judge 请求到文件")
     p_score.add_argument("--judge-results", help="读取 LLM judge 结果文件")
@@ -1596,7 +1606,7 @@ def main() -> None:
 
     # ── run（服务器端 headless 执行单 item / 小批量）───────────────────────────
     p_run = sub.add_parser("run", help="服务器端：headless 逐 item 执行评测")
-    p_run.add_argument("--dataset-name", default="caw-agent-eval-seth-v2")
+    p_run.add_argument("--dataset-name", default="standard-test-v3")
     p_run.add_argument("--run-name", required=True)
     p_run.add_argument("--item-id", nargs="*", help="只跑指定 item")
     p_run.add_argument("--timeout", type=int, default=_DEFAULT_CC_TIMEOUT, help="单 item 超时秒数")
@@ -1604,7 +1614,7 @@ def main() -> None:
     p_run.add_argument("--eval-mode", choices=["standard", "recipe"], default="standard")
     p_run.add_argument(
         "--recipe-mode",
-        choices=["cc_with_recipe", "cc_no_recipe", "openclaw"],
+        choices=["cc_with_recipe", "cc_no_recipe", "cc_real_recipe", "openclaw"],
         default="",
     )
     p_run.add_argument(
@@ -1619,7 +1629,7 @@ def main() -> None:
         "dispatch",
         help="本地 Mac 端：并行调度 N 台服务器，动态队列分发 item（含 busy check）",
     )
-    p_dispatch.add_argument("--dataset-name", default="caw-agent-eval-seth-v2")
+    p_dispatch.add_argument("--dataset-name", default="standard-test-v3")
     p_dispatch.add_argument("--run-name", required=True)
     p_dispatch.add_argument("--item-id", nargs="*", help="只跑指定 item")
     p_dispatch.add_argument(
@@ -1636,7 +1646,7 @@ def main() -> None:
     p_dispatch.add_argument("--eval-mode", choices=["standard", "recipe"], default="standard")
     p_dispatch.add_argument(
         "--recipe-mode",
-        choices=["cc_with_recipe", "cc_no_recipe", "openclaw"],
+        choices=["cc_with_recipe", "cc_no_recipe", "cc_real_recipe", "openclaw"],
         default="",
     )
     p_dispatch.add_argument(

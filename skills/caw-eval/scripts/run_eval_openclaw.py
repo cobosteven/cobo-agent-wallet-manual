@@ -15,7 +15,7 @@ Openclaw 弱模型评测脚本。
 推荐用法（本地 Mac 调度多台服务器）:
     python run_eval_openclaw.py dispatch \\
       --run-name eval-oc-doubao-20260415 \\
-      --dataset-name caw-agent-eval-seth-v2 \\
+      --dataset-name standard-test-v3 \\
       --model doubao --model-full volcengine/doubao-seed-2.0-code \\
       --server srv1:asia-east2-a:my-project \\
       --server srv2:asia-east2-c:my-project \\
@@ -24,7 +24,7 @@ Openclaw 弱模型评测脚本。
 单台服务器直接 run（dispatch 内部也调这个）:
     python run_eval_openclaw.py run \\
       --run-name eval-oc-doubao-20260415 \\
-      --dataset-name caw-agent-eval-seth-v2
+      --dataset-name standard-test-v3
 """
 
 import argparse
@@ -87,7 +87,9 @@ def build_task_prompt(
 
     Args:
         eval_mode: "standard" 标准模式, "recipe" recipe 评测模式
-        recipe_mode: "cc_with_recipe" / "cc_no_recipe" / "openclaw"（仅 recipe 模式有效）
+        recipe_mode: "cc_with_recipe" / "cc_no_recipe" / "openclaw" / "oc_real_recipe"（仅 recipe 模式有效）
+            - openclaw:       systemd drop-in 注入 CAW_RECIPE_FILE，gateway 起 caw 时读注入文件
+            - oc_real_recipe: 不写 drop-in（dispatch 入口主动 teardown 残留），caw 调真实 backend
     """
     item_id = item["id"]
     user_message = item["user_message"]
@@ -1408,6 +1410,11 @@ async def _cmd_dispatch(
     recipe_gateway_active = eval_mode == "recipe" and recipe_mode == "openclaw"
     if recipe_gateway_active:
         await _setup_gateway_recipe_env(servers)
+    else:
+        # 标准模式 / 其他模式：幂等清理可能残留的 systemd drop-in 与 /tmp/caw-eval-recipe.json，
+        # 防止上一轮 recipe 评测残留继续把 caw recipe search 短路到文件分支，污染真实后端基线。
+        # _teardown_gateway_recipe_env 的命令链用 `rm -f` + systemctl restart，drop-in 不存在也无副作用。
+        await _teardown_gateway_recipe_env(servers)
 
     try:
         # ── 静态分配路径（fire-and-forget 或显式 --static）────────────────────────
@@ -1543,7 +1550,7 @@ def main() -> None:
 
     # ── run（推荐）
     p_run = sub.add_parser("run", help="脚本驱动串行执行评测（推荐）")
-    p_run.add_argument("--dataset-name", default="caw-agent-eval-seth-v2")
+    p_run.add_argument("--dataset-name", default="standard-test-v3")
     p_run.add_argument("--run-name", required=True)
     p_run.add_argument("--item-id", nargs="*", help="只执行指定 item")
     p_run.add_argument("--timeout", type=int, default=_DEFAULT_TIMEOUT, help="单个 task 超时秒数")
@@ -1572,7 +1579,7 @@ def main() -> None:
     )
     p_run.add_argument(
         "--recipe-mode",
-        choices=["cc_with_recipe", "cc_no_recipe", "openclaw"],
+        choices=["cc_with_recipe", "cc_no_recipe", "cc_real_recipe", "openclaw", "oc_real_recipe"],
         default="",
         help="Recipe 对比模式（仅 --eval-mode recipe 时有效）",
     )
@@ -1586,7 +1593,7 @@ def main() -> None:
 
     # ── import-sessions
     p_import = sub.add_parser("import-sessions", help="从外部导出的 JSON 导入 session")
-    p_import.add_argument("--dataset-name", default="caw-agent-eval-seth-v2")
+    p_import.add_argument("--dataset-name", default="standard-test-v3")
     p_import.add_argument("--run-name", required=True)
     p_import.add_argument("--item-id", nargs="*", help="只导入指定 item")
     p_import.add_argument("--export-dir", help="session 导出目录（默认 /tmp/eval-sessions）")
@@ -1594,7 +1601,7 @@ def main() -> None:
     # ── upload
     p_upload = sub.add_parser("upload", help="上传 session 到 Langfuse")
     p_upload.add_argument("--run-name", required=True)
-    p_upload.add_argument("--dataset-name", default="caw-agent-eval-seth-v2")
+    p_upload.add_argument("--dataset-name", default="standard-test-v3")
     p_upload.add_argument("--item-id", nargs="*", help="只上传指定 item")
     p_upload.add_argument("--skill", default="cobo-agentic-wallet-sandbox")
     p_upload.add_argument("--model", default="ark-code", help="模型短标识（用于 run description）")
@@ -1619,7 +1626,7 @@ def main() -> None:
         "dispatch",
         help="本地 Mac 端：并行 SSH 到多台 openclaw 服务器，每台串行执行其分配的 items",
     )
-    p_dispatch.add_argument("--dataset-name", default="caw-agent-eval-seth-v2")
+    p_dispatch.add_argument("--dataset-name", default="standard-test-v3")
     p_dispatch.add_argument("--run-name", required=True)
     p_dispatch.add_argument("--item-id", nargs="*", help="只分发指定 item（否则使用整个 dataset）")
     p_dispatch.add_argument(
@@ -1663,7 +1670,7 @@ def main() -> None:
     )
     p_dispatch.add_argument(
         "--recipe-mode",
-        choices=["cc_with_recipe", "cc_no_recipe", "openclaw"],
+        choices=["cc_with_recipe", "cc_no_recipe", "cc_real_recipe", "openclaw", "oc_real_recipe"],
         default="",
         help="Recipe 对比模式（仅 --eval-mode recipe 时有效）",
     )

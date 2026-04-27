@@ -11,7 +11,7 @@ CAW 评测数据集的 Pydantic schema 定义。
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 
 # ── Tx 构造 ground truth（L3） ──────────────────────────────────────────────────
@@ -113,15 +113,6 @@ class ItemInput(BaseModel):
     user_message: str
 
 
-class RecipePactHints(BaseModel):
-    """pact_hints 必需字段；额外字段（expected_outcome / steps 等业务提示）允许透传。"""
-
-    model_config = ConfigDict(extra="allow")
-
-    operation_type: str
-    should_refuse: bool = False
-
-
 class ItemMetadata(BaseModel):
     """Dataset item 的 metadata。基础标签 + 评测场景标注 + Recipe 内容。"""
 
@@ -131,6 +122,9 @@ class ItemMetadata(BaseModel):
     difficulty: Literal["L1", "L2", "L3"]
     category: str = ""
     tags: list[str] = Field(default_factory=list)
+
+    eval_type: Literal["standard-eval", "recipe-eval"]
+    should_refuse: bool = False
 
     # F3: 评测场景真实度标注
     wallet_paired: bool = False
@@ -146,22 +140,11 @@ class ItemMetadata(BaseModel):
 
 
 class ItemExpectedOutput(BaseModel):
-    """Recipe 模式的 expected_output。operation_spec + pact_expectation 作为评分锚点。"""
+    """统一 schema v2：operation_spec + pact_expectation 是唯一评分锚点。"""
 
-    # 保留字段（兼容 standard 模式和老数据）
-    pact_hints: RecipePactHints | None = None
-    success_criteria: str | list[str] | None = Field(
-        None,
-        description="历史字段。新数据集不生成；老数据集保留以兼容 judge。",
-    )
-    stage_criteria: dict | None = Field(
-        None,
-        description="历史字段。新数据集不生成；老数据集保留以兼容 judge。",
-    )
-
-    # 新增锚点（Recipe 模式必填，Standard 模式可省）
-    operation_spec: OperationSpec | None = None
-    pact_expectation: PactExpectation | None = None
+    schema_version: int = 2
+    operation_spec: OperationSpec
+    pact_expectation: PactExpectation
 
 
 class DatasetItem(BaseModel):
@@ -173,16 +156,20 @@ class DatasetItem(BaseModel):
     metadata: ItemMetadata
 
     @model_validator(mode="after")
-    def _recipe_mode_consistency(self) -> "DatasetItem":
-        """Recipe 模式的 item（有 metadata.recipe）应同时有 operation_spec + pact_expectation。"""
-        if self.metadata.recipe:
-            if not self.expected.operation_spec:
+    def _eval_type_consistency(self) -> "DatasetItem":
+        """eval_type 完整性约束：
+        - recipe-eval: 必须同时有 metadata.recipe + metadata.recipe_name
+          （recipe 模式 dispatch 把这段文本注入到 CAW_RECIPE_FILE，缺失就坏掉）
+        - standard-eval: 不附加约束。即使 metadata.recipe 残留也合法 ——
+          运行时 CLI --eval-mode standard 不会注入 CAW_RECIPE_FILE，
+          judge 标准模式分支也不读 recipe_content；recipe 字段只是历史参考。
+        """
+        if self.metadata.eval_type == "recipe-eval":
+            if not self.metadata.recipe:
+                raise ValueError(f"item {self.id}: eval_type=recipe-eval 但 metadata.recipe 缺失")
+            if not self.metadata.recipe_name:
                 raise ValueError(
-                    f"item {self.id}: metadata.recipe 存在但 expected.operation_spec 缺失"
-                )
-            if not self.expected.pact_expectation:
-                raise ValueError(
-                    f"item {self.id}: metadata.recipe 存在但 expected.pact_expectation 缺失"
+                    f"item {self.id}: eval_type=recipe-eval 但 metadata.recipe_name 缺失"
                 )
         return self
 

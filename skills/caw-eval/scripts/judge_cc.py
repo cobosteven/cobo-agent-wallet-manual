@@ -53,6 +53,43 @@ CAW workflow 知识:
 # ── Judge Prompt 构建 ────────────────────────────────────────────────────────
 
 
+def _build_spec_section(user_message: str, metadata: dict, expected: dict) -> str:
+    """从 expected.operation_spec + pact_expectation 派生统一的评分锚点段落。
+
+    标准模式 / Recipe 模式 / refuse 场景共用。新 schema v2 下 operation_spec
+    与 pact_expectation 必填，输出段落永远非空；若历史数据缺字段，返回空串。
+    """
+    op_spec = expected.get("operation_spec")
+    pact_exp = expected.get("pact_expectation")
+    if not op_spec and not pact_exp:
+        return ""
+
+    intent_canonical = derive_intent_canonical(user_message, metadata, op_spec, pact_exp)
+    criteria_lines = derive_success_criteria(op_spec)
+    pact_checklist = derive_pact_checklist(pact_exp)
+
+    section = (
+        "\n**标准答案锚点（评分依据，从 operation_spec + pact_expectation 派生）**:\n"
+        f"- intent 标准表达: {intent_canonical}\n"
+    )
+    if criteria_lines:
+        section += "- 期望构造的 tx 清单:\n"
+        for line in criteria_lines:
+            section += f"  - {line}\n"
+    if pact_checklist:
+        section += "- 期望 pact 参数 checklist:\n"
+        for line in pact_checklist:
+            section += f"  - {line}\n"
+    section += (
+        "**评分时对比 agent 实际产出 vs 以上锚点**：\n"
+        "- intent_understanding：agent 理解是否和 intent 标准表达语义一致\n"
+        "- policies/completion_correctness：pact 参数是否满足 checklist\n"
+        "- tx 构造类维度（execution_correctness / tx_construction_correctness）："
+        "agent 构造的 calldata 是否匹配 tx 清单（contract / selector / params 逐项比对）\n"
+    )
+    return section
+
+
 def build_judge_prompt(
     user_message: str,
     expected: dict,
@@ -78,10 +115,9 @@ def build_judge_prompt(
         session_text: session 文本摘要，直接嵌入 prompt（openclaw 评分用，无本地文件）
                       与 session_path 二选一；同时提供时优先用 session_text。
     """
-    hints = expected.get("pact_hints", {})
     operation_type = metadata.get("operation_type", "unknown")
     difficulty = metadata.get("difficulty", "L1")
-    success_criteria = expected.get("success_criteria", "")
+    spec_section = _build_spec_section(user_message, metadata, expected)
 
     # 构建 pact 参数展示
     pact_section = ""
@@ -155,9 +191,7 @@ def build_judge_prompt(
         return f"""**评估任务 (should_refuse 场景)**
 操作类型: {operation_type} | 难度: {difficulty}
 用户指令: {user_message}
-成功标准: {success_criteria}
-pact_hints: {json.dumps(hints, ensure_ascii=False)}
-
+{spec_section}
 **断言结果**:
 {assertion_context}
 {_session_section}
@@ -200,43 +234,9 @@ pact_hints: {json.dumps(hints, ensure_ascii=False)}
                 "以及没 recipe 时 tx_construction_correctness 的基线。"
             )
 
-        # Operation Spec 方案：优先用结构化 ground truth 构建 judge 参考，
-        # 如果 item 有 operation_spec / pact_expectation 就用它们；
-        # 否则 fallback 到历史 success_criteria 字段（兼容老数据）
-        op_spec = expected.get("operation_spec")
-        pact_exp = expected.get("pact_expectation")
-
-        spec_section = ""
-        if op_spec or pact_exp:
-            intent_canonical = derive_intent_canonical(user_message, metadata, op_spec, pact_exp)
-            criteria_lines = derive_success_criteria(op_spec)
-            pact_checklist = derive_pact_checklist(pact_exp)
-            spec_section = (
-                "\n**标准答案锚点（评分依据，从 operation_spec + pact_expectation 派生）**:\n"
-                f"- intent 标准表达: {intent_canonical}\n"
-            )
-            if criteria_lines:
-                spec_section += "- 期望构造的 tx 清单:\n"
-                for line in criteria_lines:
-                    spec_section += f"  - {line}\n"
-            if pact_checklist:
-                spec_section += "- 期望 pact 参数 checklist:\n"
-                for line in pact_checklist:
-                    spec_section += f"  - {line}\n"
-            spec_section += (
-                "**评分时对比 agent 实际产出 vs 以上锚点**：\n"
-                "- intent_understanding：agent 理解是否和 intent 标准表达语义一致\n"
-                "- policies/completion_correctness：pact 参数是否满足 checklist\n"
-                "- tx_construction_correctness：agent 构造的 calldata 是否匹配 tx 清单"
-                "（contract / selector / params 逐项比对）\n"
-            )
-
-        legacy_success = f"成功标准（历史字段）: {success_criteria}\n" if success_criteria else ""
-
         return f"""**评估任务（Recipe 模式 — 仅评估交易构建，不评估链上执行）**
 操作类型: {operation_type} | 难度: {difficulty}
 用户指令: {user_message}
-{legacy_success}pact_hints: {json.dumps(hints, ensure_ascii=False)}
 {spec_section}
 **断言结果**:
 {assertion_context}
@@ -282,29 +282,30 @@ S3 交易构建完整性（对比 operation_spec.transactions 逐项评分）:
     return f"""**评估任务**
 操作类型: {operation_type} | 难度: {difficulty}
 用户指令: {user_message}
-成功标准: {success_criteria}
-pact_hints: {json.dumps(hints, ensure_ascii=False)}
-
+{spec_section}
 **断言结果**:
 {assertion_context}
 {pact_section}{_session_section}
 **评分维度** (各项 0-1 分，附 reasoning)
 
 S1 意图解析:
-- intent_understanding: agent 是否正确理解了用户想做什么操作、涉及什么资产、在哪条链上？
+- intent_understanding: agent 是否正确理解了用户想做什么操作、涉及什么资产、在哪条链上？（对比 intent 标准表达语义）
 
 S2 Pact 协商（基于 agent 实际提交的 pact 参数评分）:
-- policies_correctness: policies JSON 是否与用户意图匹配？
+- policies_correctness: policies JSON 是否满足 pact checklist？
   - **chain_in** 是否覆盖期望链？
   - **transfer 类型**：token_in 必填，缺失扣分
   - **contract_call 类型**：必填 target_in（合约地址）；token_in 选填，仅当用户语义明确指向单一 token 且 agent 完全没列时才酌情扣分
   - **deny_if** 限额是否合理？scope 是否最小化（不过度授权）？
-- completion_conditions_correctness: completion-conditions 是否与用户意图匹配？type 选择是否正确（tx_count/amount_spent_usd/time_elapsed）？threshold 是否合理？
+- completion_conditions_correctness: completion-conditions 是否匹配 checklist？type 选择是否正确（tx_count/amount_spent_usd/time_elapsed）？threshold 是否合理？
   - threshold 格式宽容："1" 与 1 等价，不扣分
-  - threshold 低于 checklist 期望（如 1 vs 2，声称跳过 approve）：session 有 allowance 查询证据（`0xdd62ed3e` eth_call 或 `caw token allowance`，返回 ≥ 操作金额）→ 合理降级不扣分；无证据 → 扣 0.3-0.5
+  - threshold 低于 checklist 期望（如 1 vs 2，声称跳过 approve）：**以 assertion_context 里的 `[diag] allowance_evidence` 为权威信号**，不得自行从 session 推断：
+    * `allowance_evidence: queries=N (N>0), values_seen=[...]` 且至少一个 value ≥ 操作金额 → agent 真的查过且充足，合理降级不扣分
+    * `allowance_evidence: queries=N (N>0)` 但所有 value 均 < 操作金额 → 错误降级，扣 0.3-0.5
+    * `allowance_evidence: none` → agent **完全没查 allowance**，无论 agent 在 session 里如何叙述声称，必扣 0.5（代码已做权威扫描，叙述不算数）
 
-S3 执行:
-- execution_correctness: agent 是否用正确的方式执行了操作？命令和参数是否正确？如果用了脚本构造 calldata，逻辑是否正确？
+S3 执行（对比 operation_spec.transactions 逐项评分链上执行效果）:
+- execution_correctness: agent 是否用正确的 caw tx 命令（transfer/call/sign-message）？合约地址 / selector / params 是否和期望 tx 清单逐项匹配？脚本构造 calldata 的逻辑是否正确？
 - result_reporting: agent 是否汇报了执行结果（tx ID/状态/金额）？遇到错误时处理是否合理（报告 suggestion，不越权重试）？
 
 综合:

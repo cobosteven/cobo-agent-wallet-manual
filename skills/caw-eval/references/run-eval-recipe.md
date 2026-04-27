@@ -9,17 +9,22 @@
 
 ---
 
-## 三种对比模式
+## 五种对比模式
 
 | 模式 | `--recipe-mode` | 注入机制 | recipe 内容 |
 |------|:---------------:|---------|------|
 | **OpenCLAW + recipe** | `openclaw` | dispatch 自动给 gateway 注入 systemd env `CAW_RECIPE_FILE=/tmp/caw-eval-recipe.json`，每 item 覆写 | 指定测试 recipe |
+| **OpenCLAW 真实 recipe** | `oc_real_recipe` | dispatch 主动 teardown systemd drop-in（清残留），gateway 起 caw 时 env 干净 | caw recipe search 调真实 backend，含 `pact_template` 等完整字段 |
 | **CC + recipe** | `cc_with_recipe` | 每 item 写 `/tmp/caw-eval-recipes/{run_name}/{item_id}.json`（`count=1` + 指定 recipe），`_run_single_cc_task` 启动 `claude` 前设进程 env | 指定测试 recipe |
 | **CC 无 recipe**（对照组） | `cc_no_recipe` | 同上但写空 recipe（`count=0, results=[]`） | 空（agent search 拿到空结果） |
+| **CC 真实 recipe** | `cc_real_recipe` | 不写注入文件，子进程 env 显式 `pop("CAW_RECIPE_FILE")` 防残留 | caw recipe search 调真实 backend |
 
-**关键**：两种 CC 模式 agent **行为链路完全一致**（都自主调 `caw recipe search`），差异只在 search 返回的内容。**不得**在 prompt 里禁止 search —— 否则对照组不成立。
+**关键**：所有模式 agent **行为链路一致**（都自主调 `caw recipe search`），差异只在 search 返回的内容。**不得**在 prompt 里禁止 search —— 否则对照组不成立。
 
-**对照组意义**：`with 分数 − no 分数 ≈ 该 recipe 提供的价值`。
+**对照组意义**：
+- `with 分数 − no 分数 ≈ 该 recipe（指定测试版本）提供的价值`
+- `real 分数 − with 分数 ≈ 真实 backend recipe（含 pact_template）相对测试 recipe 的增益`
+- `real 分数 − no 分数 ≈ 真实 backend recipe 端到端总价值`
 
 **前置要求（OpenCLAW 模式）**：
 - `caw` 二进制须 ≥ 支持 `CAW_RECIPE_FILE` 的版本（D110257 已合入）
@@ -53,19 +58,21 @@ S3 = tx_construction_correctness × 0.5 + recipe_adherence × 0.3 + tx_submissio
 
 ## Run Name 命名规范
 
-三种模式的 run_name **必须含模式标识**，便于 Langfuse 区分：
+五种模式的 run_name **必须含模式标识**，便于 Langfuse 区分：
 
 | 模式 | run_name 示例 |
 |------|-------------|
 | CC + recipe | `eval-cc-recipe-with-sonnet-20260416-1200` |
 | CC 无 recipe | `eval-cc-recipe-none-sonnet-20260416-1200` |
+| **CC 真实 recipe** | `eval-cc-recipe-real-sonnet-20260416-1200` |
 | OpenCLAW + recipe | `eval-oc-recipe-with-doubao-20260416-1200` |
+| **OpenCLAW 真实 recipe** | `eval-oc-recipe-real-doubao-20260416-1200` |
 
-格式：`eval-{环境}-recipe-{with|none}-{模型}-{时间戳}`
+格式：`eval-{环境}-recipe-{with|none|real}-{模型}-{时间戳}`
 
 ---
 
-## Dispatch 命令（三种模式）
+## Dispatch 命令（五种模式）
 
 ```bash
 cd <repo>/cobo-agent-wallet
@@ -90,7 +97,15 @@ RUN_NAME=eval-cc-recipe-none-sonnet-${TS}
   --eval-mode recipe --recipe-mode cc_no_recipe \
   $(for s in "${SERVERS[@]}"; do echo --server "$s"; done)
 
-# 模式 3: OpenCLAW + recipe
+# 模式 3: CC 真实 recipe（不注入 CAW_RECIPE_FILE，caw 调真实 backend）
+RUN_NAME=eval-cc-recipe-real-sonnet-${TS}
+.venv/bin/python sdk/skills/caw-eval/scripts/run_eval_cc.py dispatch \
+  --run-name "$RUN_NAME" \
+  --dataset-name "$DATASET_NAME" \
+  --eval-mode recipe --recipe-mode cc_real_recipe \
+  $(for s in "${SERVERS[@]}"; do echo --server "$s"; done)
+
+# 模式 4: OpenCLAW + recipe
 MODEL_SHORT=doubao
 MODEL_FULL=volcengine/doubao-seed-2.0-code
 RUN_NAME=eval-oc-recipe-with-${MODEL_SHORT}-${TS}
@@ -100,6 +115,16 @@ RUN_NAME=eval-oc-recipe-with-${MODEL_SHORT}-${TS}
   --model "$MODEL_SHORT" \
   --model-full "$MODEL_FULL" \
   --eval-mode recipe --recipe-mode openclaw \
+  $(for s in "${SERVERS[@]}"; do echo --server "$s"; done)
+
+# 模式 5: OpenCLAW 真实 recipe（不写 systemd drop-in，caw 调真实 backend）
+RUN_NAME=eval-oc-recipe-real-${MODEL_SHORT}-${TS}
+.venv/bin/python sdk/skills/caw-eval/scripts/run_eval_openclaw.py dispatch \
+  --run-name "$RUN_NAME" \
+  --dataset-name "$DATASET_NAME" \
+  --model "$MODEL_SHORT" \
+  --model-full "$MODEL_FULL" \
+  --eval-mode recipe --recipe-mode oc_real_recipe \
   $(for s in "${SERVERS[@]}"; do echo --server "$s"; done)
 ```
 

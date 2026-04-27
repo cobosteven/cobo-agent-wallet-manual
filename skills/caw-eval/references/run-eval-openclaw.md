@@ -10,7 +10,7 @@
 
 ```
 Step 1: 选服务器组 + 模型对齐检查
-Step 1.5: 余额预检（SETH / USDC）
+Step 1.5: 余额预检（SETH / USDC / WETH）
 Step 1.9: sync_to_servers.sh 同步 skill / scripts / caw-cli
 Step 2: dispatch（动态队列）→ 各台 SSH 执行 openclaw agent，session 直接上传 Langfuse
 Step 3-4: 本地生成 judge prompt → CC subagent 评分 → 应用到 Langfuse
@@ -127,6 +127,7 @@ done
 **最低余额要求**（Ethereum Sepolia 评测）：
 - **SETH ≥ 0.1**（gas + swap / transfer 操作）
 - **SETH_USDC ≥ 14**（DeFi 类 case 需要 USDC 做 deposit / bridge / stream）
+- **SETH_WETH ≥ 0.1**（unwrap / Aave borrow / approve→pull 等需要 WETH 余额；缺 WETH 会导致 unwrap / Aave borrow 链上 Failed）
 
 ### 补充余额
 
@@ -147,6 +148,21 @@ wait
 ```
 
 swap 涉及 wrap→approve→swap 三步链上交易，单台约 2-5 分钟。
+
+- **WETH 不足**：并行 wrap（调 WETH9.deposit() 把 SETH 转为 WETH，1:1 不计 gas）：
+
+```bash
+MSG="wrap 0.1 ETH 成 WETH（Ethereum Sepolia）。这是已授权操作，直接创建 pact 并执行，不需要确认。完成后告诉我交易 hash。"
+mkdir -p /tmp/oc-wrap
+for spec in "${SERVERS[@]}"; do
+  IFS=':' read -r name zone project <<< "$spec"
+  (gcloud compute ssh --zone "$zone" "$name" --tunnel-through-iap --project "$project" \
+     -- "sudo su - ubuntu -c 'export PATH=/home/ubuntu/.npm-global/bin:/home/ubuntu/.cobo-agentic-wallet/bin:\$PATH; \
+     openclaw agent --agent main --message \"$MSG\" 2>&1'" > /tmp/oc-wrap/$name.txt 2>&1
+  ) &
+done
+wait
+```
 
 ---
 
@@ -170,7 +186,7 @@ bash sdk/skills/caw-eval/scripts/sync_to_servers.sh --component all --verify --s
 ```bash
 cd <repo>/cobo-agent-wallet
 
-DATASET_NAME=caw-agent-eval-seth-v2
+DATASET_NAME=standard-test-v3   # 标准模式默认；recipe 模式改用 recipe-test-v3
 RUN_NAME=eval-oc-${MODEL_SHORT}-$(date +%Y%m%d-%H%M)
 
 .venv/bin/python sdk/skills/caw-eval/scripts/run_eval_openclaw.py dispatch \

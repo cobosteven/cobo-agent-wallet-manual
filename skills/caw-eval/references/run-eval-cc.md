@@ -65,7 +65,7 @@ bash sdk/skills/caw-eval/scripts/sync_to_servers.sh --component all --verify --s
 ```bash
 cd <repo>/cobo-agent-wallet
 
-DATASET_NAME=caw-agent-eval-seth-v2
+DATASET_NAME=standard-test-v3   # 标准模式默认；recipe 模式改用 recipe-test-v3
 RUN_NAME=eval-cc-sonnet-$(date +%Y%m%d-%H%M)
 
 .venv/bin/python sdk/skills/caw-eval/scripts/run_eval_cc.py dispatch \

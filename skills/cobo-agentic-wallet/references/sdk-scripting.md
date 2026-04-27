@@ -214,8 +214,7 @@ For additional protocol recipes, use one of two mechanisms:
 
 **1. Built-in recipe knowledge base** (server-side, no install needed):
 ```bash
-caw recipe search --query "<protocol-name> <chain>"
-# e.g. "uniswap base", "aave arbitrum", "jupiter solana"
+caw recipe search --query "How do I swap USDC to ETH on Base"
 ```
 
 **2. External skill packages** (clawhub registry, requires install):
