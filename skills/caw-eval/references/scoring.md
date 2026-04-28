@@ -90,13 +90,13 @@ S3 不设门槛。执行方式多样（`caw tx transfer`、`caw tx call`、Pytho
 expected = base + per_tx × N + polling
   base    = 4   （pact submit + 1-2 preflight + recipe search 等基础开销）
   per_tx  = 2   （abi encode + tx call/transfer）
-  polling = N   （仅标准模式：每笔 tx 至少 1 次 caw pending get；recipe 模式 = 0）
+  polling = N   （仅 e2e 模式：每笔 tx 至少 1 次 caw pending get；pact 模式 = 0）
   N = len(operation_spec.transactions)
 ```
 
 举例：
-- N=2, recipe 模式：expected = 8（实际 ≤ 8 给满分；20 即 0 分）
-- N=5, 标准模式：expected = 19
+- N=2, pact 模式：expected = 8（实际 ≤ 8 给满分；20 即 0 分）
+- N=5, e2e 模式：expected = 19
 
 ### Efficiency Duration（权重 5%，end-user UX 视角）
 
@@ -158,7 +158,7 @@ duration_seconds 缺失（=0 或未采集）→ 给中性 0.5 + reasoning="no du
 | tx_command_count | tx transfer/call 次数 | > 6 |
 | error_count | 错误次数 | > 5 |
 | recipe_search_count | `caw recipe search` 调用次数 | — |
-| recipe_searched | 是否执行过 `caw recipe search`（0/1） | recipe-mode=openclaw 时预期 = 1 |
+| recipe_searched | 是否执行过 `caw recipe search`（0/1） | OC + recipe-source=seed 时预期 = 1 |
 
 ---
 
@@ -289,10 +289,10 @@ efficiency_action 与 efficiency_duration 的口径与标准模式一致；唯�
 | 维度 | 权重 | 方式 | 评判内容 |
 |------|:----:|:----:|---------|
 | tx_construction_correctness | 0.5 | LLM | caw tx 命令是否正确？合约地址、function selector、ABI 编码参数是否正确？ |
-| recipe_adherence | 0.3 | LLM | 是否遵循 recipe 中规定的操作流程？（CC 无 recipe 模式为 N/A，权重转给 tx_construction） |
+| recipe_adherence | 0.3 | LLM | 是否遵循 recipe 中规定的操作流程？（CC + recipe-source=empty 为 N/A，权重转给 tx_construction） |
 | tx_submission_success | 0.2 | 断言 | caw tx 是否成功返回（status=Initiated/PendingApproval）？ |
 
-**CC 无 recipe 模式权重调整**：`S3 = tx_construction_correctness × 0.7 + tx_submission_success × 0.3`
+**CC + recipe-source=empty 权重调整**：`S3 = tx_construction_correctness × 0.7 + tx_submission_success × 0.3`
 
 ### 三种对比模式
 
@@ -318,9 +318,10 @@ efficiency_action 与 efficiency_duration 的口径与标准模式一致；唯�
 | `caw.recipe_searched` | 是否执行过 `caw recipe search`（0/1 布尔值） |
 
 **预期**：
-- **OpenCLAW + recipe 模式**：`recipe_searched=1` 才能拿到 recipe；若为 0 则 agent 退化为"无 recipe 盲猜"
-- **CC + recipe 模式**：recipe 已拼 prompt，`recipe_searched` 预期 = 0
-- **CC 无 recipe 模式**：`recipe_searched` 预期 = 0
+- **OC + seed**：`recipe_searched=1` 才能拿到 recipe；若为 0 则 agent 退化为"无 recipe 盲猜"
+- **CC + seed**：recipe 通过 `CAW_RECIPE_FILE` env 注入，agent 仍主动 search 即可拿到；`recipe_searched` 预期 = 1
+- **CC + empty**：`recipe_searched` 预期 = 1（agent 仍 search，但拿到 count=0 空结果）
+- **e2e + real (CC/OC)**：`recipe_searched` 预期 = 1（调真实 backend）
 
 ### Langfuse Score 格式（Recipe 模式）
 

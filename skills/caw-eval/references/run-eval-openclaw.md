@@ -14,7 +14,7 @@ Step 1.5: 余额预检（SETH / USDC / WETH）
 Step 1.9: sync_to_servers.sh 同步 skill / scripts / caw-cli
 Step 2: dispatch（动态队列）→ 各台 SSH 执行 openclaw agent，session 直接上传 Langfuse
 Step 3-4: 本地生成 judge prompt → CC subagent 评分 → 应用到 Langfuse
-Step 5: Opus subagent 生成分析报告
+Step 5: 主会话直接生成分析报告
 ```
 
 Session 数据通过 Langfuse API 读取，**无需 scp 下载**。
@@ -64,7 +64,7 @@ SERVERS_DOUBAO=(
 SERVERS_GPT=(
   "luochong-openclew-dev-v1-20260415-121400-test7:asia-east2-c:openclaw-keq9xwm4"
   "luochong-openclew-dev-v1-20260415-124552-test8:asia-east2-c:openclaw-keq9xwm4"
-  "luochong-openclew-dev-v1-20260318-070641:asia-east2-a:openclaw-keq9xwm4"
+  "luochong-openclew-dev-v1-20260427-104436-test0:asia-east2-c:openclaw-keq9xwm4"
 )
 
 SERVERS=("${SERVERS_DOUBAO[@]}")   # 选目标模型对应那组
@@ -98,7 +98,7 @@ MODEL_SHORT="<短标识，如 doubao>"
 
 ## Step 1.5: 钱包余额预检
 
-并行查询 caw 钱包余额：
+并行查询 caw 钱包余额（默认输出所有 chain 的所有 token 持仓）：
 
 ```bash
 mkdir -p /tmp/oc-balance
@@ -118,16 +118,29 @@ raw = open('$f').read()
 idx = raw.find('{')
 if idx == -1: print(f'  {\"$name\"}: 无数据'); exit()
 d = json.loads(raw[idx:])
+# 按 token_id 分组（caw 已用 chain prefix 命名 token_id：SETH/SETH_USDC/SETH_WETH/BASE_ETH/BASE_ETH_USDC/BASE_ETH_WETH/SOL/SOLDEV_SOL 等）
+by_token = {}
 for r in d.get('result', []):
-    print(f'  {\"$name\":30s} {r[\"token_id\"]:12s} available={r[\"amount\"]:>24s}')
+    by_token.setdefault(r['token_id'], r['amount'])
+for tid, amt in sorted(by_token.items()):
+    print(f'  {\"$name\":30s} {tid:18s} available={amt:>24s}')
 "
 done
 ```
 
-**最低余额要求**（Ethereum Sepolia 评测）：
+**最低余额要求**（按评测目标链选）：
+
+**Ethereum Sepolia 评测**：
 - **SETH ≥ 0.1**（gas + swap / transfer 操作）
 - **SETH_USDC ≥ 14**（DeFi 类 case 需要 USDC 做 deposit / bridge / stream）
 - **SETH_WETH ≥ 0.1**（unwrap / Aave borrow / approve→pull 等需要 WETH 余额；缺 WETH 会导致 unwrap / Aave borrow 链上 Failed）
+
+**Base 主网评测**（基于 [04-27 calibration](../reports/eval-report-eval-oc-minimax-base-mainnet-cal-20260427-1201.md) 实测，单 case ~0.0000188 ETH + 0.000765 USDC）：
+- **BASE_ETH ≥ 0.0005**（3 轮 17 case 单机分担 + 1.5 safety；4 轮调整为 0.0007）
+- **BASE_ETH_USDC ≥ 0.05**（覆盖最重 case dca-uniswap-5rounds 单机最大消耗 + safety；4 轮调整为 0.07）
+- **BASE_ETH_WETH**：Base 主网评测**不要求**（17 case 中 weth-wrap 自带 wrap 流程，agent 当场调 WETH9.deposit() 即可，不需要预存 WETH）
+
+> **注意**：`caw wallet balance` 不显示余额为 0 的 token——如果 BASE_ETH 那行没出现，意味着该机 BASE_ETH 余额为 0（不是 caw 没查到，是真没钱）。**必须充值后才能开跑 Base 主网 dispatch**，否则 17 case 全部 caw tx 因余额不足 reject。
 
 ### 补充余额
 
@@ -164,6 +177,38 @@ done
 wait
 ```
 
+### Base 主网充值（评测真金，无 faucet）
+
+Base 主网没有 faucet，必须从外部钱包（MetaMask / treasury）转入真币。**充值前必须 chmod 600 私钥 / 1Password 备份**。
+
+**3 种充值路径**（按操作量递增）：
+
+**1. Disperse 批量（推荐）**：[disperse.app](https://disperse.app) → 切 Base → 一次粘 N 行 `<addr> <amount>` → 1 笔 MetaMask 确认完成 ETH，再 1 笔完成 USDC。token approve 需要先确认一次（USDC 首次 ~$0.01）。
+
+```text
+# 例：每机 0.001 ETH（gpt54 组多 1 轮调整为 0.0015）
+0xbfd3f19010d0a2cf9f62bfe4618bc7de84c8ab11 0.001
+0xc92c246cba3a250722aad0a10feba9757be648c0 0.001
+...
+0xd2135b159389da13a542eb61b0080c2a70209968 0.0015   # gpt54 4 轮
+```
+
+**2. Treasury 中转**（若 disperse 打不开）：MetaMask → 1 笔大额给 mainnet treasury（[/Users/rocen/.cobo-agent-wallet/eval-treasury-mainnet.env](file:///Users/rocen/.cobo-agent-wallet/eval-treasury-mainnet.env) 里的 `EVAL_MAINNET_TREASURY_ADDRESS`）→ web3.py 脚本批量分发到 N 机。脚本未来落到 plan 里的 `mainnet_topup.py`。
+
+**3. 评测机间互转（应急）**：用某台余额充裕的评测机（test1 calibration 后余额）通过 `openclaw agent --message "转 X ETH 给 Y 地址"` 走 caw pact 流程发起 transfer。**注意**：此路径依赖 caw TSS 签名服务正常——历史上出现过 `pendingsignature` 卡死（[04-27 calibration 后向 test11/12 转 0.001 ETH 卡 30+ 分钟](../reports/eval-report-eval-oc-minimax-base-mainnet-cal-20260427-1201.md)），且 agent 可能重复创建 pact 导致双扣。仅在前 2 种不可用时使用。
+
+### Base 主网评测预算速查
+
+按 [calibration 实测](../reports/eval-report-eval-oc-minimax-base-mainnet-cal-20260427-1201.md) ETH 0.000018/case + USDC 0.001/case，加 1.5x safety：
+
+| 评测规模 | 总 ETH | 总 USDC | 备注 |
+|---|---|---|---|
+| 1 机 × 1 轮（17 case） | 0.0005 | 0.025 | 单机校准 |
+| 15 机 × 3 轮（255 case-runs） | 0.0072 | 0.38 | 5 模式 × 3 轮 |
+| 15 机 × 5 轮（425 case-runs） | 0.012 | 0.64 | 5 模式 × 5 轮 |
+
+caw 不收 service fee（实测验证：0.003 ETH / 60 outgoing tx = 链上真实 OP Stack gas，含 L1 calldata + L2 execution）。
+
 ---
 
 ## Step 1.9: 同步 skill / scripts / caw-cli 到服务器
@@ -186,7 +231,7 @@ bash sdk/skills/caw-eval/scripts/sync_to_servers.sh --component all --verify --s
 ```bash
 cd <repo>/cobo-agent-wallet
 
-DATASET_NAME=standard-test-v3   # 标准模式默认；recipe 模式改用 recipe-test-v3
+DATASET_NAME=standard-test-v3   # e2e 模式默认；pact 模式改用 recipe-test-v3
 RUN_NAME=eval-oc-${MODEL_SHORT}-$(date +%Y%m%d-%H%M)
 
 .venv/bin/python sdk/skills/caw-eval/scripts/run_eval_openclaw.py dispatch \
@@ -210,7 +255,7 @@ RUN_NAME=eval-oc-${MODEL_SHORT}-$(date +%Y%m%d-%H%M)
 | （默认） | 动态队列 + 阻塞等待；适合正式评测 |
 | `--fire-and-forget` | 静态预分配 + nohup 后台启动；SSH 立即返回，搭配 `--watch` 流水线 |
 | `--static` | 静态预分配 + SSH 阻塞等待；调试用 |
-| `--eval-mode recipe --recipe-mode openclaw` | Recipe 评测（见 [run-eval-recipe.md](./run-eval-recipe.md)） |
+| `--eval-mode pact --recipe-source seed` | pact 模式（见 [run-eval-recipe.md](./run-eval-recipe.md)） |
 | `--timeout 900` | 单 task 超时（默认 600） |
 | `--item-id E2E-01L1 E2E-06L1` | 只跑部分 item（失败重跑） |
 
@@ -303,7 +348,44 @@ print(f'merged {len(results)} judge results')
 
 ## Step 5: 生成报告
 
-主会话已有全部评测上下文，直接在主会话里写报告。
+主会话已有全部评测上下文，**必须**在主会话里直接写报告。
+
+> ⚠️ **禁止委托 subagent 写报告**。subagent 是截面视图：
+> - 看不到跨日 backend 状态变化（昨天卡 pendingsignature 的 tx 今天上链了，subagent 不知道）
+> - 没法做"有 / 无某变量"对照实验（如 superfluid-1weis 单跑 vs superfluid-2weis 并发的分数对比）
+> - 易把"理论可能"上升成"实际发生"（看到 trace timeline 重叠就归并发污染 P0，但实测对照分数差是负向）
+> - 信息源单一（只看 judge_prompts，不会去查 scores.json 的 dimensions.reasoning）
+>
+> 历史教训：2026-04-27 gpt-5.4 评测让 Opus subagent 写报告，3 条主结论事后被推翻
+> （logger bug 17/17 → 实际 4/17；TSS 死透 → 实际延迟 4-24h；并发污染 P0 → 实测无影响）。
+> subagent 只可承接「明确边界的低层任务」（如 grep 关键词、模板化排版），不可承接判断性分析。
+
+### 5.0 ⚠️ caw-eval 已知陷阱清单（写 P0/P1 finding 前必读）
+
+> 这是 2026-04-27 gpt-5.4 评测踩过坑的清单。每写一条 finding 前对照这 5 条过一遍，
+> 否则容易把"截面观察"误升成"绝对结论"。
+
+1. **`judge_prompts/<item>.txt` 里的 gate 文本可能 stale** — 这是 `score_traces.py langfuse --dump-judge-requests` 阶段产物，**没经过 inject_backend_pact_specs 注入后端真实 spec**。Gate 行写 `policies=0 条` 不代表后端真没 policies。
+   - 真值看 `scores.json` 的 `dimensions.pact_structure_valid.reasoning` —— 这个字段是 `--judge-results --pact-specs-dir` 应用阶段重新计算的，含 inject 后的真实条数
+   - **任何关于 "policies/conditions 条数 0" 的 finding，必须双源对照**
+
+2. **trace 终态 ≠ 链上最终态** — 评测 session 超时 10-30 min 远短于 backend TSS 处理周期（实测 4-24h）。trace 里 `pendingsignature` 不等于"卡死"，可能只是 backlog 延迟。
+   - **任何"卡死/失败/永久挂"finding 必须 SSH 实查 ≥ 1h 后的 `caw tx list`** 或 `caw tx get --request-id` 看 final state
+   - 实查到 `Success/completed` → 改归因为"评测窗内未上链 = 时间窗不足"，不是"卡死"
+
+3. **trace 时间窗重叠 ≠ 互相干扰** — 同 server 并发是已知 dispatch bug（详见 [`dispatch_ssh_timeout_orphan.md`](~/.claude/projects/-Users-rocen-etl-cobo-agent-wallets/memory/dispatch_ssh_timeout_orphan.md)），但**不一定造成评分差异**。
+   - **任何"X 导致 Y 低分"finding 必须找控制对照** — 同类型 case 有 X vs 无 X 的分数差
+   - 实测分数差负向或不显著 → 归 P2（dispatch 设计 bug 仍要修，但不是评测低分主因）
+
+4. **ARCHIVED dataset item 可能混入** — `lf.get_dataset()` 默认返回 ACTIVE + ARCHIVED。
+   - `eval_utils.get_dataset_items()` 默认已过滤 ARCHIVED；但确认 dispatch 拿到的 N 与 dataset ACTIVE 数一致
+   - dispatch 启动 `dataset:` 那一行格式 `(items=N, archived=M, chains={...})`，`archived=M > 0` 时人眼复核
+
+5. **同 item 多次 trace** — caw 续传 / 重 dispatch / test0 patch 都会生成多条 trace。`dataset_run_items.list` 链到的可能是**最近上传**那条而非**质量最优**那条。
+   - 如果 case 跑过多轮，先 `lf.api.dataset_run_items.list` 看 traceId，再交叉 `caw tx list` / Langfuse trace observation 比较哪条 session 完整
+   - 要换关联：score_traces 用 `--trace recipe-X=<good_uuid>` 显式覆盖
+
+**违反任何一条 → finding 必须降级 🔍 疑似 + Action 第一项写"先做反证回合"**。
 
 ### 5.1 步骤
 1. Read `~/.caw-eval/runs/{run_name}/judge_results.json` 按 e2e_composite 排序

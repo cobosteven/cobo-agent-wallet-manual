@@ -252,7 +252,7 @@ def show_judge_prompt(item_id: str) -> None:
         metadata=item["metadata"],
         assertion_context="pact_structure_valid=pass（mock）\ntx_submission_success=pass（mock）",
         best_pact_submit=None,
-        eval_mode="recipe",
+        eval_mode="pact",
         recipe_content=item["metadata"].get("recipe", ""),
         session_text="(mock session content)",
     )

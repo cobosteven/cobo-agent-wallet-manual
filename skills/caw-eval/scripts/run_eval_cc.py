@@ -13,7 +13,7 @@ Claude Code 评测编排脚本 — 从本地 Mac dispatch 到服务器跑 headle
 用法:
     # 服务器 dispatch（正式评测路径）
     python run_eval_cc.py dispatch --run-name eval-cc-sonnet-20260411 \\
-      --server <name:zone:project> [--eval-mode recipe --recipe-mode cc_with_recipe]
+      --server <name:zone:project> [--eval-mode pact --recipe-source seed]
 
     # 上传 + 评分
     python run_eval_cc.py upload  --run-name eval-cc-sonnet-20260411
@@ -22,18 +22,27 @@ Claude Code 评测编排脚本 — 从本地 Mac dispatch 到服务器跑 headle
 
 import argparse
 import asyncio
+import atexit
 import json
 import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from eval_utils import batch_upload_sessions, get_dataset_items
+from eval_utils import (
+    _normalize_eval_mode,
+    _normalize_recipe_source,
+    batch_upload_sessions,
+    get_dataset_items,
+    print_dataset_summary,
+    resolve_dataset,
+)
 
 _SCRIPTS_DIR = Path(__file__).parent
 
@@ -79,7 +88,7 @@ def _write_recipe_archive(run_name: str, item_id: str, recipe_content: str) -> P
     """写一份 recipe JSON 到 /tmp/caw-eval-recipes/{run_name}/{item_id}.json，
     caw recipe search 通过 CAW_RECIPE_FILE 指向该路径即可读取本地内容。
 
-    - cc_with_recipe 模式：recipe_content 为测试目标 recipe（agent search 返回它）
+    - seed 模式：recipe_content 为测试目标 recipe（agent search 返回它）
 
     L1: 写入后立即 roundtrip 读回 —— 防止 json 序列化、文件系统、编码环节任何一步丢字节
     """
@@ -114,10 +123,10 @@ def _write_recipe_archive(run_name: str, item_id: str, recipe_content: str) -> P
 
 
 def _write_empty_recipe_archive(run_name: str, item_id: str) -> Path:
-    """cc_no_recipe 模式：写 count=0 的空 recipe JSON。
+    """empty 模式：写 count=0 的空 recipe JSON。
 
-    cc_no_recipe 是对照组——agent 仍然按真实用户流程自主触发 `caw recipe search`，
-    但 search 返回空结果。这样 with_recipe vs no_recipe 的分数差 = recipe 提供的价值。
+    empty 是对照组——agent 仍然按真实用户流程自主触发 `caw recipe search`，
+    但 search 返回空结果。这样 seed vs empty 的分数差 = recipe 提供的价值。
 
     写入后立即 roundtrip 验证 count=0 + results 为空。
     """
@@ -150,20 +159,20 @@ def _write_empty_recipe_archive(run_name: str, item_id: str) -> Path:
 
 def build_eval_prompt(
     item: dict,
-    eval_mode: str = "standard",
-    recipe_mode: str = "",
+    eval_mode: str = "e2e",
+    recipe_source: str = "",
     run_name: str = "",
     target_env: str = "local",
 ) -> str:
     """构建单个 item 的评测 prompt。
 
     Args:
-        eval_mode: "standard" 标准模式, "recipe" recipe 评测模式
-        recipe_mode: "cc_with_recipe" / "cc_no_recipe" / "cc_real_recipe" / "openclaw"（仅 recipe 模式有效）
-            - cc_with_recipe: 写注入文件 + 设 CAW_RECIPE_FILE，agent search 拿到指定 recipe
-            - cc_no_recipe:   写空注入文件 + 设 CAW_RECIPE_FILE，对照组（recipe=空）
-            - cc_real_recipe: 不写文件、不设 CAW_RECIPE_FILE，agent search 调真实 backend
-        run_name: run 名，cc_with_recipe / cc_no_recipe 模式下用于定位 per-item recipe 归档文件
+        eval_mode: "e2e" 全流程评测（默认），"pact" 仅评 pact 构造，"onboard" onboarding 评估
+        recipe_source: "real" / "seed" / "empty"（仅 pact 模式有意义）
+            - seed:  写注入文件 + 设 CAW_RECIPE_FILE，agent search 拿到 dataset 指定 recipe
+            - empty: 写空注入文件 + 设 CAW_RECIPE_FILE，对照组（recipe=空）
+            - real:  不写文件、不设 CAW_RECIPE_FILE，agent search 调真实 backend
+        run_name: run 名，seed / empty 模式下用于定位 per-item recipe 归档文件
         target_env: "local"（本地 Mac / VSCode，用 dev skill）或
                     "server"（headless 服务器跑评测，用 sandbox skill + 加 Environment 段）
     """
@@ -190,13 +199,12 @@ def build_eval_prompt(
     # 未 paired 场景下，用户已在 CC 中与 agent 沟通过，预先授权跳过 preview——
     # 这是真实用户"信任 agent、授权自主执行"的场景，不是评测造假。
     # owner_linked=false 时自动 approve 本来就是 skill 的合规行为，skill 会自主做，不再 prompt 里重复提示。
-    prompt = f"""[EVAL:{item_id}]
-{skill_name} skill 已激活。
+    prompt = f"""{skill_name} skill 已激活。
 {env_section}
 **用户先前上下文（任务前已与 agent 协商过）：** 用户**预先授权**对本次任务生成的 pact 无需再次展示 preview 预览和等待 "yes" 确认，直接 `caw pact submit` 即可视为已获得用户明确确认。用户希望你自主、连续地完成任务，不被交互打断（如遇 `owner_linked=true` 需要 Cobo Agentic Wallet app 审批的真实阻塞，记录原因并跳过）。
 """
 
-    if eval_mode == "recipe":
+    if eval_mode == "pact":
         prompt += """
 **交易构建模式（重要）：**
 - 交易成功提交后（caw tx transfer/call/sign-message 返回 status=Initiated 或 PendingApproval），**立即停止**
@@ -204,19 +212,25 @@ def build_eval_prompt(
 - 不要等待链上确认
 - 只需报告交易已成功提交（含 transaction_id/request_id），然后结束
 """
-        # Recipe 注入改造（F2）：不再在 prompt 里告诉 agent 加 env 前缀；
-        # 改由 _run_single_cc_task 启动 claude 前把 CAW_RECIPE_FILE 放进子进程 env，
-        # agent 正常调 `caw recipe search`，caw 自动读本地文件，行为等价 openclaw 模式。
-        #
-        # cc_with_recipe vs cc_no_recipe（对照组设计）：两者都让 agent 按真实用户流程自主
-        # 调 `caw recipe search`，只是返回内容不同：
-        #   - cc_with_recipe: 返回指定的（要测试的）recipe 内容
-        #   - cc_no_recipe:   返回空结果（count=0），对照组，看没 recipe 时 agent 表现
-        # with 和 no 的分数差即 recipe 提供的价值。
-        if recipe_mode == "cc_with_recipe" and recipe_content and run_name:
-            _write_recipe_archive(run_name, item_id, recipe_content)
-        elif recipe_mode == "cc_no_recipe" and run_name:
-            _write_empty_recipe_archive(run_name, item_id)
+
+    # Recipe 注入改造（F2）：不再在 prompt 里告诉 agent 加 env 前缀；
+    # 改由 _run_single_cc_task 启动 claude 前把 CAW_RECIPE_FILE 放进子进程 env，
+    # agent 正常调 `caw recipe search`，caw 自动读本地文件，行为等价 openclaw 模式。
+    #
+    # seed vs empty（对照组设计）：两者都让 agent 按真实用户流程自主
+    # 调 `caw recipe search`，只是返回内容不同：
+    #   - seed:  返回指定的（要测试的）recipe 内容
+    #   - empty: 返回空结果（count=0），对照组，看没 recipe 时 agent 表现
+    # with 和 no 的分数差即 recipe 提供的价值。
+    #
+    # 注入逻辑独立于 eval_mode：pact 模式控制 prompt 是否加"交易构建"指令；
+    # recipe_source 控制 agent 是否调真实 backend。两者正交。之前嵌在
+    # `if eval_mode == "pact":` 内会让 e2e + empty 实际退化为 e2e + real（archive 不写
+    # → CAW_RECIPE_FILE 不注入 → agent 走真实 backend），且 postcheck 17/17 全 fail。
+    if recipe_source == "seed" and recipe_content and run_name:
+        _write_recipe_archive(run_name, item_id, recipe_content)
+    elif recipe_source == "empty" and run_name:
+        _write_empty_recipe_archive(run_name, item_id)
 
     prompt += f"""
 按照以下用户指令完成操作：
@@ -300,7 +314,7 @@ async def _run_single_cc_task(
     run_dir: Path,
     timeout: int,
     eval_mode: str,
-    recipe_mode: str,
+    recipe_source: str,
     run_name: str,
     model: str,
 ) -> str:
@@ -320,12 +334,12 @@ async def _run_single_cc_task(
     prompt = build_eval_prompt(
         item,
         eval_mode=eval_mode,
-        recipe_mode=recipe_mode,
+        recipe_source=recipe_source,
         run_name=run_name,
         target_env="server",
     )
 
-    # F2: cc_with_recipe / cc_no_recipe 都把 CAW_RECIPE_FILE 注入子进程 env，
+    # F2: seed / empty 都把 CAW_RECIPE_FILE 注入子进程 env，
     # 让 caw recipe search 自动读本地文件，不再依赖 prompt 前缀。
     # 两种模式下 archive 文件内容不同（测试目标 recipe vs 空对照），
     # agent 行为一致：都按真实用户流程自主 search。
@@ -341,7 +355,7 @@ async def _run_single_cc_task(
     # 让 caw recipe search 走正常后端接口拉真实 recipe 注册表（标准模式评测的基线）。
     # 不清会被 os.environ.copy() 带进来被动污染评测语义。
     child_env = os.environ.copy()
-    if recipe_mode in ("cc_with_recipe", "cc_no_recipe") and run_name:
+    if recipe_source in ("seed", "empty") and run_name:
         archive_file = _recipe_archive_path(run_name, item_id)
         if archive_file.exists():
             child_env["CAW_RECIPE_FILE"] = str(archive_file)
@@ -419,7 +433,7 @@ async def _cmd_run(
     timeout: int,
     model: str,
     eval_mode: str,
-    recipe_mode: str,
+    recipe_source: str,
     inline_item: str | None,
 ) -> None:
     """服务器端 run 子命令：逐 item headless 执行评测。
@@ -458,7 +472,7 @@ async def _cmd_run(
     print(f"=== CC 服务器端评测 (run: {run_name}) ===")
     print(f"数据集: {dataset_name} ({len(items)} items)")
     print(f"model: {model} timeout: {timeout}s / item")
-    print(f"eval_mode: {eval_mode} recipe_mode: {recipe_mode or '-'}")
+    print(f"eval_mode: {eval_mode} recipe_source: {recipe_source or '-'}")
     print()
 
     results: dict[str, str] = {}
@@ -468,7 +482,7 @@ async def _cmd_run(
         diff = item.get("difficulty", "")
         print(f"[{i + 1}/{len(items)}] {iid} ({op} {diff})")
         status = await _run_single_cc_task(
-            item, run_dir, timeout, eval_mode, recipe_mode, run_name, model
+            item, run_dir, timeout, eval_mode, recipe_source, run_name, model
         )
         results[iid] = status
 
@@ -479,7 +493,7 @@ async def _cmd_run(
         "executed_at": datetime.now(tz=timezone.utc).isoformat(),
         "model": model,
         "eval_mode": eval_mode,
-        "recipe_mode": recipe_mode,
+        "recipe_source": recipe_source,
         "items": {
             item["id"]: {
                 "status": results.get(item["id"], "skipped"),
@@ -636,6 +650,172 @@ _BUSY_PROBE_CMD = (
 
 _REMOTE_SCRIPTS_DIR = "/home/ubuntu/.agents/skills/caw-eval/scripts"
 
+# ── Lock / claim 文件 ─────────────────────────────────────────────────────────
+# 目的：防止两个 dispatcher 同时占同一台服务器（busy_check 有 6s 窗口，无法兜住）。
+# 模型：每台服务器 /tmp/caw-eval-claim 一文件，内容 "{run_name} {dispatcher_uid} {ts_epoch}"。
+#       acquire 用 O_EXCL 原子创建；stale 阈值 600s（无心跳视为 dispatcher 死了，可被接管）。
+#       worker 每 N 个 item 跑完发一次 heartbeat（更新 ts）；正常退出 release；异常退出靠 stale。
+_CLAIM_PATH = "/tmp/caw-eval-claim"
+_CLAIM_STALE_SECONDS = 600
+_HEARTBEAT_INTERVAL_SECONDS = 60
+# dispatcher 启动时一次性生成的唯一标识（区分跨 dispatcher，不可用 PID 因为是远端）
+_DISPATCHER_UID = uuid.uuid4().hex[:16]
+# 当前持有 claim 的服务器（运行时填充，给 atexit/signal 清理用）
+_CLAIMED_SERVERS: list[dict] = []
+
+
+_REMOTE_ACQUIRE_CLAIM_CMD_TPL = (
+    "CLAIM={claim}; NOW=$(date +%s); STALE={stale}; "
+    "if [ -f $CLAIM ]; then "
+    "OWNER=$(cat $CLAIM); TS=$(echo \"$OWNER\" | awk '{{print $3}}'); "
+    'if [ -n "$TS" ] && [ $((NOW - TS)) -lt $STALE ]; then '
+    'echo "BUSY:$OWNER"; exit 1; '
+    "fi; rm -f $CLAIM; "
+    "fi; "
+    "if (set -C; echo {payload} > $CLAIM) 2>/dev/null; then "
+    'echo "OK"; '
+    "else "
+    'OWNER=$(cat $CLAIM 2>/dev/null); echo "RACE_LOST:$OWNER"; exit 2; '
+    "fi"
+)
+
+
+_REMOTE_HEARTBEAT_CMD_TPL = (
+    "CLAIM={claim}; "
+    "if [ -f $CLAIM ]; then "
+    "OWNER=$(cat $CLAIM); "
+    # 用 OWNER_UID 不用 UID：UID 是 bash readonly 内置（用户 UID），赋值会报错
+    "OWNER_UID=$(echo \"$OWNER\" | awk '{{print $2}}'); "
+    'if [ "$OWNER_UID" = "{uid}" ]; then '
+    "NOW=$(date +%s); "
+    "RUN_NAME=$(echo \"$OWNER\" | awk '{{print $1}}'); "
+    'echo "$RUN_NAME $OWNER_UID $NOW" > $CLAIM; '
+    'echo "OK"; '
+    "else "
+    'echo "NOT_OWNER:$OWNER"; exit 1; '
+    "fi; "
+    "else "
+    'echo "NO_CLAIM"; exit 2; '
+    "fi"
+)
+
+
+_REMOTE_RELEASE_CLAIM_CMD_TPL = (
+    "CLAIM={claim}; "
+    "if [ -f $CLAIM ]; then "
+    "OWNER=$(cat $CLAIM); "
+    "OWNER_UID=$(echo \"$OWNER\" | awk '{{print $2}}'); "
+    'if [ "$OWNER_UID" = "{uid}" ]; then '
+    'rm -f $CLAIM; echo "RELEASED"; '
+    "else "
+    'echo "NOT_OWNER"; '
+    "fi; "
+    "fi"
+)
+
+
+async def _remote_acquire_claim(srv: dict, run_name: str) -> tuple[bool, str]:
+    """尝试在远端原子获取 claim。返回 (success, info)。
+
+    时间戳在 Python 端先算好（避免 shlex.quote 后 $NOW 被字面化），
+    远端只做 stale 检查（用 `date +%s` 取当前时间）和原子写入。
+    600s stale 阈值远大于 dispatch 启动到 acquire 的延迟（秒级），不受这点偏差影响。
+    """
+    now_ts = int(datetime.now(tz=timezone.utc).timestamp())
+    payload = shlex.quote(f"{run_name} {_DISPATCHER_UID} {now_ts}")
+    cmd = _REMOTE_ACQUIRE_CLAIM_CMD_TPL.format(
+        claim=_CLAIM_PATH, stale=_CLAIM_STALE_SECONDS, payload=payload
+    )
+    rc, stdout, _ = await _ssh_exec_ubuntu(srv, cmd)
+    out = stdout.strip()
+    return (rc == 0, out)
+
+
+async def _remote_heartbeat(srv: dict) -> bool:
+    """更新远端 claim 文件的 ts，证明 dispatcher 还活着。"""
+    cmd = _REMOTE_HEARTBEAT_CMD_TPL.format(claim=_CLAIM_PATH, uid=_DISPATCHER_UID)
+    rc, _, _ = await _ssh_exec_ubuntu(srv, cmd)
+    return rc == 0
+
+
+async def _remote_release_claim(srv: dict) -> bool:
+    """释放远端 claim（正常退出时调用）。返回 True 仅当本 dispatcher 是 claim 持有者且释放成功。"""
+    cmd = _REMOTE_RELEASE_CLAIM_CMD_TPL.format(claim=_CLAIM_PATH, uid=_DISPATCHER_UID)
+    rc, stdout, _ = await _ssh_exec_ubuntu(srv, cmd)
+    return rc == 0 and "RELEASED" in stdout
+
+
+async def _heartbeat_loop(servers: list[dict]) -> None:
+    """后台 heartbeat：每 60s 给每台 claimed server 续 claim ts。
+
+    退出条件：被 cancel（dispatch 主流程退出时主动 cancel）。
+    """
+    try:
+        while True:
+            await asyncio.sleep(_HEARTBEAT_INTERVAL_SECONDS)
+            results = await asyncio.gather(
+                *(_remote_heartbeat(s) for s in servers),
+                return_exceptions=True,
+            )
+            for srv, ok in zip(servers, results):
+                if isinstance(ok, Exception) or not ok:
+                    print(f"[WARN] heartbeat 失败 {srv['name']}：claim 可能已失效")
+    except asyncio.CancelledError:
+        return
+
+
+def _emergency_release_claims() -> None:
+    """异常退出时尽力释放残留 claim（atexit/signal handler 兜底）。
+
+    主流程的 try/finally 已经会在正常路径释放。这里兜底两类异常退出：
+      1. 未捕获的 Python 异常 → atexit
+      2. SIGTERM / SIGINT → signal handler
+    Stale claim（10 min 无心跳）也是兜底兜底，但显式释放更快、避免下次 dispatch 等 stale。
+    """
+    if not _CLAIMED_SERVERS:
+        return
+    print(f"[CLEANUP] 释放残留 claim: {[s['name'] for s in _CLAIMED_SERVERS]}")
+    # atexit 时 event loop 通常已经关闭，用同步 subprocess
+    for srv in list(_CLAIMED_SERVERS):
+        try:
+            cmd = _REMOTE_RELEASE_CLAIM_CMD_TPL.format(claim=_CLAIM_PATH, uid=_DISPATCHER_UID)
+            ssh_cmd = [
+                "gcloud",
+                "compute",
+                "ssh",
+                "--zone",
+                srv["zone"],
+                srv["name"],
+                "--tunnel-through-iap",
+                "--project",
+                srv["project"],
+                "--",
+                f"sudo su - ubuntu -c {shlex.quote(cmd)}",
+            ]
+            subprocess.run(
+                ssh_cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=_gcloud_env(),
+                timeout=30,
+            )
+        except Exception:
+            # cleanup 阶段静默吞异常；stale claim (10min) 是终极兜底
+            pass
+        _CLAIMED_SERVERS.remove(srv)
+
+
+def _signal_handler(signum: int, _frame: object) -> None:
+    print(f"\n[SIGNAL] 收到 signal {signum}，释放 claim 后退出")
+    _emergency_release_claims()
+    sys.exit(128 + signum)
+
+
+atexit.register(_emergency_release_claims)
+# 注意：仅在主进程注册，subprocess 不会重复注册（atexit 是 per-process）
+signal.signal(signal.SIGTERM, _signal_handler)
+signal.signal(signal.SIGINT, _signal_handler)
+
 
 def _parse_server_spec(spec: str) -> dict:
     parts = spec.split(":")
@@ -675,8 +855,18 @@ async def _ssh_exec_ubuntu(srv: dict, remote_cmd: str) -> tuple[int, str, str]:
     )
 
 
-async def _scp_pull_file(srv: dict, remote_path: str, local_path: Path) -> bool:
-    """从 server 拉文件到本地（remote 需 644 可读权限）。"""
+async def _scp_pull_file(
+    srv: dict,
+    remote_path: str,
+    local_path: Path,
+    max_retries: int = 2,
+    backoff_seconds: int = 5,
+) -> bool:
+    """从 server 拉文件到本地（remote 需 644 可读权限）。
+
+    SCP 抖动重试（IAP tunnel 偶发抖动是最常见的失败模式）：rc=0 但 SCP 本身失败时 retry。
+    SCP 是幂等读操作，retry 永远安全；不像 SSH 跑 task 可能造成钱包级双跑。
+    """
     scp_cmd = [
         "gcloud",
         "compute",
@@ -689,17 +879,28 @@ async def _scp_pull_file(srv: dict, remote_path: str, local_path: Path) -> bool:
         f"{srv['name']}:{remote_path}",
         str(local_path),
     ]
-    proc = await asyncio.create_subprocess_exec(
-        *scp_cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=_gcloud_env(),
-    )
-    _, stderr = await proc.communicate()
-    if (proc.returncode or 0) != 0:
-        print(f"  scp failed: {stderr.decode('utf-8', 'replace').strip()[:200]}")
-        return False
-    return local_path.exists()
+    last_err = ""
+    for attempt in range(max_retries + 1):
+        proc = await asyncio.create_subprocess_exec(
+            *scp_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=_gcloud_env(),
+        )
+        _, stderr = await proc.communicate()
+        if (proc.returncode or 0) == 0 and local_path.exists():
+            if attempt > 0:
+                print(f"  scp recovered on attempt {attempt + 1}")
+            return True
+        last_err = stderr.decode("utf-8", "replace").strip()[:200]
+        if attempt < max_retries:
+            print(
+                f"  scp attempt {attempt + 1}/{max_retries + 1} failed: {last_err}"
+                f" — 重试 {backoff_seconds}s 后 (SCP 是只读幂等操作)"
+            )
+            await asyncio.sleep(backoff_seconds)
+    print(f"  scp failed after {max_retries + 1} attempts: {last_err}")
+    return False
 
 
 async def _check_server_busy(srv: dict) -> str:
@@ -727,7 +928,7 @@ def _build_remote_run_cmd(
     timeout: int,
     model: str,
     eval_mode: str,
-    recipe_mode: str,
+    recipe_source: str,
 ) -> str:
     """拼接远端 shell 命令：source env + export PATH + python 执行 run 子命令。"""
     core = (
@@ -741,10 +942,10 @@ def _build_remote_run_cmd(
         f"--timeout {timeout} "
         f"--model {shlex.quote(model)}"
     )
-    if eval_mode and eval_mode != "standard":
+    if eval_mode and eval_mode != "e2e":
         core += f" --eval-mode {shlex.quote(eval_mode)}"
-    if recipe_mode:
-        core += f" --recipe-mode {shlex.quote(recipe_mode)}"
+    if recipe_source:
+        core += f" --recipe-source {shlex.quote(recipe_source)}"
     return core
 
 
@@ -757,9 +958,13 @@ async def _dispatch_worker_cc(
     timeout: int,
     model: str,
     eval_mode: str,
-    recipe_mode: str,
+    recipe_source: str,
     log_dir: Path,
     local_run_dir: Path,
+    stream_upload: bool = False,
+    dataset_name: str = "",
+    upload_skill: str = "cobo-agentic-wallet-dev",
+    upload_description: str = "",
 ) -> str:
     """动态 worker：持续从队列取 item 执行。
 
@@ -774,7 +979,7 @@ async def _dispatch_worker_cc(
         item = item_map[item_id]
         item_inline = json.dumps(item, ensure_ascii=False)
         remote_cmd = _build_remote_run_cmd(
-            item_inline, run_name, timeout, model, eval_mode, recipe_mode
+            item_inline, run_name, timeout, model, eval_mode, recipe_source
         )
         log_file = log_dir / f"{srv['name']}-{item_id}.log"
         print(f"[DISPATCH→ {srv['name']}] item={item_id}")
@@ -825,6 +1030,34 @@ async def _dispatch_worker_cc(
             pulled = await _scp_pull_file(srv, remote_session, local_session)
             if not pulled:
                 status = "no_session"
+            elif stream_upload:
+                # streaming 模式：scp 拉回后立刻上传该 item 的 trace 到 Langfuse，
+                # 对齐 openclaw 的 per-item 上传节奏。同步 batch_upload_sessions 用 to_thread 卸载到线程池，
+                # 避免阻塞 worker 的事件循环。失败仅 log 不影响 dispatch 主流程。
+                try:
+                    print(f"[STREAM-UPLOAD→ {srv['name']}] item={item_id}", flush=True)
+                    trace_map = await asyncio.to_thread(
+                        batch_upload_sessions,
+                        local_run_dir,
+                        run_name,
+                        dataset_name,
+                        upload_skill,
+                        [item_id],
+                        upload_description,
+                    )
+                    tid = trace_map.get(item_id, "")
+                    if tid:
+                        print(
+                            f"STAGE: trace_uploaded item={item_id} trace_id={tid}",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"[STREAM-UPLOAD WARN] {item_id}: trace 未生成（见上方 upload 日志）",
+                            flush=True,
+                        )
+                except Exception as e:
+                    print(f"[STREAM-UPLOAD ERROR] {item_id}: {e}", flush=True)
         print(f"[DISPATCH← {srv['name']}] item={item_id} {status}")
         item_results[item_id] = (srv["name"], status)
         queue.task_done()
@@ -934,17 +1167,17 @@ async def _remote_content_hash(srv: dict, remote_path: str, is_file: bool) -> st
     return stdout.strip() or "error"
 
 
-def _write_recipe_manifest(items: list[dict], run_dir: Path, recipe_mode: str = "") -> dict:
+def _write_recipe_manifest(items: list[dict], run_dir: Path, recipe_source: str = "") -> dict:
     """L2a: 本地对每个 item 的 recipe 算 sha256，写 recipe_manifest.json。
 
     dispatch 后的 postcheck 用这个作为 ground truth 和服务器上 archive 文件对比。
-    cc_no_recipe 模式下，服务器写空 archive（_write_empty_recipe_archive），
+    empty 模式下，服务器写空 archive（_write_empty_recipe_archive），
     所以 manifest 必须强制记成空，否则 postcheck 会恒 FAIL（本地期望 dataset recipe hash，
     服务器实际是空字符串的 sha256）。
     """
     import hashlib as _hl
 
-    expect_empty = recipe_mode == "cc_no_recipe"
+    expect_empty = recipe_source == "empty"
 
     manifest: dict[str, dict] = {}
     for item in items:
@@ -956,7 +1189,7 @@ def _write_recipe_manifest(items: list[dict], run_dir: Path, recipe_mode: str = 
                 "has_recipe": True,
             }
         else:
-            # 两种情况：(1) dataset 本身没 recipe；(2) cc_no_recipe 模式强制空 archive
+            # 两种情况：(1) dataset 本身没 recipe；(2) empty 模式强制空 archive
             manifest[item["id"]] = {
                 "recipe_hash": _hl.sha256(b"").hexdigest()[:16],
                 "recipe_length": 0,
@@ -972,13 +1205,13 @@ async def _verify_recipe_archives(
     servers: list[dict],
     items: list[dict],
     run_name: str,
-    recipe_mode: str,
+    recipe_source: str,
     local_manifest: dict,
     item_server_map: dict[str, str],
 ) -> dict:
     """L2b: dispatch 完成后 SSH 读每个 item 真正运行过的那台服务器的 archive。
 
-    对 cc_with_recipe / cc_no_recipe：
+    对 seed / empty：
       - 读 /tmp/caw-eval-recipes/{run}/{item}.json
       - 抽 result.data.results[0].content（空则视为 no_recipe）
       - sha256 对比本地 manifest
@@ -987,11 +1220,11 @@ async def _verify_recipe_archives(
     item_server_map: item_id → server_name，由 _dispatch_worker_cc 成功跑完后写入。
     未出现在映射里的 item（如 ssh_timeout / no_session）跳过验证。
     """
-    if recipe_mode not in ("cc_with_recipe", "cc_no_recipe"):
-        return {"mode": recipe_mode, "skipped": True}
+    if recipe_source not in ("seed", "empty"):
+        return {"mode": recipe_source, "skipped": True}
 
     results: dict = {
-        "mode": recipe_mode,
+        "mode": recipe_source,
         "mismatches": [],
         "all_match": True,
         "details": {},
@@ -1162,10 +1395,12 @@ async def _cmd_dispatch(
     timeout: int,
     model: str,
     eval_mode: str,
-    recipe_mode: str,
+    recipe_source: str,
     sync_scripts: bool,
     force: bool,
     precheck: bool = True,
+    stream_upload: bool = False,
+    upload_skill: str = "cobo-agentic-wallet-dev",
 ) -> None:
     """本地 Mac 端：并行 dispatch CC 评测到多台服务器（动态队列）。
 
@@ -1198,18 +1433,40 @@ async def _cmd_dispatch(
     print(f"=== CC Dispatch [dynamic] (run: {run_name}) ===")
     print(f"数据集: {dataset_name} ({len(items)} items)")
     print(f"候选服务器: {len(servers)}")
-    print(f"模型: {model} eval_mode={eval_mode} recipe_mode={recipe_mode or '-'}")
+    print(f"模型: {model} eval_mode={eval_mode} recipe_source={recipe_source or '-'}")
 
-    print("\n=== 1/3 busy check ===")
+    print(f"\n=== 1/4 busy check + claim acquire (dispatcher_uid={_DISPATCHER_UID}) ===")
     probes = await asyncio.gather(*(_check_server_busy(s) for s in servers))
-    free_servers: list[dict] = []
+    candidate_servers: list[dict] = []
     for srv, state in zip(servers, probes):
         mark = "FREE" if state == "free" else f"SKIP ({state})"
         print(f"  {srv['name']}: {mark}")
         if state == "free" or (force and state != "error"):
-            free_servers.append(srv)
-    if not free_servers:
+            candidate_servers.append(srv)
+    if not candidate_servers:
         print("[ERROR] 所有服务器 busy/error。用 --force 强制跑（不推荐）")
+        sys.exit(2)
+
+    # Claim acquire：原子兜住 busy_check 6s 窗口，防止两个 dispatcher 同时占同台服务器。
+    # acquire 失败 = 别的 dispatcher 抢先了 → 跳过该台。
+    claim_results = await asyncio.gather(
+        *(_remote_acquire_claim(s, run_name) for s in candidate_servers),
+        return_exceptions=True,
+    )
+    free_servers: list[dict] = []
+    for srv, res in zip(candidate_servers, claim_results):
+        if isinstance(res, Exception):
+            print(f"  {srv['name']}: claim error {res}")
+            continue
+        ok, info = res
+        if ok:
+            print(f"  {srv['name']}: claim OK")
+            free_servers.append(srv)
+            _CLAIMED_SERVERS.append(srv)
+        else:
+            print(f"  {srv['name']}: claim FAILED ({info}) — 已被别的 dispatcher 占用")
+    if not free_servers:
+        print("[ERROR] 没有任何服务器可 claim（被别的 dispatcher 占用或全部 stale 检测失败）")
         sys.exit(2)
 
     if sync_scripts:
@@ -1244,7 +1501,7 @@ async def _cmd_dispatch(
             "local_git_hashes": versions.get("local_git_hashes", {}),
             "servers": versions.get("servers", {}),
             "eval_mode": eval_mode,
-            "recipe_mode": recipe_mode,
+            "recipe_source": recipe_source,
             "collected_at": datetime.now(tz=timezone.utc).isoformat(),
         }
         if not all_match:
@@ -1265,46 +1522,82 @@ async def _cmd_dispatch(
         print("\n=== 3/4 precheck SKIPPED（--no-precheck） ===")
 
     # L2a: dispatch 前写本地 recipe_manifest.json（recipe hash 的 ground truth）
-    recipe_manifest = _write_recipe_manifest(items, local_run_dir, recipe_mode)
-    if recipe_mode in ("cc_with_recipe", "cc_no_recipe"):
+    recipe_manifest = _write_recipe_manifest(items, local_run_dir, recipe_source)
+    if recipe_source in ("seed", "empty"):
         print(
             f"  [OK] recipe_manifest.json -> {len(recipe_manifest)} items "
             f"(with_recipe={sum(1 for v in recipe_manifest.values() if v['has_recipe'])})"
         )
 
     print(f"\n=== 4/4 动态分发 {len(items)} items 给 {len(free_servers)} 台 ===")
+    if stream_upload:
+        print(
+            "  [stream-upload] 启用：每个 item scp 完成后立刻上传 trace 到 Langfuse "
+            "（trace_map.json 通过 fcntl.flock 并发安全 merge）"
+        )
     queue: asyncio.Queue = asyncio.Queue()
     item_map = {it["id"]: it for it in items}
     for it in items:
         await queue.put(it["id"])
     item_results: dict[str, tuple[str, str]] = {}
 
-    workers = [
-        _dispatch_worker_cc(
-            srv,
-            queue,
-            item_map,
-            item_results,
-            run_name,
-            timeout,
-            model,
-            eval_mode,
-            recipe_mode,
-            log_dir,
-            local_run_dir,
-        )
-        for srv in free_servers
-    ]
-    await asyncio.gather(*workers)
+    # 预构建 stream upload 用的 run_description（与 cmd_upload 保持一致）
+    upload_description = (
+        f"Claude Code 评测 | model: {model} | dataset: {dataset_name}"
+        f" ({len(items)} cases) | env: Claude Code"
+    )
+
+    # 后台 heartbeat：每 60s 续一次 claim ts，证明 dispatcher 还活着。
+    # dispatcher 死了不续 → 600s 后 claim 视为 stale → 下次 dispatch 可以接管。
+    heartbeat_task = asyncio.create_task(_heartbeat_loop(free_servers))
+    try:
+        workers = [
+            _dispatch_worker_cc(
+                srv,
+                queue,
+                item_map,
+                item_results,
+                run_name,
+                timeout,
+                model,
+                eval_mode,
+                recipe_source,
+                log_dir,
+                local_run_dir,
+                stream_upload=stream_upload,
+                dataset_name=dataset_name,
+                upload_skill=upload_skill,
+                upload_description=upload_description,
+            )
+            for srv in free_servers
+        ]
+        await asyncio.gather(*workers)
+    finally:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
+        # 正常释放 claim（异常退出时由 atexit hook 兜底）
+        try:
+            await asyncio.gather(
+                *(_remote_release_claim(s) for s in free_servers),
+                return_exceptions=True,
+            )
+            for srv in free_servers:
+                if srv in _CLAIMED_SERVERS:
+                    _CLAIMED_SERVERS.remove(srv)
+        except Exception as e:
+            print(f"[WARN] release claim 失败: {e}")
 
     # L2b: postcheck —— 按 item→server 映射，只探测真正运行过该 item 的那台服务器
-    if recipe_mode in ("cc_with_recipe", "cc_no_recipe"):
+    if recipe_source in ("seed", "empty"):
         print("\n=== Recipe archive postcheck（本地 dataset vs 服务器 archive hash 对比）===")
         item_to_server = {
             iid: srv_name for iid, (srv_name, status) in item_results.items() if status == "ok"
         }
         verify_result = await _verify_recipe_archives(
-            free_servers, items, run_name, recipe_mode, recipe_manifest, item_to_server
+            free_servers, items, run_name, recipe_source, recipe_manifest, item_to_server
         )
         all_match = verify_result.get("all_match", True)
         mismatches = verify_result.get("mismatches", [])
@@ -1338,7 +1631,7 @@ async def _cmd_dispatch(
         "executed_at": datetime.now(tz=timezone.utc).isoformat(),
         "model": model,
         "eval_mode": eval_mode,
-        "recipe_mode": recipe_mode,
+        "recipe_source": recipe_source,
         "items": {
             iid: {
                 "status": item_results.get(iid, ("-", "skipped"))[1],
@@ -1491,6 +1784,9 @@ def cmd_metrics(run_name: str) -> None:
 
     session_files = sorted(run_dir.glob("E2E-*.jsonl"))
     if not session_files:
+        # 兼容非 E2E- 前缀的 item id（如 caw-recipe-eval-v1 的 `recipe-*-v1`）
+        session_files = sorted(run_dir.glob("*.jsonl"))
+    if not session_files:
         print(f"[ERROR] 没有找到 session 文件: {run_dir}")
         sys.exit(1)
 
@@ -1611,11 +1907,24 @@ def main() -> None:
     p_run.add_argument("--item-id", nargs="*", help="只跑指定 item")
     p_run.add_argument("--timeout", type=int, default=_DEFAULT_CC_TIMEOUT, help="单 item 超时秒数")
     p_run.add_argument("--model", default="sonnet", help="claude --model 传入的模型标识")
-    p_run.add_argument("--eval-mode", choices=["standard", "recipe"], default="standard")
+    p_run.add_argument(
+        "--eval-mode",
+        choices=["e2e", "pact", "onboard", "standard", "recipe"],
+        default="e2e",
+        help="评测模式: e2e (默认，全流程含 task_completion) / pact (仅评 pact 构造) / onboard"
+        "；老值 standard→e2e、recipe→pact 仍接受",
+    )
+    p_run.add_argument(
+        "--recipe-source",
+        choices=["real", "seed", "empty"],
+        default="",
+        help="Recipe 来源: real (调真实 backend) / seed (注入 dataset 的 recipe) / empty (注入空，对照组)",
+    )
     p_run.add_argument(
         "--recipe-mode",
         choices=["cc_with_recipe", "cc_no_recipe", "cc_real_recipe", "openclaw"],
         default="",
+        help="[已弃用] 用 --recipe-source 替代",
     )
     p_run.add_argument(
         "--inline-item",
@@ -1643,11 +1952,24 @@ def main() -> None:
         "--timeout", type=int, default=_DEFAULT_CC_TIMEOUT, help="远端单 item 超时"
     )
     p_dispatch.add_argument("--model", default="sonnet")
-    p_dispatch.add_argument("--eval-mode", choices=["standard", "recipe"], default="standard")
+    p_dispatch.add_argument(
+        "--eval-mode",
+        choices=["e2e", "pact", "onboard", "standard", "recipe"],
+        default="e2e",
+        help="评测模式: e2e (默认，全流程含 task_completion) / pact (仅评 pact 构造) / onboard"
+        "；老值 standard→e2e、recipe→pact 仍接受",
+    )
+    p_dispatch.add_argument(
+        "--recipe-source",
+        choices=["real", "seed", "empty"],
+        default="",
+        help="Recipe 来源: real (调真实 backend) / seed (注入 dataset 的 recipe) / empty (注入空，对照组)",
+    )
     p_dispatch.add_argument(
         "--recipe-mode",
         choices=["cc_with_recipe", "cc_no_recipe", "cc_real_recipe", "openclaw"],
         default="",
+        help="[已弃用] 用 --recipe-source 替代",
     )
     p_dispatch.add_argument(
         "--no-sync-scripts",
@@ -1664,8 +1986,32 @@ def main() -> None:
         action="store_true",
         help="跳过 R2 precheck（组件版本校验 + deployment_snapshot 采集）。正式评测禁用此项",
     )
+    p_dispatch.add_argument(
+        "--stream-upload",
+        action="store_true",
+        help="每个 item scp 拉回后立刻上传 trace 到 Langfuse（对齐 openclaw 的 per-item 节奏）。"
+        "默认 off：dispatch 完后用 `python run_eval_cc.py upload` 批量上传。"
+        "注意：开启后不要再单独跑 upload，否则会创建重复 trace",
+    )
+    p_dispatch.add_argument(
+        "--upload-skill",
+        default="cobo-agentic-wallet-dev",
+        help="streaming upload 写入 trace 的 skill 字段（默认 cobo-agentic-wallet-dev，"
+        "与 cmd_upload 默认一致）",
+    )
 
     args = parser.parse_args()
+
+    # 数据集 name / id / URL 三种形式统一规范化为 name；
+    # 之后所有下游（dispatch metadata / deployment_snapshot / 服务器端 run / score）都拿到 canonical name。
+    if getattr(args, "dataset_name", None):
+        try:
+            args.dataset_name = resolve_dataset(args.dataset_name)
+        except ValueError as e:
+            print(f"[ERROR] {e}", flush=True)
+            sys.exit(2)
+        if args.cmd == "dispatch":
+            print_dataset_summary(args.dataset_name)
 
     if args.cmd == "upload":
         cmd_upload(
@@ -1701,8 +2047,8 @@ def main() -> None:
                 item_ids=args.item_id,
                 timeout=args.timeout,
                 model=args.model,
-                eval_mode=args.eval_mode,
-                recipe_mode=args.recipe_mode,
+                eval_mode=_normalize_eval_mode(args.eval_mode),
+                recipe_source=_normalize_recipe_source(args.recipe_source, args.recipe_mode),
                 inline_item=args.inline_item,
             )
         )
@@ -1716,11 +2062,13 @@ def main() -> None:
                 servers=servers,
                 timeout=args.timeout,
                 model=args.model,
-                eval_mode=args.eval_mode,
-                recipe_mode=args.recipe_mode,
+                eval_mode=_normalize_eval_mode(args.eval_mode),
+                recipe_source=_normalize_recipe_source(args.recipe_source, args.recipe_mode),
                 sync_scripts=not args.no_sync_scripts,
                 force=args.force,
                 precheck=not args.no_precheck,
+                stream_upload=args.stream_upload,
+                upload_skill=args.upload_skill,
             )
         )
     else:

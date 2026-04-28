@@ -22,6 +22,8 @@
 #### 强制 Markdown 模板（每条 finding 必用）
 
 > **写报告时严格按这个模板复制**。证据段是**独立一行**，不能塞进根因段里混合叙事；空行 = 必须加 🔍 疑似 前缀并改写根因和 Action。
+>
+> **`反证回合` 三字段是硬性要求**：标题用了"X/N 全中"、"卡死/死透/永久"、"X 导致 Y" 这类绝对化措辞 → 对应字段必须填，没填不能发布 finding。详见下面 §1.5 反证回合（强制）。
 
 ```markdown
 ### 🔴 P1-X · 标题（≤ 30 字）
@@ -32,6 +34,12 @@
 - `session.jsonl / req_<ITEM>.txt`: `"<关键 excerpt 字符串>"`
 - <至少 1 条 file:line / log excerpt / dataset field 锚点；否则整条 finding 降级为 🔍>
 **根因**: 因为 <引自证据的事实 X>，所以 <产生行为 Y>；这导致 <后果 Z>
+
+**反证回合**（含绝对化主张的 finding 强制；不适用时写 N/A 并说明理由，不能空缺）:
+- **范围反例**（"X/N 全中"类）: 列具体 N case 名 + 从 (Total - N) 个未中的里挑 1 个，附支撑该 case 没中的证据锚点
+- **时间核查**（"卡死/死透/永久/全部失败"类）: 评测时态 vs 至少 1 个后续时间点（≥ 1h 后）的 backend 实查对比
+- **对照实验**（"X 导致 Y"类因果主张）: 找 paired case：变量 X 有 vs 无的同类型 case 各 ≥ 1，列两组在维度 Y 上的分数差
+
 **Action Item**:
 1. 改 `path/to/file.ext:LINE` 的 <XXX>
 2. ...
@@ -45,10 +53,47 @@
 **现象**: ...
 **证据**: 未在本会话内定位到直接锚点（标题已加 🔍 前缀）
 **根因**: 假设 <X>（待验证）
+**反证回合**: N/A（finding 已降级为🔍 疑似，留待 Action Item 验证步骤完成后再走完整反证）
 **Action Item**:
 1. **验证步骤**: Read `path/to/file.ext` 确认 `symbol` / grep `<pattern>` 确认
 2. ...
 ```
+
+#### 1.5 反证回合（强制）— 绝对化主张触发
+
+> **背景（2026-04-27 历史教训）**：gpt-5.4 评测主会话写出 3 条主结论事后被推翻——
+> "logger pre-shell-expansion bug 17/17 全中" → 实测仅 4/17 真受影响（其他 13 case 的 inject path 在 scoring phase 已生效）；
+> "TSS 死透 13/17" → 24h 后实查 backend，那批 tx 大部分已 Success（实际是延迟 4-24h，不是死透）；
+> "并发污染 P0 影响 2 case" → 对照同类 case 单跑 vs 并发分数差是负向 / 不显著（并发未造成实质影响）。
+>
+> 共性：每条主张都用了**绝对化措辞**（"全中"、"死透"、"P0 导致"），但**只读了一个信源**就下结论。
+> 三种被忽略的方法：第二信源（多源交叉）/ 时间演化（再次实查）/ 控制实验（paired 对比）。
+> 加这一节强制把这 3 种方法嵌入 finding 流程，触发条件 = 标题/根因含绝对化主张关键词。
+
+**触发关键词** → 必填对应反证字段（如多个触发条件叠加，多个字段都填）：
+
+| 触发措辞 | 必填字段 | 检查方法 |
+|---|---|---|
+| "X/N 全中"、"全部失败"、"100% 受影响"、"所有 X 都"、"无一例外" | **范围反例** | 列具体 N case 名（不能用"前述"），从 Total-N 个未中的中挑 1 个，附该 case 没中的证据锚点（scores.json 反证 / 不同维度反证）|
+| "卡死"、"死透"、"永久挂"、"再不"、"完全无法"、"backend 不动"、"100% 阻塞" | **时间核查** | 评测当时状态 + 至少 1 个后续时间点的 backend 实查（caw tx list / API 查 status / SSH 复查 trace）；列两个时间点的 status 对比 |
+| "A 导致 B 低分"、"A 是主因"、"A 引起 Y"、"A 触发了 Y" | **对照实验** | 找 paired case：A 有 vs 无的同类型 case 各 ≥ 1（同 op_type / 同 chain / 同 difficulty）；列两组在 Y 维度的分数差和方向（正向支持因果 / 负向反对 / 不显著）|
+
+**绝对化主张反证规则（任意触发即必填）**：
+
+1. **没找到反例 / 时间没变化 / 分数差正向** → finding 强化，可保留绝对化措辞
+2. **找到反例 / 时间确证变化 / 分数差负向或不显著** → 必须改写：
+   - 范围措辞改为具体数字（"X/N 命中"、"占 X% 但 Y% 反例"）
+   - 时间措辞改为快照（"评测窗内观察到 X 状态；24h 后实查 Y/Z 已恢复"）
+   - 因果措辞改为相关（"X 与 Y 同期发生但实测分数差不显著，归因不应作为 P0 主因"）
+3. **完全跑不出反证证据**（如复查需要等 24h、对照 case 不存在）→ 整条 finding 降级 🔍 疑似 + Action 第一项是"补做反证步骤"
+
+**强制写法 vs 反例**:
+
+| ❌ 错误（绝对化无反证） | ✅ 正确（带反证） |
+|---|---|
+| "logger bug 17/17 全中" | "logger bug 在 4/17 hit（dca-3rounds / dca-5rounds / uniswap-001/002）；其余 13 case 的 inject_backend_pact_specs 在 scoring phase 生效，证据 scores.json:dimensions.pact_structure_valid.reasoning='policies=2 条, conditions=2 条'（aave-001 反例）" |
+| "TSS 死透 13/17 case TC=0" | "评测窗内 13/17 case 卡 pendingsignature → TC=0；24h 后 SSH 复查 caw tx list：8/13 已 Success/completed、3/13 broadcasting、2/13 Rejected——TSS 不是死透是延迟 4-24h" |
+| "dispatch 并发污染 P0 影响 superfluid-2weis + uniswap-002" | "对照: superfluid-1weis(单跑 0.286) vs 2weis(并发 0.309) 差 +0.023; uniswap-001(单跑 0.309) vs 002(并发 0.252) 差 -0.057。并发与低分相关但分数差非主导级，归 P2 / 仅作为 dispatch 设计 bug 修，不应作为评测低分的主因素" |
 
 #### 写 finding 前的强制动作顺序
 
@@ -235,7 +280,7 @@
 
 正常情况下应该：
 - 🔵 SKILL 通常占 P0/P1 大头（直接影响 agent 行为）
-- 🟤 Recipe 在 recipe-mode 评测里常见 P1（地址/ABI/Facts 结构问题）；在非 recipe 评测里一般 0 条
+- 🟤 Recipe 在 pact 模式 / e2e + recipe-source=real 评测里常见 P1（地址/ABI/Facts 结构问题）；在 recipe-source=empty 对照组里一般 0 条
 - 🟡 数据集 偶尔出现 P0/P1（锚点设定与实际行为口径冲突）
 - 🟢 评分体系 偶尔出现 P1（如维度定义偏差）
 - 🟠 评测工具链 多为 P1/P2（harness bug 被修完后影响面减小）

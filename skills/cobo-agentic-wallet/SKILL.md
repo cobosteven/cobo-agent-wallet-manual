@@ -90,7 +90,7 @@ A recipe is a domain knowledge document for a specific operation type (e.g. DEX 
 Recipes are queried on demand, not bundled:
 
 ```bash
-caw recipe search --query "How do I swap USDC to ETH on Base using Uniswap V3?" --keywords uniswap,usdc,eth
+caw recipe search --keywords uniswap,usdc,eth
 ```
 
 Find the recipe whose use case matches the intent and read it before continuing. Recipe search is required before any contract call — do not skip it.
@@ -244,7 +244,7 @@ If any `caw` JSON response contains `"update": true`, immediately:
 ```bash
 caw meta chains                                                        # list all supported chains
 caw meta tokens --chain-ids BASE_ETH                                   # tokens on Base
-caw recipe search --query "How do I swap USDC to ETH on Base using Uniswap V3?" --keywords uniswap,usdc,eth
+caw recipe search --keywords uniswap,usdc,eth
 caw wallet balance --chain-id BASE_ETH --token-id BASE_ETH           # check balance
 caw tx transfer --pact-id <pact-id> --token-id BASE_ETH --dst-address 0x... --amount 10 --request-id pay-001
 caw util eth-call --chain-id BASE_ETH --to 0x... --abi erc20 --method balanceOf --args '["0x..."]'

@@ -29,19 +29,33 @@ Openclaw 弱模型评测脚本。
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from eval_utils import batch_upload_sessions, get_dataset_items
+from eval_utils import (
+    _normalize_eval_mode,
+    _normalize_recipe_source,
+    batch_upload_sessions,
+    get_dataset_items,
+    get_langfuse_client,
+    link_to_dataset_run,
+    print_dataset_summary,
+    resolve_dataset,
+    upload_session,
+)
 
 _METADATA_BASE = "http://metadata.google.internal/computeMetadata/v1"
 _METADATA_HEADERS = {"Metadata-Flavor": "Google"}
@@ -57,6 +71,26 @@ _RUNS_DIR = Path.home() / ".caw-eval" / "runs"
 _OC_HOME = Path.home() / ".openclaw"
 _DEFAULT_TIMEOUT = 600  # 单个 task 超时（秒）
 _MAX_CONTINUATIONS = 20  # 续传次数上限（安全阀）
+
+# dispatch 启动前的 caw 健康预检：低于此 TSS Node 版本直接 abort，避免 caw 在 sign/tx
+# 阶段触发 ensureRuntimeTSSNodeMinVersion 二进制热升级 → ETXTBSY (text file busy)。
+# 默认值 v0.12.14 对齐 caw SDK defaultMinVersion (sdk/go/internal/tssnode/version.go:13)。
+# 服务端可通过 X-CAW-TSS-Node-Min-Version 推更高 min（例如 v0.12.20），可由
+# CAW_EVAL_PREFLIGHT_MIN_TSS_VERSION 环境变量在本地预检阶段对齐这一更高基线。
+_DEFAULT_PREFLIGHT_MIN_TSS_VERSION = "v0.12.14"
+
+# ── 余额 gate 阈值（Base 主网）──────────────────────────────────────────────────
+# 单 case 最坏负担：transfer/swap/supply ≤ 0.002 USDC，wrap ≤ 0.0001 ETH，
+# superfluid upgrade 易把可用 USDC 一次性 wrap → USDCx（实测 minimax 04-28 把 0.098 USDC
+# 一次性 upgrade 清空 test3 钱包，导致同机后续 5 case 看到 USDC=0 直接放弃，参见
+# eval-report-eval-oc-minimax-e2e-real-recipe-20260428-1116.md 4.1 finding）。
+# 阈值给单 case 0.005 USDC + 0.0001 ETH 余量，比实际消耗高 2-50x，留 superfluid 安全垫。
+_DEFAULT_BASE_ETH_PER_CASE = float(os.environ.get("CAW_EVAL_MIN_BASE_ETH_PER_CASE", "0.0001"))
+_DEFAULT_BASE_USDC_PER_CASE = float(os.environ.get("CAW_EVAL_MIN_BASE_USDC_PER_CASE", "0.005"))
+
+# operation_type 在此白名单的 case 不需要 USDC（仅消耗 native gas）。
+# 注：metadata 没有 operation_type 时 fallback 到要求 USDC（保守策略）。
+_BASE_NO_USDC_OPERATION_TYPES = frozenset({"wrap", "auth", "sign", "message_sign"})
 
 # workspace 中由 openclaw 框架管理的系统文件，eval 清理时保留
 _WORKSPACE_SYSTEM_FILES = frozenset(
@@ -80,25 +114,24 @@ _WORKSPACE_SYSTEM_FILES = frozenset(
 
 def build_task_prompt(
     item: dict,
-    eval_mode: str = "standard",
-    recipe_mode: str = "",
+    eval_mode: str = "e2e",
+    recipe_source: str = "",
 ) -> str:
     """构建单个 item 的 task 执行 prompt（由 wrapper subagent 传给 task session）。
 
     Args:
-        eval_mode: "standard" 标准模式, "recipe" recipe 评测模式
-        recipe_mode: "cc_with_recipe" / "cc_no_recipe" / "openclaw" / "oc_real_recipe"（仅 recipe 模式有效）
-            - openclaw:       systemd drop-in 注入 CAW_RECIPE_FILE，gateway 起 caw 时读注入文件
-            - oc_real_recipe: 不写 drop-in（dispatch 入口主动 teardown 残留），caw 调真实 backend
+        eval_mode: "e2e" 全流程评测（默认）, "pact" 仅评 pact 构造, "onboard" onboarding 评估
+        recipe_source: "real" / "seed" / "empty"（仅 pact 模式有意义）
+            - seed: systemd drop-in 注入 CAW_RECIPE_FILE，gateway 起 caw 时读注入文件
+            - real: 不写 drop-in（dispatch 入口主动 teardown 残留），caw 调真实 backend
+            - empty: openclaw 暂不支持（cc 专用对照组）
     """
-    item_id = item["id"]
     user_message = item["user_message"]
 
     # F3 (stage2 governance): 评测约束用"用户先前上下文"自然语气替代硬指令。
     # 未 paired 钱包场景下，用户已在 CC 对话里预先授权 → 真实用户场景子集，合法。
     # owner_linked=false 自动 approve 本来就是 skill 的合规行为，skill 会自主做，不在 prompt 重复提示。
-    prompt = f"""[EVAL:{item_id}]
-cobo-agentic-wallet-sandbox skill 已激活。
+    prompt = """cobo-agentic-wallet-sandbox skill 已激活。
 
 ## Environment（环境已就绪，无需安装）
 
@@ -109,7 +142,7 @@ cobo-agentic-wallet-sandbox skill 已激活。
 **用户先前上下文（任务前已与 agent 协商过）：** 用户**预先授权**对本次任务生成的 pact 无需再次展示 preview 预览和等待 "yes" 确认，直接 `caw pact submit` 即可视为已获得用户明确确认。用户希望你自主、连续地完成任务，不被交互打断（如遇 `owner_linked=true` 需要 Cobo Agentic Wallet app 审批的真实阻塞，记录原因并跳过）。
 """
 
-    if eval_mode == "recipe":
+    if eval_mode == "pact":
         prompt += """
 **交易构建模式（重要）：**
 - 交易成功提交后（caw tx transfer/call/sign-message 返回 status=Initiated 或 PendingApproval），**立即停止**
@@ -120,9 +153,9 @@ cobo-agentic-wallet-sandbox skill 已激活。
 - 评测沙盒模式：只评估交易构建正确性，余额为 0 时不得中止，直接继续提交 pact 和构建交易
 """
         # Recipe 注入：
-        # 无论 cc_with_recipe 还是 cc_no_recipe，agent 都应按真实用户流程自主调 `caw recipe search`。
-        # - cc_with_recipe: 由 CAW_RECIPE_FILE env 注入（内含指定 recipe，count=1）
-        # - cc_no_recipe:   由 CAW_RECIPE_FILE env 注入空 recipe（count=0），对照组
+        # 无论 seed 还是 empty，agent 都应按真实用户流程自主调 `caw recipe search`。
+        # - seed:  由 CAW_RECIPE_FILE env 注入（内含指定 recipe，count=1）
+        # - empty: 由 CAW_RECIPE_FILE env 注入空 recipe（count=0），对照组
         # 不在 prompt 里拼接 recipe 内容，也不禁止 search。
         # openclaw runtime 走 systemd drop-in 注入；CC 走进程 env（见 run_eval_cc.py）。
 
@@ -148,6 +181,151 @@ RECIPE_FILE_PATH = "/tmp/caw-eval-recipe.json"
 # 持久归档目录：每个 item 的 recipe 原样存一份，便于失败复盘。
 # 命名：/tmp/caw-eval-recipes/{run_name}/{item_id}.json
 RECIPE_ARCHIVE_ROOT = Path("/tmp/caw-eval-recipes")
+
+
+# ── SIGTERM 归档兜底（P0-A） ──────────────────────────────────────────────
+# 远端 timeout 包装在 660s 发 SIGTERM、690s 发 SIGKILL。Python 默认对 SIGTERM
+# 直接 exit，不走 try/finally，所以 _archive_recent_pact_specs 跑不到 → pact_specs
+# 目录里没归档文件 → 评分端 inject_backend_pact_specs 找不到真实 spec → S2 偏低。
+# 解决：装一个 SIGTERM handler，在 30s grace 期内同步跑一次归档再退出。
+#
+# Tuple 字段: (run_dir, item_id, agent_id)。agent_id 在 _run_single_task 计算出
+# agent_name 后回填；在 agent_name 之前发生 SIGTERM 时为空字符串，session 归档跳过。
+_CURRENT_ARCHIVE_CONTEXT: tuple[Path, str, str] | None = None
+
+
+def _sync_archive_recent_pact_specs(
+    run_dir: Path, item_id: str, limit: int = 5, budget_s: int = 25
+) -> None:
+    """SIGTERM 触发的同步归档（不能用 asyncio，signal handler 限制）。
+
+    用 subprocess.run 串行调用 caw pact list / show，写到 run_dir/pact_specs/。
+    总预算 budget_s 秒（默认 25s，留 5s 给 sys.exit 走完）。
+    """
+    out_dir = run_dir / "pact_specs"
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return
+
+    deadline = time.monotonic() + budget_s
+    try:
+        result = subprocess.run(
+            [_CAW_BIN, "pact", "list", "--limit", str(limit)],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+        if result.returncode != 0:
+            return
+        listing = json.loads(result.stdout.decode())
+        pacts = listing.get("result", {}).get("pacts", []) or []
+    except Exception:
+        return
+
+    archived = 0
+    for p in pacts:
+        if time.monotonic() > deadline:
+            break
+        pid = p.get("id", "")
+        if not pid:
+            continue
+        dst = out_dir / f"{pid}.json"
+        if dst.exists():
+            continue
+        try:
+            r = subprocess.run(
+                [_CAW_BIN, "pact", "show", "--pact-id", pid],
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+            if r.returncode != 0:
+                continue
+            dst.write_bytes(r.stdout)
+            archived += 1
+        except Exception:
+            continue
+
+    if archived:
+        # 用 stderr 避免被 stdout 缓冲影响
+        sys.stderr.write(
+            f"  [{item_id}] sigterm-archived {archived} pact spec(s) -> {out_dir.name}/\n"
+        )
+        sys.stderr.flush()
+
+
+def _sync_archive_session(run_dir: Path, item_id: str, agent_id: str) -> None:
+    """SIGTERM 时把当前 agent 的 session jsonl 拷到 run_dir，加 .partial 后缀。
+
+    `.partial` 后缀避免被 `STAGE: session_collected` 流程误认成完整 session（那个流程
+    glob `*.jsonl` 拿最新，不区分前缀；但下游 `dispatch_pull_raw_sessions` 用
+    `ls *.jsonl` 会一并拉回本地 raw-sessions/，judge 评分可识别后缀单独处理）。
+
+    成本：单次 shutil.copy2 几百 KB，约 10-50 ms，远低于 SIGTERM 30s grace 预算。
+    """
+    if not agent_id:
+        sys.stderr.write(
+            f"  [{item_id}] sigterm-skip session: agent_id 未知（agent_name 计算前就 SIGTERM）\n"
+        )
+        return
+    session_dir = _OC_HOME / "agents" / agent_id / "sessions"
+    if not session_dir.exists():
+        truncated = agent_id[:64]
+        candidate = _OC_HOME / "agents" / truncated / "sessions"
+        if candidate.exists():
+            session_dir = candidate
+        else:
+            sys.stderr.write(f"  [{item_id}] sigterm-skip session: dir 不存在 ({session_dir})\n")
+            return
+    files = sorted(
+        (f for f in session_dir.glob("*.jsonl") if f.name != "sessions.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not files:
+        sys.stderr.write(f"  [{item_id}] sigterm-skip session: 无 jsonl 文件\n")
+        return
+    dst = run_dir / f"{item_id}.partial.jsonl"
+    try:
+        shutil.copy2(files[0], dst)
+        size_kb = dst.stat().st_size / 1024
+        sys.stderr.write(
+            f"  [{item_id}] sigterm-archived session ({size_kb:.0f}KB) -> {dst.name}\n"
+        )
+        sys.stderr.flush()
+    except Exception as e:
+        sys.stderr.write(f"  [{item_id}] sigterm-archive session failed: {e}\n")
+
+
+def _sigterm_archive_handler(signum, frame):  # noqa: ARG001
+    """SIGTERM/SIGINT 时同步归档当前 item 再退出。
+
+    远端 `timeout --signal=TERM --kill-after=30s` 给我们 ~30s 窗口。
+    归档 5 个 pact (caw pact show) 大约 10-15s，session copy 几十 ms，足够。
+    """
+    ctx = _CURRENT_ARCHIVE_CONTEXT
+    sig_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
+    sys.stderr.write(f"\n[{sig_name}] caught, archiving current item before exit...\n")
+    sys.stderr.flush()
+    if ctx is not None:
+        run_dir, item_id, agent_id = ctx
+        try:
+            _sync_archive_session(run_dir, item_id, agent_id)
+        except Exception as e:
+            sys.stderr.write(f"[{sig_name}] session archive failed: {e}\n")
+        try:
+            _sync_archive_recent_pact_specs(run_dir, item_id)
+        except Exception as e:
+            sys.stderr.write(f"[{sig_name}] pact archive failed: {e}\n")
+    # 标准 SIGTERM exit code = 128 + signum
+    sys.exit(128 + signum)
+
+
+def _install_sigterm_archive_handler() -> None:
+    """在 cmd_run 入口装上 handler。多次装等同最后一次（signal 模块保证）。"""
+    signal.signal(signal.SIGTERM, _sigterm_archive_handler)
+    signal.signal(signal.SIGINT, _sigterm_archive_handler)
 
 
 async def _archive_recent_pact_specs(run_dir: Path, item_id: str, limit: int = 5) -> None:
@@ -325,15 +503,39 @@ async def _run_single_task(
     workspace: str,
     run_dir: Path,
     timeout: int,
-    eval_mode: str = "standard",
-    recipe_mode: str = "",
+    eval_mode: str = "e2e",
+    recipe_source: str = "",
 ) -> str:
     """执行单个评测 task，返回状态字符串 ("ok" | "error:<reason>")。"""
     item_id = item["id"]
-    # 在 agent 名中加入完整 run_name，确保不同 run 使用不同的
-    # ~/.openclaw/agents/ 目录，从根本上避免继承上一次 run 的旧 session。
-    agent_name = f"eval-{item_id}-{run_dir.name}"
+    # hash 化 agent_name（固定 13 字符，永不破 openclaw 64 字符限制）。
+    # 历史拼接 f"eval-{item_id}-{run_dir.name}" 可达 80+ 字符，被 openclaw 截断到 64
+    # 导致 session_dir 找不到（参 plan 10-recipe-3 P0 评测工具链 Bug 修复）。
+    # 同 (item_id, run_name) 永远 hash 到同 short_id，重跑幂等。
+    short_id = hashlib.sha1(f"{run_dir.name}/{item_id}".encode()).hexdigest()[:8]
+    agent_name = f"eval-{short_id}"
     actual_agent_id = ""
+
+    # 回填 SIGTERM context 的 agent_id（用 agent_name.lower() 提前给出，actual_agent_id
+    # 在 `agents add` 返回后才确定，但 openclaw 仅做 lowercase 化，路径是 agent_name.lower()）。
+    # 这样若 SIGTERM 在 agents add 之后、session_collected 之前命中，session 仍能归档到
+    # run_dir/<item>.partial.jsonl。
+    global _CURRENT_ARCHIVE_CONTEXT
+    if _CURRENT_ARCHIVE_CONTEXT is not None:
+        _CURRENT_ARCHIVE_CONTEXT = (run_dir, item_id, agent_name.lower())
+
+    # 写 mapping 到 run_dir/agent_map.jsonl（追加；多 case 并发用 jsonl 不冲突）
+    mapping_entry = {
+        "short_id": short_id,
+        "agent_name": agent_name,
+        "item_id": item_id,
+        "run_name": run_dir.name,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    mapping_file = run_dir / "agent_map.jsonl"
+    mapping_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(mapping_file, "a", encoding="utf-8") as f:
+        f.write(json.dumps(mapping_entry, ensure_ascii=False) + "\n")
 
     try:
         # 0. 预清理残留 agent（上次异常退出或 delete 失败时会留下同名 agent，
@@ -391,7 +593,7 @@ async def _run_single_task(
         #   - 活动 /tmp/caw-eval-recipe.json（gateway env 指向，caw 实际读取的文件）
         # 前置条件：dispatch 阶段已通过 _setup_gateway_recipe_env 设置并重启 gateway。
         recipe_content = item.get("recipe", "")
-        if eval_mode == "recipe" and recipe_mode == "openclaw" and recipe_content:
+        if eval_mode == "pact" and recipe_source == "seed" and recipe_content:
             recipes_json = {
                 "message": "",
                 "result": {
@@ -408,7 +610,7 @@ async def _run_single_task(
             Path(RECIPE_FILE_PATH).write_text(content_str, encoding="utf-8")
             print(f"  [{item_id}] recipe -> {archive_file} + active {RECIPE_FILE_PATH}")
 
-        prompt = build_task_prompt(item, eval_mode=eval_mode, recipe_mode=recipe_mode)
+        prompt = build_task_prompt(item, eval_mode=eval_mode, recipe_source=recipe_source)
         rc, out, err = await _run_openclaw(
             openclaw_bin,
             [
@@ -472,7 +674,15 @@ async def _run_single_task(
         print(f"STAGE: agent_done status={status} item={item_id}", flush=True)
 
         # 4. 收集 session 文件
+        # 新 run（hash 化 agent_name，13 字符）→ session_dir 直接命中。
+        # 兜底：老 run 用拼接长名跑过的 session，agent_name 在磁盘被截到 64 字符——
+        # 用 truncated 路径 fallback 找到（参 plan 10-recipe-3 方案 A 兜底）。
         session_dir = _OC_HOME / "agents" / actual_agent_id / "sessions"
+        if not session_dir.exists():
+            truncated = actual_agent_id[:64]
+            candidate = _OC_HOME / "agents" / truncated / "sessions"
+            if candidate.exists():
+                session_dir = candidate
         jsonl_files = (
             sorted(session_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
             if session_dir.exists()
@@ -533,8 +743,8 @@ async def _cmd_run(
     model_full: str,
     description: str,
     skip_link: bool = False,
-    eval_mode: str = "standard",
-    recipe_mode: str = "",
+    eval_mode: str = "e2e",
+    recipe_source: str = "",
     inline_item: str | None = None,
 ) -> None:
     """脚本驱动串行执行评测：为每个 task 创建隔离 agent，通过 CLI 执行，收集 session。
@@ -578,23 +788,36 @@ async def _cmd_run(
     print(f"timeout: {timeout}s / task")
     print()
 
+    # P0-A: 装 SIGTERM/SIGINT handler，远端 timeout 包装发 SIGTERM 时同步归档当前 item
+    # 的 pact spec，避免 SIGKILL 强杀前归档代码跑不到（详见 _sigterm_archive_handler 注释）
+    _install_sigterm_archive_handler()
+
     results: dict[str, str] = {}
 
+    global _CURRENT_ARCHIVE_CONTEXT
     for i, item in enumerate(items):
         item_id = item["id"]
         op = item["operation_type"]
         diff = item["difficulty"]
         print(f"[{i + 1}/{len(items)}] {item_id} ({op} {diff})")
-        status = await _run_single_task(
-            item,
-            openclaw_bin,
-            workspace,
-            run_dir,
-            timeout,
-            eval_mode=eval_mode,
-            recipe_mode=recipe_mode,
-        )
-        results[item_id] = status
+        # 设置当前 item 的归档上下文，SIGTERM handler 会读这个变量决定归档目标
+        # agent_id 此时未知（要等 _run_single_task 算完 hash），先填空字符串占位；
+        # _run_single_task 内部会在 agent_name 算出后回填 _CURRENT_ARCHIVE_CONTEXT。
+        _CURRENT_ARCHIVE_CONTEXT = (run_dir, item_id, "")
+        try:
+            status = await _run_single_task(
+                item,
+                openclaw_bin,
+                workspace,
+                run_dir,
+                timeout,
+                eval_mode=eval_mode,
+                recipe_source=recipe_source,
+            )
+            results[item_id] = status
+        finally:
+            # item 完成（无论成功/失败/异常），清掉上下文，避免误归档下个 item
+            _CURRENT_ARCHIVE_CONTEXT = None
 
     # 写 manifest
     manifest = {
@@ -972,8 +1195,8 @@ def _build_remote_run_cmd(
     *,
     fire_and_forget: bool = False,
     server_name: str = "",
-    eval_mode: str = "standard",
-    recipe_mode: str = "",
+    eval_mode: str = "e2e",
+    recipe_source: str = "",
 ) -> str:
     """构建要在远端 openclaw 服务器上执行的完整 shell 命令（传给 sudo su - ubuntu -c）。
 
@@ -981,10 +1204,16 @@ def _build_remote_run_cmd(
     日志写到远端 ~/.caw-eval/runs/{run_name}/{server_name}.nohup.log。
     """
     item_args = " ".join(item_ids)
+    # 远端外层硬超时：timeout + 60s（与本地 ssh_timeout 对齐）。
+    # 作用：哪怕本地 SSH 被 kill，远端 python3 进程到点也会被自己 SIGTERM/SIGKILL，
+    # 不再形成"孤儿进程被新 SSH 撞上"的并发污染。
+    # --kill-after=30s：发完 SIGTERM 再等 30s 仍不退就 SIGKILL（兜底）。
+    outer_timeout = timeout + 60
     # 远端 model-full 可能含 /，不会破坏 shell；但保险用 shlex.quote 包起来
     core_cmd = (
         "export PATH=/home/ubuntu/.npm-global/bin:/home/ubuntu/.cobo-agentic-wallet/bin:$PATH; "
         "cd ~ && "
+        f"timeout --signal=TERM --kill-after=30s {outer_timeout}s "
         "python3 -u ~/.agents/skills/caw-eval/scripts/run_eval_openclaw.py run "
         f"--run-name {shlex.quote(run_name)} "
         f"--dataset-name {shlex.quote(dataset_name)} "
@@ -995,10 +1224,10 @@ def _build_remote_run_cmd(
         f"--model-full {shlex.quote(model_full)} "
         "--skip-pack"
     )
-    if eval_mode != "standard":
+    if eval_mode != "e2e":
         core_cmd += f" --eval-mode {shlex.quote(eval_mode)}"
-    if recipe_mode:
-        core_cmd += f" --recipe-mode {shlex.quote(recipe_mode)}"
+    if recipe_source:
+        core_cmd += f" --recipe-source {shlex.quote(recipe_source)}"
     if not fire_and_forget:
         return core_cmd
     # fire-and-forget：nohup 后台运行，echo PID 后 SSH 立即返回
@@ -1022,8 +1251,8 @@ async def _ssh_dispatch_one(
     log_dir: Path,
     *,
     fire_and_forget: bool = False,
-    eval_mode: str = "standard",
-    recipe_mode: str = "",
+    eval_mode: str = "e2e",
+    recipe_source: str = "",
 ) -> tuple[str, int]:
     """SSH 到一台 server 串行执行其分配的 items，stdout/stderr 写入 log_dir/{name}.log。
 
@@ -1044,7 +1273,7 @@ async def _ssh_dispatch_one(
         fire_and_forget=fire_and_forget,
         server_name=server["name"],
         eval_mode=eval_mode,
-        recipe_mode=recipe_mode,
+        recipe_source=recipe_source,
     )
     ssh_cmd = [
         "gcloud",
@@ -1100,6 +1329,147 @@ async def _ssh_dispatch_one(
     return server["name"], rc
 
 
+def _case_chain(item: dict) -> str:
+    """从 dataset item.metadata 取规范化 chain 名（小写）。"""
+    return (item.get("metadata", {}).get("chain") or "").lower()
+
+
+def _case_needs_token(item: dict, token: str) -> bool:
+    """推断 case 是否需要某 token：基于 metadata.operation_type 白名单。
+
+    metadata 缺 operation_type 时按"需要"处理（保守，避免漏 gate 让 wallet 真耗尽）。
+    """
+    op = (item.get("metadata", {}).get("operation_type") or "").lower()
+    if token == "BASE_ETH_USDC":
+        return op not in _BASE_NO_USDC_OPERATION_TYPES
+    return True  # native gas 所有 mainnet case 都需要
+
+
+async def _query_remote_balance(server: dict) -> dict | None:
+    """SSH 跑 ``caw wallet balance``，解析返回 ``{(chain_id, token_id): amount_float}``。
+
+    SSH 失败 / JSON 解析失败 → 返回 None；调用方按 "skip-gate (放行)" 处理，
+    避免临时网络抖动误杀 case。
+    """
+    inner = (
+        "export PATH=/home/ubuntu/.npm-global/bin:/home/ubuntu/.cobo-agentic-wallet/bin:$PATH; "
+        "caw wallet balance 2>&1"
+    )
+    ssh_cmd = [
+        "gcloud",
+        "compute",
+        "ssh",
+        "--zone",
+        server["zone"],
+        server["name"],
+        "--tunnel-through-iap",
+        "--project",
+        server["project"],
+        "--",
+        f"sudo su - ubuntu -c {shlex.quote(inner)}",
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *ssh_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+        text = stdout.decode("utf-8", "replace")
+        idx = text.find("{")
+        if idx < 0:
+            return None
+        d = json.loads(text[idx:])
+        out: dict[tuple[str, str], float] = {}
+        for r in d.get("result", []):
+            chain = r.get("chain_id") or ""
+            tok = r.get("token_id") or ""
+            try:
+                amt = float(r.get("amount") or "0")
+            except (TypeError, ValueError):
+                amt = 0.0
+            out[(chain, tok)] = amt
+        return out
+    except Exception:
+        return None
+
+
+def _balance_gate_check_one_case(item: dict, balances: dict) -> tuple[bool, str]:
+    """对单个 mainnet case 检查目标 server 当前余额是否足够。
+
+    返回 ``(ok, msg)``。non-mainnet (chain ∉ {base, polygon}) 视为 OK 直接放行。
+    """
+    chain = _case_chain(item)
+    if chain == "base":
+        eth = balances.get(("BASE_ETH", "BASE_ETH"), 0.0)
+        if eth < _DEFAULT_BASE_ETH_PER_CASE:
+            return False, f"BASE_ETH={eth:.6f} < {_DEFAULT_BASE_ETH_PER_CASE}"
+        if _case_needs_token(item, "BASE_ETH_USDC"):
+            usdc = balances.get(("BASE_ETH", "BASE_ETH_USDC"), 0.0)
+            if usdc < _DEFAULT_BASE_USDC_PER_CASE:
+                return False, (f"BASE_ETH_USDC={usdc:.4f} < {_DEFAULT_BASE_USDC_PER_CASE}")
+            return True, f"BASE_ETH={eth:.4f} USDC={usdc:.4f}"
+        return True, f"BASE_ETH={eth:.4f} (no USDC needed)"
+    return True, f"skip-gate(chain={chain})"
+
+
+async def _dispatch_balance_preflight(
+    items: list[dict],
+    servers: list[dict],
+    *,
+    safety: float = 1.5,
+    abort_on_fail: bool = False,
+) -> None:
+    """启动时一次性预检：单机最坏负担全部 mainnet case 时的余额需求。
+
+    动态队列下负载不均，慢机分到的 case 少；单机最坏可能跑全部 mainnet case。
+    所以按"单机 = sum(case_count) × per_case × safety"算阈值，比传统"总量 / N 机"
+    严，避免某台慢机拖到中途余额耗尽。
+
+    abort_on_fail=True 时余额不足直接 sys.exit(2)；默认 warn 不阻塞（保留用户决定权）。
+    """
+    base_eth_count = sum(1 for it in items if _case_chain(it) == "base")
+    base_usdc_count = sum(
+        1 for it in items if _case_chain(it) == "base" and _case_needs_token(it, "BASE_ETH_USDC")
+    )
+    if base_eth_count == 0:
+        return  # 无 base 主网 case 不做 gate
+
+    required_eth = base_eth_count * _DEFAULT_BASE_ETH_PER_CASE * safety
+    required_usdc = base_usdc_count * _DEFAULT_BASE_USDC_PER_CASE * safety
+
+    print(f"=== 余额预检（单机最坏负担：base × {base_eth_count} case；safety={safety}x）===")
+    print(
+        f"门槛: BASE_ETH ≥ {required_eth:.4f}, "
+        f"BASE_ETH_USDC ≥ {required_usdc:.4f} (USDC case = {base_usdc_count})"
+    )
+
+    bal_results = await asyncio.gather(*(_query_remote_balance(s) for s in servers))
+    failures: list[tuple[dict, float, float]] = []
+    for srv, bal in zip(servers, bal_results):
+        if bal is None:
+            print(f"  {srv['name']}: 查询失败（放行，按 SKIP 处理）")
+            continue
+        eth = bal.get(("BASE_ETH", "BASE_ETH"), 0.0)
+        usdc = bal.get(("BASE_ETH", "BASE_ETH_USDC"), 0.0)
+        ok = eth >= required_eth and usdc >= required_usdc
+        tag = "OK  " if ok else "WARN"
+        print(f"  {srv['name']}: {tag} BASE_ETH={eth:.4f} USDC={usdc:.4f}")
+        if not ok:
+            failures.append((srv, eth, usdc))
+
+    if failures:
+        print(
+            f"\n[BALANCE WARN] {len(failures)}/{len(servers)} 台单机最坏预算不足。"
+            "动态队列下若某台机分到全部 case，余额可能在中途耗尽，导致 agent 误判 0 分。\n"
+            "  建议：充值到所列 wallet 地址；或加 --skip-balance-gate 应急绕过；"
+            "或改 --static 静态分配 + 显式让快机/有余额机承担更多。"
+        )
+        if abort_on_fail:
+            sys.exit(2)
+    print()
+
+
 async def _dynamic_worker(
     server: dict,
     queue: asyncio.Queue,
@@ -1111,19 +1481,45 @@ async def _dynamic_worker(
     model: str,
     model_full: str,
     log_dir: Path,
-    eval_mode: str = "standard",
-    recipe_mode: str = "",
+    eval_mode: str = "e2e",
+    recipe_source: str = "",
+    skip_balance_gate: bool = False,
 ) -> str:
     """动态 worker：从队列持续取 item 执行，直到队列空为止。
 
     每次只跑 1 个 item，完成后立即从队列取下一个，实现服务器间负载均衡。
     item_results[item_id] = (server_name, rc) 记录每个 item 的执行结果。
+    rc=-2 表示 ``balance-skipped``（per-case 余额 gate 不通过，未消耗远端 ssh / agent 资源）。
     """
     while True:
         try:
-            item_id = queue.get_nowait()
+            item = queue.get_nowait()
         except asyncio.QueueEmpty:
             break
+        item_id = item["id"]
+
+        # ── per-case 余额 gate：仅 mainnet (base/polygon) case 检查 ─────────────
+        # 启动时的 _dispatch_balance_preflight 是"单机最坏负担"全局门槛，但 superfluid
+        # upgrade 一次性把 USDC 全 wrap 这种异常消耗会让同机后续 case 在中途看到 0。
+        # per-case 实查能捕获到这种"运行中余额耗尽"，标 balance-skipped 而非交给 agent
+        # 误判（参见 eval-report 4.1 finding）。SSH 查 ~3s，开销可接受。
+        if not skip_balance_gate and _case_chain(item) == "base":
+            balances = await _query_remote_balance(server)
+            if balances is not None:
+                ok, gate_msg = _balance_gate_check_one_case(item, balances)
+                if not ok:
+                    log_file = log_dir / f"{server['name']}-{item_id}.log"
+                    with log_file.open("w", encoding="utf-8") as f:
+                        f.write(
+                            f"# balance-skipped on {server['name']}: {gate_msg}\n"
+                            f"# per-case balance gate; item not dispatched. "
+                            f"Top up the agent wallet on this server and re-dispatch with "
+                            f"`--item-id {item_id}` to retry.\n"
+                        )
+                    print(f"[BALANCE-SKIP {server['name']}] item={item_id}: {gate_msg}")
+                    item_results[item_id] = (server["name"], -2)
+                    queue.task_done()
+                    continue
 
         remote_cmd = _build_remote_run_cmd(
             dataset_name,
@@ -1136,7 +1532,7 @@ async def _dynamic_worker(
             fire_and_forget=False,
             server_name=server["name"],
             eval_mode=eval_mode,
-            recipe_mode=recipe_mode,
+            recipe_source=recipe_source,
         )
         ssh_cmd = [
             "gcloud",
@@ -1165,7 +1561,10 @@ async def _dynamic_worker(
                 stdout=f,
                 stderr=asyncio.subprocess.STDOUT,
             )
-            # SSH 层硬超时：item_timeout + 60s 余量，防止 IAP tunnel / 远端僵尸拖死整个 dispatch
+            # SSH 层硬超时：item_timeout + 60s 余量，防止 IAP tunnel / 远端僵尸拖死整个 dispatch。
+            # 注：远端命令最外层已套 `timeout (item_timeout+60)s --kill-after=30s`，所以即便
+            # 这里 proc.kill() 无法把 SIGHUP 传到远端 process tree，远端进程到点也会被自己 SIGTERM/SIGKILL，
+            # 不会形成"孤儿被下一个 SSH 撞上"的同 server 同钱包并发污染（详见 _build_remote_run_cmd）。
             ssh_timeout = timeout + 60
             try:
                 rc = await asyncio.wait_for(proc.wait(), timeout=ssh_timeout)
@@ -1186,8 +1585,14 @@ async def _dynamic_worker(
         # 拉取服务器端归档的 pact spec（见 harness_pact_logger_bug.md）
         # 每个 item 跑完后服务器 `_archive_recent_pact_specs` 会写 pact_specs/<pact_id>.json
         # 评分端 score_traces.py --pact-specs-dir 会读这个目录
-        if rc == 0:
-            await _pull_pact_specs(server, run_name)
+        # 注：SSH_TIMEOUT (rc=-1) 时也要拉 —— server-side SIGTERM handler 会在
+        # timeout 包装的 30s grace 期内跑归档，文件可能已存在；本地无脑 pull 是 best-effort
+        # 拿不到也不会出错（_pull_pact_specs 内部 except 兜底）
+        await _pull_pact_specs(server, run_name)
+        # 拉取服务器端归档的原始 session jsonl 事件（Phase 1: judge 数据源候选）
+        # _run_single_oc_task line 608-621 已把 agent jsonl 拷到 ~/.caw-eval/runs/<run>/<item>.jsonl
+        # 本拉取写入本地 raw-sessions/<item_id>.jsonl，供 score_traces 直读（Phase 2 接入）
+        await _pull_raw_sessions(server, run_name)
 
         queue.task_done()
 
@@ -1248,6 +1653,257 @@ async def _pull_pact_specs(server: dict, run_name: str) -> None:
         print(f"[WARN] pact_specs pull exception from {server['name']}: {exc!r}")
 
 
+async def _pull_raw_sessions(server: dict, run_name: str) -> None:
+    """从服务器拉回原始 ``<item_id>.jsonl`` session 事件文件到 ``raw-sessions/``。
+
+    服务器端 ``_run_single_oc_task`` 每个 item 跑完后已把 agent 的 jsonl 拷到
+    ``~/.caw-eval/runs/<run>/<item_id>.jsonl``（line 608-621）。本函数把这些文件
+    tar/scp 回本地 ``~/.caw-eval/runs/<run>/raw-sessions/<item_id>.jsonl``，作为
+    judge 评分的"无失真"数据源（Langfuse trace 重建路径会丢失 turn 顺序、截断丢字段，
+    见 P0 turn-envelope bug 修复历史）。
+
+    与 ``_pull_pact_specs`` 同样的 ``bash -c 'gcloud ssh ... | tar xzf -'`` 模式：
+    asyncio 自身不能转接 ssh.stdout → tar.stdin。
+    """
+    local_dir = _RUNS_DIR / run_name / "raw-sessions"
+    local_dir.mkdir(parents=True, exist_ok=True)
+    remote_dir = f"~/.caw-eval/runs/{run_name}"
+    # 排除 agent_map.jsonl（dispatcher 元数据，不是 session 事件文件）
+    remote_cmd = (
+        f"sudo su - ubuntu -c 'cd {remote_dir} 2>/dev/null && "
+        f'ls *.jsonl 2>/dev/null | grep -v "^agent_map\\.jsonl$" | '
+        f"{{ tar czf - -T - 2>/dev/null || true; }}'"
+    )
+    ssh_argv = [
+        "gcloud",
+        "compute",
+        "ssh",
+        "--zone",
+        server["zone"],
+        "--project",
+        server["project"],
+        "--tunnel-through-iap",
+        server["name"],
+        "--",
+        remote_cmd,
+    ]
+    pipeline = (
+        " ".join(shlex.quote(a) for a in ssh_argv)
+        + f" | tar xzf - -C {shlex.quote(str(local_dir))}"
+    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "bash",
+            "-c",
+            pipeline,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        if proc.returncode != 0:
+            err_tail = (stderr or b"").decode("utf-8", "replace").strip()[-400:]
+            print(
+                f"[WARN] raw-sessions pull failed from {server['name']} rc={proc.returncode} {err_tail}"
+            )
+    except Exception as exc:
+        print(f"[WARN] raw-sessions pull exception from {server['name']}: {exc!r}")
+
+
+def _upload_partial_sessions(
+    run_name: str,
+    dataset_name: str,
+    skill: str,
+    run_description: str,
+) -> dict[str, str]:
+    """上传 dispatch 完成后留在本地 raw-sessions/ 的 ``<item>.partial.jsonl`` 到 Langfuse。
+
+    背景：远端 SIGTERM 在 `STAGE: session_collected` 之前发生，server-side upload 流程
+    跳过；新 SIGTERM handler `_sync_archive_session` 把当前 agent 的 session jsonl 拷到
+    ``~/.caw-eval/runs/<run>/<item>.partial.jsonl``，再被 `_pull_raw_sessions` 用
+    `ls *.jsonl` 拉回本地。本函数对那些只有 partial 没有完整 session 的 item 补一次上传，
+    带 ``incomplete=True`` 标签 + 关联 dataset run，让 judge / score apply 可以检索这些
+    case（否则它们在 Langfuse 上完全缺失，下游 `score_traces.py langfuse` iterate
+    `dataset_run_items.list` 时一个不漏地跳过）。
+
+    与 ``batch_upload_sessions`` 区别：后者对完整 session（``<item>.jsonl``）按 stem 当 item_id
+    用，partial 文件 stem 是 ``<item>.partial`` 会让 dataset_item 查找失败，所以单独写一个
+    去掉 ``.partial`` 后缀的版本。
+
+    返回 ``{item_id: trace_id}`` 上传成功的映射；失败/跳过不计入。
+    """
+    local_dir = _RUNS_DIR / run_name / "raw-sessions"
+    if not local_dir.is_dir():
+        return {}
+
+    partial_files = sorted(local_dir.glob("*.partial.jsonl"))
+    if not partial_files:
+        return {}
+
+    # 过滤掉同时存在完整 session 的（不应正常发生，但防御一下）
+    eligible: list[tuple[str, Path]] = []
+    for pf in partial_files:
+        # stem 形如 "<item>.partial"，再去掉 .partial 拿真实 item_id
+        item_id = pf.stem
+        if item_id.endswith(".partial"):
+            item_id = item_id[: -len(".partial")]
+        full_path = local_dir / f"{item_id}.jsonl"
+        if full_path.exists():
+            print(f"  [{item_id}] skip partial upload: 同名完整 session 已存在")
+            continue
+        eligible.append((item_id, pf))
+
+    if not eligible:
+        return {}
+
+    print(f"\n=== 上传 {len(eligible)} 个 partial session (run: {run_name}) ===")
+
+    lf = get_langfuse_client()
+    ds_items = get_dataset_items(dataset_name)
+    meta_to_langfuse = {item["id"]: item["langfuse_id"] for item in ds_items}
+    item_context = {
+        item["id"]: {
+            "item_id": item["id"],
+            "user_message": item.get("user_message", ""),
+            "operation_type": item.get("operation_type", ""),
+            "difficulty": item.get("difficulty", ""),
+        }
+        for item in ds_items
+    }
+
+    trace_map: dict[str, str] = {}
+    for item_id, partial_file in eligible:
+        trace_id = str(uuid.uuid4())
+        size_kb = partial_file.stat().st_size / 1024
+        print(f"  [{item_id}] uploading partial ({size_kb:.0f}KB, trace={trace_id[:8]}...)")
+
+        ctx = dict(item_context.get(item_id, {"item_id": item_id}))
+        ctx["incomplete"] = True
+        ctx["partial_reason"] = "sigterm_timeout"
+
+        result_trace_id = upload_session(
+            str(partial_file),
+            skill,
+            trace_id=trace_id,
+            extra_metadata=ctx,
+        )
+        if not result_trace_id:
+            print(f"    [ERROR] partial upload failed for {item_id}")
+            continue
+
+        trace_map[item_id] = result_trace_id
+        langfuse_item_id = meta_to_langfuse.get(item_id)
+        if langfuse_item_id:
+            link_to_dataset_run(lf, langfuse_item_id, run_name, result_trace_id, run_description)
+        else:
+            print(f"    [WARN] dataset item not found for {item_id}, trace 已上传但未关联 run")
+
+    lf.flush()
+
+    # 写 trace_map.partial.json，供事后审计或 score_traces 直接使用（不动主 trace_map.json，
+    # 避免与 server-side session_collected 上传时写的同名文件竞争 fcntl 锁）。
+    if trace_map:
+        partial_map_path = _RUNS_DIR / run_name / "trace_map.partial.json"
+        try:
+            partial_map_path.write_text(json.dumps(trace_map, indent=2, ensure_ascii=False))
+            print(f"  [SAVED] {len(trace_map)} partial trace mapping(s) → {partial_map_path.name}")
+        except Exception as exc:
+            print(f"  [WARN] write trace_map.partial.json failed: {exc!r}")
+
+    return trace_map
+
+
+async def _caw_health_check(srv: dict, min_tss_version: str) -> tuple[dict, bool, str]:
+    """SSH 单台服务器，对 caw CLI 跑四项健康预检：
+
+    1. ``caw status`` JSON 中 ``healthy`` 字段（后端 HealthAPI 可达）
+    2. ``caw node health`` exit code 0（本地 TSS binary / db / config / keyfile / 进程完整性 +
+       keyfile mode=600）
+    3. ``caw node status`` 中 ``remote.online == true``（TSS websocket 与 backend 连通；进程活着
+       不代表 backend 视角能签 — 网络抖动 / push offline 都会让 online=false）
+    4. ``<tss_binary> version`` ≥ ``min_tss_version``（避免 caw 在 sign/tx 阶段触发
+       ``ensureRuntimeTSSNodeMinVersion`` 二进制热升级 → ETXTBSY）
+
+    返回 ``(srv, healthy, info)``：``healthy`` 为四项全过；``info`` 是用于打印的诊断短串
+    （成功时是 ``"tss=v0.12.20 online=true"`` 等信息，失败时是失败原因）。
+    """
+    inner = (
+        "set -o pipefail; "
+        "export PATH=/home/ubuntu/.cobo-agentic-wallet/bin:/home/ubuntu/.npm-global/bin:$PATH; "
+        # 1. caw status backend healthy
+        'S=$(caw status 2>&1) || { echo "FAIL caw_status: cmd_error: ${S:0:200}"; exit 1; }; '
+        'echo "$S" | python3 -c \'import sys,json;'
+        ' sys.exit(0 if json.load(sys.stdin).get("healthy") else 1)\' '
+        '  || { echo "FAIL caw_status: healthy=false"; exit 1; }; '
+        # 2. caw node health (binary/db/config/keyfile/process integrity + keyfile mode=600)
+        "caw node health >/dev/null 2>&1 "
+        "  || { echo 'FAIL caw_node_health: missing files / process / wrong keyfile mode'; exit 1; }; "
+        # 3. caw node status — backend 视角 TSS 是否 online（websocket 连接活着）
+        "NS=$(caw node status 2>&1) "
+        '  || { echo "FAIL caw_node_status: cmd_error: ${NS:0:200}"; exit 1; }; '
+        'ONLINE=$(echo "$NS" | python3 -c \'import sys,json;'
+        ' d=json.load(sys.stdin); r=d.get("remote",{});'
+        ' print("true" if r.get("online") else "false")\' 2>/dev/null); '
+        '[ "$ONLINE" = "true" ] '
+        '  || { echo "FAIL caw_node_status: backend reports remote.online=false (TSS 进程活着但 websocket 未连 backend)"; exit 1; }; '
+        # 4. TSS binary version >= min
+        "INFO=$(caw node info 2>/dev/null) "
+        "  || { echo 'FAIL caw_node_info: cmd_error'; exit 1; }; "
+        'BIN=$(echo "$INFO" | python3 -c \'import sys,json;'
+        ' print(json.load(sys.stdin).get("binary_path",""))\' 2>/dev/null); '
+        '[ -x "$BIN" ] '
+        '  || { echo "FAIL: TSS binary missing or not exec at $BIN"; exit 1; }; '
+        'RAW=$("$BIN" version 2>&1 || "$BIN" --version 2>&1) '
+        "  || { echo 'FAIL: tss version cmd error'; exit 1; }; "
+        "V=$(echo \"$RAW\" | grep -oE 'v?[0-9]+\\.[0-9]+\\.[0-9]+' | head -1); "
+        '[ -n "$V" ] '
+        '  || { echo "FAIL: cannot parse TSS version (raw=${RAW:0:120})"; exit 1; }; '
+        f"MIN={shlex.quote(min_tss_version)}; "
+        'case "$V" in v*) ;; *) V="v$V";; esac; '
+        'LO=$(printf \'%s\\n%s\\n\' "$V" "$MIN" | sort -V | head -1); '
+        '[ "$LO" = "$MIN" ] '
+        '  || { echo "FAIL: TSS version $V < required $MIN (caw sign 阶段会尝试热升级二进制 → ETXTBSY)"; exit 1; }; '
+        'echo "OK tss=$V online=true"'
+    )
+    ssh_cmd = [
+        "gcloud",
+        "compute",
+        "ssh",
+        "--zone",
+        srv["zone"],
+        srv["name"],
+        "--tunnel-through-iap",
+        "--project",
+        srv["project"],
+        "--",
+        f"sudo su - ubuntu -c {shlex.quote(inner)}",
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *ssh_cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=45)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return srv, False, "SSH timeout >45s"
+    out = stdout.decode("utf-8", "replace").strip()
+    last_line = out.splitlines()[-1] if out else ""
+    if last_line.startswith("OK "):
+        return srv, True, last_line[3:]
+    # 去掉 shell 错误消息里的冗余 "FAIL " / "FAIL: " 前缀（外层打印 marker 已表达失败状态）
+    info = last_line
+    for prefix in ("FAIL: ", "FAIL "):
+        if info.startswith(prefix):
+            info = info[len(prefix) :]
+            break
+    if not info:
+        err_tail = stderr.decode("utf-8", "replace").strip()[-200:]
+        info = f"empty output (stderr={err_tail!r})"
+    return srv, False, info
+
+
 async def _cmd_dispatch(
     dataset_name: str,
     run_name: str,
@@ -1260,8 +1916,11 @@ async def _cmd_dispatch(
     *,
     fire_and_forget: bool = False,
     static: bool = False,
-    eval_mode: str = "standard",
-    recipe_mode: str = "",
+    eval_mode: str = "e2e",
+    recipe_source: str = "",
+    skip_caw_preflight: bool = False,
+    skip_balance_gate: bool = False,
+    abort_on_balance: bool = False,
 ) -> None:
     """并行 dispatch 评测任务到多台 openclaw 服务器。
 
@@ -1291,12 +1950,64 @@ async def _cmd_dispatch(
     log_dir = _RUNS_DIR / run_name / "dispatch-logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── CLI 健康预检：确保每台 openclaw agents add/delete 在 15s 内响应 ──────────
+    # ── caw 健康预检（status / node health / TSS version）──────────────────────────
+    # 背景（2026-04-27 三场 eval 同根因）：caw v0.2.79 在每次 sign/tx 前会调
+    # ``ensureRuntimeTSSNodeMinVersion``，如果运行中 cobo-tss-node 版本低于服务端要求，
+    # caw 会 ``os.WriteFile`` 直接覆盖正在执行的 binary → ETXTBSY (text file busy) →
+    # 后续所有 sign 操作失败。dispatch 入口提前对每台服务器跑：
+    #   1. ``caw status`` healthy=true（后端可达）
+    #   2. ``caw node health`` 退出码 0（本地 TSS 文件 + 进程完整性）
+    #   3. ``<tss_bin> version`` ≥ ``CAW_EVAL_PREFLIGHT_MIN_TSS_VERSION``（默认 SDK baseline，
+    #      可通过环境变量提到当前服务端推送的更高 min，如 v0.12.20）
+    # 任一服务器任一项失败 → 直接 abort，避免在 Base 主网真金跑了 ~30 分钟才发现。
+    # ``--skip-caw-preflight`` 是应急开关（不推荐，仅用于诊断）。
+    if not skip_caw_preflight:
+        min_tss = os.environ.get(
+            "CAW_EVAL_PREFLIGHT_MIN_TSS_VERSION", _DEFAULT_PREFLIGHT_MIN_TSS_VERSION
+        )
+        print(f"=== caw 健康预检（status / node health / TSS ≥ {min_tss}）===")
+        caw_results = await asyncio.gather(*(_caw_health_check(s, min_tss) for s in servers))
+        caw_failures: list[tuple[dict, str]] = []
+        for srv, ok, info in caw_results:
+            print(f"  {srv['name']}: {'OK ' if ok else 'FAIL '}{info}")
+            if not ok:
+                caw_failures.append((srv, info))
+        if caw_failures:
+            print(
+                f"\n[ABORT] {len(caw_failures)}/{len(servers)} 台 caw 健康预检失败。"
+                "Base 主网真金评测前要求所有服务器健康，避免运行中触发 TSS 二进制热升级 ETXTBSY。\n"
+                "  常见修复：\n"
+                "    - healthy=false: 检查 backend 可达性 / API 凭据\n"
+                "    - caw_node_health: 重新跑 caw onboard 或检查 keyfile 权限 (chmod 600)\n"
+                "    - TSS version <: SSH 上去 `pkill -f cobo-tss-node` 后再跑任意 caw tx 命令"
+                " 触发安全升级，或手动替换 TSS binary 到达 min 版本\n"
+                "  应急绕过（不推荐）：dispatch 加 --skip-caw-preflight"
+            )
+            sys.exit(2)
+        print()
+
+    # ── 余额预检（mainnet 评测专用）─────────────────────────────────────────────
+    # 算"单机最坏负担"门槛：动态队列下若某台机分到全部 mainnet case，需要至少多少 ETH/USDC。
+    # 默认 warn 不阻塞；--abort-on-balance 时门槛不达 → 直接退出。
+    # --skip-balance-gate 跳过整个余额检查（含 worker 内 per-case gate）。
+    if not skip_balance_gate:
+        try:
+            await _dispatch_balance_preflight(items, servers, abort_on_fail=abort_on_balance)
+        except SystemExit:
+            raise
+        except Exception as exc:
+            print(f"[WARN] 余额预检异常（跳过门槛，继续）: {exc!r}")
+
+    # ── CLI 健康预检：确保每台 openclaw agents add/delete 在 30s 内响应 ──────────
     # 背景：openclaw 没有 session GC，sessions.json 累积后 agents add 可能超 30s 静默挂
     #       （remote cmd_run 依旧 exit 0 → dispatch 误判为 OK）。启动前 smoke test，
     #       慢于 threshold 的服务器直接剔除，避免 item 分下去后才失败。
     #       修复方式：登录服务器跑 ~/.agents/skills/caw-eval/scripts/prune_openclaw_sessions.sh
-    SMOKE_TIMEOUT_SEC = 15
+    # 阈值 15s → 30s → 60s（2026-04-27）：旧 GPT 服务器 070641 实测 add 23s + delete 22s
+    # （sessions=2174 行，该机器已下线、由 test0 替换）。接近 30s 阈值导致 dispatch 启动时
+    # 偶发 timeout；同期 test8 实测仅 4s/3s 但也被剔除，怀疑 IAP tunnel 建连抖动叠加 30s
+    # 偏紧。60s 给 add/delete 各 2.5x 余量。根治需升级机型到 e2-medium 或重建到 AMD EPYC zone。
+    SMOKE_TIMEOUT_SEC = 60
     print("=== Openclaw CLI 健康预检（agents add/delete smoke）===")
 
     async def _smoke_check(srv: dict) -> tuple[dict, bool]:
@@ -1407,7 +2118,7 @@ async def _cmd_dispatch(
     # 通过 systemd drop-in 让 gateway 进程持有 env var，caw recipe search 自动读本地文件。
     # 初始化时写入 empty-results 占位，避免文件缺失报错；每个 item 开始前 _run_single_task
     # 会覆写为实际 recipe 内容。
-    recipe_gateway_active = eval_mode == "recipe" and recipe_mode == "openclaw"
+    recipe_gateway_active = eval_mode == "pact" and recipe_source == "seed"
     if recipe_gateway_active:
         await _setup_gateway_recipe_env(servers)
     else:
@@ -1445,7 +2156,7 @@ async def _cmd_dispatch(
                     log_dir,
                     fire_and_forget=fire_and_forget,
                     eval_mode=eval_mode,
-                    recipe_mode=recipe_mode,
+                    recipe_source=recipe_source,
                 )
                 for srv, chunk in zip(servers, chunks)
             ]
@@ -1490,7 +2201,7 @@ async def _cmd_dispatch(
 
         queue: asyncio.Queue = asyncio.Queue()
         for item in items:
-            await queue.put(item["id"])
+            await queue.put(item)  # 整个 dict 入队，worker 内可读 metadata 做 per-case gate
 
         item_results: dict[str, tuple[str, int]] = {}
 
@@ -1507,26 +2218,52 @@ async def _cmd_dispatch(
                 model_full,
                 log_dir,
                 eval_mode=eval_mode,
-                recipe_mode=recipe_mode,
+                recipe_source=recipe_source,
+                skip_balance_gate=skip_balance_gate,
             )
             for srv in servers
         ]
         await asyncio.gather(*workers)
 
+        # 上传 SIGTERM 抢救出来的 partial session：worker 已通过 _pull_raw_sessions
+        # 把 *.partial.jsonl 拉到本地 raw-sessions/，但 server-side upload 流程没跑
+        # （SIGTERM 在 session_collected 之前），所以 partial trace 不在 Langfuse。
+        # 这里补一遍上传，带 incomplete=True 标签，让下游 score_traces 能检索到。
+        run_description = (
+            f"openclaw eval | model={model_full or model} | "
+            f"dataset={dataset_name} | eval_mode={eval_mode} | recipe_source={recipe_source}"
+        )
+        try:
+            _upload_partial_sessions(run_name, dataset_name, skill, run_description)
+        except Exception as exc:
+            print(f"[WARN] partial session upload exception: {exc!r}")
+
         print("\n=== 完成 ===")
         failed_items: list[str] = []
+        balance_skipped: list[str] = []
         for item_id, (srv_name, rc) in sorted(item_results.items()):
-            status = "OK" if rc == 0 else f"FAIL rc={rc}"
-            print(f"  [{srv_name}] {item_id}: {status}")
-            if rc != 0:
+            if rc == 0:
+                status = "OK"
+            elif rc == -2:
+                status = "BALANCE-SKIP"
+                balance_skipped.append(item_id)
+            else:
+                status = f"FAIL rc={rc}"
                 failed_items.append(item_id)
+            print(f"  [{srv_name}] {item_id}: {status}")
 
+        if balance_skipped:
+            print(
+                f"\n余额不足跳过 items ({len(balance_skipped)}): {balance_skipped}\n"
+                f"  这些 case 未被 dispatch 到 agent（避免 USDC=0 误判 0 分）。\n"
+                f"  充值目标 wallet 后，重跑：--item-id {' '.join(balance_skipped)}"
+            )
         if failed_items:
             print(f"\n失败 items: {failed_items}")
             print(f"查看日志: {log_dir}/<server>-<item_id>.log")
             print(f"重跑命令示例: --item-id {' '.join(failed_items)}")
             sys.exit(1)
-        else:
+        elif not balance_skipped:
             print(f"\n所有 {len(item_results)} 个 item 执行完毕。Langfuse run: {run_name}")
             print(
                 "下一步：参考 references/run-eval-openclaw.md Step 3-4 评分（score_traces.py langfuse）"
@@ -1573,15 +2310,23 @@ def main() -> None:
     p_run.add_argument("--description", default="", help="自定义 run description")
     p_run.add_argument(
         "--eval-mode",
-        choices=["standard", "recipe"],
-        default="standard",
-        help="评测模式: standard（默认）或 recipe（交易构建模式）",
+        choices=["e2e", "pact", "onboard", "standard", "recipe"],
+        default="e2e",
+        help="评测模式: e2e (默认，全流程含 task_completion) / pact (仅评 pact 构造) / onboard"
+        "；老值 standard→e2e、recipe→pact 仍接受",
+    )
+    p_run.add_argument(
+        "--recipe-source",
+        choices=["real", "seed", "empty"],
+        default="",
+        help="Recipe 来源: real (调真实 backend) / seed (注入 dataset 的 recipe)。"
+        "openclaw 不支持 empty (仅 cc 对照组)",
     )
     p_run.add_argument(
         "--recipe-mode",
         choices=["cc_with_recipe", "cc_no_recipe", "cc_real_recipe", "openclaw", "oc_real_recipe"],
         default="",
-        help="Recipe 对比模式（仅 --eval-mode recipe 时有效）",
+        help="[已弃用] 用 --recipe-source 替代",
     )
     p_run.add_argument(
         "--inline-item",
@@ -1664,18 +2409,63 @@ def main() -> None:
     )
     p_dispatch.add_argument(
         "--eval-mode",
-        choices=["standard", "recipe"],
-        default="standard",
-        help="评测模式: standard（默认）或 recipe（交易构建模式）",
+        choices=["e2e", "pact", "onboard", "standard", "recipe"],
+        default="e2e",
+        help="评测模式: e2e (默认，全流程含 task_completion) / pact (仅评 pact 构造) / onboard"
+        "；老值 standard→e2e、recipe→pact 仍接受",
+    )
+    p_dispatch.add_argument(
+        "--recipe-source",
+        choices=["real", "seed", "empty"],
+        default="",
+        help="Recipe 来源: real (调真实 backend) / seed (注入 dataset 的 recipe)。"
+        "openclaw 不支持 empty (仅 cc 对照组)",
     )
     p_dispatch.add_argument(
         "--recipe-mode",
         choices=["cc_with_recipe", "cc_no_recipe", "cc_real_recipe", "openclaw", "oc_real_recipe"],
         default="",
-        help="Recipe 对比模式（仅 --eval-mode recipe 时有效）",
+        help="[已弃用] 用 --recipe-source 替代",
+    )
+    p_dispatch.add_argument(
+        "--skip-caw-preflight",
+        action="store_true",
+        help=(
+            "跳过 caw 健康预检 (status / node health / TSS version)。"
+            "应急开关，常规 Base 主网评测请勿使用 — caw v0.2.79 在 sign/tx 阶段触发的"
+            "TSS 二进制热升级 ETXTBSY 故障在历史评测中曾命中 13/17 case。"
+        ),
+    )
+    p_dispatch.add_argument(
+        "--skip-balance-gate",
+        action="store_true",
+        help=(
+            "跳过余额 gate（含启动预检和 worker 内 per-case 实查）。"
+            "默认开启 mainnet (chain∈{base, polygon}) case 的余额检查；"
+            "启动预检 warn 不阻塞，per-case 实查会标 balance-skipped 不消耗资源。"
+            "当余额来源不依赖 caw wallet（如 sign-only）或调试时使用。"
+        ),
+    )
+    p_dispatch.add_argument(
+        "--abort-on-balance",
+        action="store_true",
+        help=(
+            "余额预检不达单机最坏负担门槛时直接 abort（默认仅 warn）。"
+            "正式 Base 主网评测推荐打开；演练 / 调试时可省。"
+        ),
     )
 
     args = parser.parse_args()
+
+    # 数据集 name / id / URL 三种形式统一规范化为 name。
+    if getattr(args, "dataset_name", None):
+        try:
+            args.dataset_name = resolve_dataset(args.dataset_name)
+        except ValueError as e:
+            print(f"[ERROR] {e}", flush=True)
+            sys.exit(2)
+        if args.cmd == "dispatch":
+            print_dataset_summary(args.dataset_name)
 
     if args.cmd == "run":
         asyncio.run(
@@ -1693,8 +2483,8 @@ def main() -> None:
                 model_full=args.model_full,
                 description=args.description,
                 skip_link=args.no_link,
-                eval_mode=args.eval_mode,
-                recipe_mode=args.recipe_mode,
+                eval_mode=_normalize_eval_mode(args.eval_mode),
+                recipe_source=_normalize_recipe_source(args.recipe_source, args.recipe_mode),
                 inline_item=args.inline_item,
             )
         )
@@ -1732,8 +2522,11 @@ def main() -> None:
                 model_full=args.model_full,
                 fire_and_forget=args.fire_and_forget,
                 static=args.static,
-                eval_mode=args.eval_mode,
-                recipe_mode=args.recipe_mode,
+                eval_mode=_normalize_eval_mode(args.eval_mode),
+                recipe_source=_normalize_recipe_source(args.recipe_source, args.recipe_mode),
+                skip_caw_preflight=args.skip_caw_preflight,
+                skip_balance_gate=args.skip_balance_gate,
+                abort_on_balance=args.abort_on_balance,
             )
         )
     else:

@@ -700,7 +700,19 @@ class SessionUploader:
                     **{
                         k: v
                         for k, v in (extra_metadata or {}).items()
-                        if k in ("item_id", "operation_type", "difficulty") and v
+                        # 字段白名单：为了避免任意 metadata 注入污染 ClickHouse
+                        # JSONExtract 索引，只透传明确支持的查询字段。
+                        # incomplete / partial_reason 用于标记 SIGTERM 抢救上来的不完整 trace
+                        # （由 _upload_partial_sessions 写入），下游评分/报告据此过滤或降级。
+                        if k
+                        in (
+                            "item_id",
+                            "operation_type",
+                            "difficulty",
+                            "incomplete",
+                            "partial_reason",
+                        )
+                        and v is not None
                     },
                 },
             ),

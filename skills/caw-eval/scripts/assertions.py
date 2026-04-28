@@ -1107,8 +1107,8 @@ def expected_caw_commands(operation_spec: dict | None, eval_mode: str) -> int:
 
     - base=4: pact submit + 1-2 preflight (eth_call/getPool/quote) + recipe search 等基础开销
     - per_tx=2: 每笔 tx 一般需要 abi encode + tx call/transfer
-    - polling=N (仅标准模式): 每笔 tx 至少 1 次 caw pending get 等待链上确认
-                              Recipe 模式不评链上确认，无 polling 开销
+    - polling=N (仅 e2e 模式): 每笔 tx 至少 1 次 caw pending get 等待链上确认
+                              pact 模式不评链上确认，无 polling 开销
 
     operation_spec 缺失时返回退化默认值 8，对应 1-2 笔 tx 的基础开销。
     """
@@ -1117,7 +1117,8 @@ def expected_caw_commands(operation_spec: dict | None, eval_mode: str) -> int:
     n_tx = len(operation_spec.get("transactions", []))
     base = 4
     per_tx = 2
-    polling = n_tx if eval_mode == "standard" else 0
+    # 兼容老值: standard → e2e
+    polling = n_tx if eval_mode in ("e2e", "standard") else 0
     return base + per_tx * n_tx + polling
 
 

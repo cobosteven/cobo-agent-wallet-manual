@@ -1,6 +1,9 @@
 # Claude Code 评测：执行步骤
 
-**本文件是标准模式 + CC headless 评测的 Agent 执行指南。** 从本地 Mac 并行 dispatch 到服务器跑 `claude -p`，本地评分出报告。
+**本文件是 e2e 模式（默认全流程）+ CC headless 评测的 Agent 执行指南。** 从本地 Mac 并行 dispatch 到服务器跑 `claude -p`，本地评分出报告。
+
+> **术语**: 老 `--eval-mode standard` ≡ 新 `--eval-mode e2e`；老 `--eval-mode recipe` ≡ 新 `--eval-mode pact`。
+> recipe-source 取代老 `--recipe-mode`，三值 `real / seed / empty` 见 SKILL.md「速查表」。
 
 公共环境配置（gcloud / SSH / 服务器同步 / troubleshooting）见 [common-execution.md](./common-execution.md)。
 
@@ -21,41 +24,43 @@ export CLOUDSDK_PYTHON=/opt/homebrew/bin/python3.11   # gcloud ≥ 565 要求 Py
 
 ## Step 2: 选目标服务器 + 同步 skill/scripts/caw-cli
 
-CC 评测按模式使用专用服务器池（与 openclaw 弱模型池区分，避免互相干扰）。格式 `name:zone:project`：
+CC 评测按池子分配（与 openclaw 弱模型池区分，避免互相干扰）。格式 `name:zone:project`：
 
 ```bash
-# ── CC + Recipe（recipe_mode=cc_with_recipe）：3 台（04-23 新建） ────────
-SERVERS_CC_RECIPE=(
+# ── 池 MAIN：跑 e2e（标准全流程）/ pact + recipe-source=real / pact + recipe-source=seed
+#    共 3 台，主路径用（agent 拿 recipe 跑），与 openclaw 池独立
+SERVERS_CC_MAIN=(
   "luochong-openclew-dev-v1-20260423-080555-test09:asia-east2-c:openclaw-keq9xwm4"
   "luochong-openclew-dev-v1-20260423-080800-test10:asia-east2-c:openclaw-keq9xwm4"
   "luochong-openclew-dev-v1-20260423-080854-test11:asia-east2-c:openclaw-keq9xwm4"
 )
 
-# ── CC 无 Recipe / 标准 CC 评测（recipe_mode=cc_no_recipe 或不带 recipe 模式）：3 台（04-23 新建） ──
-SERVERS_CC_NO_RECIPE=(
+# ── 池 CTRL：跑 pact + recipe-source=empty 对照组
+#    共 3 台，专用对照组（agent 拿空 recipe 跑），不要和 MAIN 池混用
+SERVERS_CC_CTRL=(
   "luochong-openclew-dev-v1-20260423-080943-test12:asia-east2-c:openclaw-keq9xwm4"
   "luochong-openclew-dev-v1-20260423-081051-test13:asia-east2-c:openclaw-keq9xwm4"
   "luochong-openclew-dev-v1-20260423-081206-test14:asia-east2-c:openclaw-keq9xwm4"
 )
 
 
-# 按模式选择
-SERVERS=("${SERVERS_CC_RECIPE[@]}")     # CC + recipe
-# SERVERS=("${SERVERS_CC_NO_RECIPE[@]}") # CC 无 recipe / 标准 CC 评测
+# 按用途选择
+SERVERS=("${SERVERS_CC_MAIN[@]}")    # e2e / pact+real / pact+seed
+# SERVERS=("${SERVERS_CC_CTRL[@]}") # pact + recipe-source=empty 对照组
 ```
 
 **重要**：
-- **Recipe 对比评测必须两组同时跑**：`cc_with_recipe` 走 `SERVERS_CC_RECIPE`、`cc_no_recipe` 走 `SERVERS_CC_NO_RECIPE`，两个 dispatch 可并行，结果分别落在各自 run_name。
-- **标准 CC 评测**（非 recipe）默认走 `SERVERS_CC_NO_RECIPE`。
+- **Recipe 对比评测必须两组同时跑**：`recipe-source=seed` 走 `SERVERS_CC_MAIN`、`recipe-source=empty` 走 `SERVERS_CC_CTRL`，两个 dispatch 可并行，结果分别落在各自 run_name。
+- **e2e（标准全流程）评测**默认走 `SERVERS_CC_MAIN`。
 - 不要跨池混用——两组服务器状态（caw 二进制版本、余额、历史 session）可能不同。
 - openclaw 弱模型池见 [run-eval-openclaw.md Step 1](./run-eval-openclaw.md)，与本池独立。
 
 **先 `git pull` 拉最新 master**（见 [common-execution.md "前置：拉取最新 master"](./common-execution.md)），再执行 sync。**不要 stash 本地未提交修改**；若 `git pull` 有冲突，停下来让用户手动解。
 
 ```bash
-export SERVERS_ENV="${SERVERS[*]}"   # 空格分隔
+export SERVERS_CC="${SERVERS[*]}"   # 空格分隔；变量名不要叫 SERVERS_ENV，会和参数同名导致循环引用
 
-bash sdk/skills/caw-eval/scripts/sync_to_servers.sh --component all --verify --servers-env SERVERS_ENV
+bash sdk/skills/caw-eval/scripts/sync_to_servers.sh --component all --verify --servers-env SERVERS_CC
 ```
 
 ---
@@ -65,8 +70,9 @@ bash sdk/skills/caw-eval/scripts/sync_to_servers.sh --component all --verify --s
 ```bash
 cd <repo>/cobo-agent-wallet
 
-DATASET_NAME=standard-test-v3   # 标准模式默认；recipe 模式改用 recipe-test-v3
-RUN_NAME=eval-cc-sonnet-$(date +%Y%m%d-%H%M)
+DATASET_NAME=standard-test-v3   # e2e 模式默认；pact 模式改用 recipe-test-v3
+TS=$(date +%Y%m%d-%H%M)
+RUN_NAME=eval-cc-sonnet-e2e-real-recipe-${TS}   # run_name 模板见 SKILL.md「速查表」
 
 .venv/bin/python sdk/skills/caw-eval/scripts/run_eval_cc.py dispatch \
   --run-name "$RUN_NAME" \
@@ -81,7 +87,7 @@ RUN_NAME=eval-cc-sonnet-$(date +%Y%m%d-%H%M)
 3. **Deployment snapshot**（R3）：采集 git hash / content hash，写 `deployment_snapshot.json`
 4. **动态队列**：N 台 worker 各自取 item，远端 `claude -p` headless 执行
 5. 每个 item 执行完 scp 拉 session 回本地 `~/.caw-eval/runs/$RUN_NAME/<item_id>.jsonl`
-6. **Recipe archive postcheck**（recipe 模式）：读服务器 archive hash 对比本地 manifest
+6. **Recipe archive postcheck**（pact 模式）：读服务器 archive hash 对比本地 manifest
 
 ### 选项
 
@@ -92,7 +98,9 @@ RUN_NAME=eval-cc-sonnet-$(date +%Y%m%d-%H%M)
 | `--no-sync-scripts` | 跳过 scripts 同步（假设服务器已同步） |
 | `--force` | 忽略 busy / precheck 失败强制跑（不推荐） |
 | `--no-precheck` | 跳过 precheck（正式评测禁用） |
-| `--eval-mode recipe --recipe-mode cc_with_recipe` | Recipe 模式（见 [run-eval-recipe.md](./run-eval-recipe.md)） |
+| `--eval-mode pact --recipe-source seed` | pact 模式（见 [run-eval-recipe.md](./run-eval-recipe.md)） |
+| `--stream-upload` | **流式上传**：每个 item scp 完成后立刻上传 trace 到 Langfuse（对齐 openclaw per-item 节奏）；可在 dispatch 进行中通过 Langfuse 提前看到部分 trace。**开启后跳过 Step 5**（否则会创建重复 trace） |
+| `--upload-skill <name>` | streaming upload 写入 trace 的 skill 字段（默认 `cobo-agentic-wallet-dev`） |
 
 ---
 
@@ -109,13 +117,15 @@ RUN_NAME=eval-cc-sonnet-$(date +%Y%m%d-%H%M)
 
 ## Step 5: 上传 session 到 Langfuse
 
+> **如果 dispatch 加了 `--stream-upload`，跳过本 Step**——trace 已在 dispatch 过程中实时上传，`trace_map.json` 已写好。再跑 upload 会创建重复 trace。
+
 ```bash
 .venv/bin/python sdk/skills/caw-eval/scripts/run_eval_cc.py upload \
   --run-name "$RUN_NAME" \
   --dataset-name "$DATASET_NAME"
 ```
 
-脚本为每个 session 生成独立 Langfuse trace（UUID），关联到 dataset run；同时写 `trace_map.json`（item_id → trace UUID）供评分使用。
+脚本为每个 session 生成独立 Langfuse trace（UUID），关联到 dataset run；同时写 `trace_map.json`（item_id → trace UUID，**用 fcntl.flock 序列化 read-modify-write，多 worker streaming 并发安全**）供评分使用。
 
 确认输出每个 item 都显示 `[LINKED]`。
 
@@ -193,7 +203,8 @@ open(f"{run_dir}/judge_results.json", "w").write(json.dumps(results, indent=2, e
 
 ## Step 9: 生成报告
 
-主会话已有全部评测上下文，直接在主会话里写报告。
+主会话已有全部评测上下文，在主会话里直接写报告。
+
 
 ### 9.1 步骤
 1. Read `~/.caw-eval/runs/{run_name}/judge_results.json` 按 e2e_composite 排序

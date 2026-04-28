@@ -69,6 +69,7 @@ from assertions import (
     get_best_pact_submit,
     inject_backend_pact_specs,
 )
+from eval_utils import _normalize_eval_mode, _normalize_recipe_source
 from judge_cc import (
     JUDGE_SYSTEM_PROMPT,
     build_judge_prompt,
@@ -315,6 +316,191 @@ def _build_extraction_from_observations(
     )
 
 
+def _build_extraction_from_jsonl(jsonl_path: str | Path) -> Any:
+    """从 raw session jsonl 重建 StructuredExtraction（与 _build_extraction_from_observations 等价输出）。
+
+    为什么独立此路径：openclaw → Langfuse 上传 toolCall input 时会截断 ~200 字符，
+    多行 `--policies '[\\n ... \\n]'` JSON 段被砍空，下游 `pact_structure_valid`
+    gate 误判 fail（`policies`/`completion-conditions` 字段读为空字符串）。
+    本机 raw jsonl 里 `arguments.command` 是 agent 实际发出的完整 shell 字符串，
+    用于 assertion gate 评分时是无损源头。
+
+    Returns: 与 ``_build_extraction_from_observations`` 同结构的 StructuredExtraction。
+    Raises: 仅在 jsonl 文件无法解析时由 _parse_session_file 抛错（调用方应捕获并 fallback）。
+    """
+    from assertions import StructuredExtraction, ToolCallRecord
+    from upload_session import (
+        extract_caw_flags,
+        parse_caw_command,
+        parse_tx_result,
+    )
+    from assertions import (
+        extract_pact_submit_flags,
+        _extract_pact_flags_from_output,
+        _extract_tx_call_from_output,
+    )
+
+    session = _parse_session_file(str(jsonl_path))
+    events = _session_message_events(session)
+    tool_results = _session_tool_result_index(events)
+
+    user_message = ""
+    all_calls: list = []
+    pact_calls: list = []
+    tx_calls: list = []
+
+    def _result_text_from_tr_event(tr_ev: dict) -> str:
+        """从 toolResult event 中拼出原始文本（content[].text + details.aggregated 兜底）。"""
+        if not isinstance(tr_ev, dict):
+            return ""
+        tr_msg = tr_ev.get("message", {}) if isinstance(tr_ev, dict) else {}
+        content = tr_msg.get("content", [])
+        texts: list[str] = []
+        if isinstance(content, list):
+            for blk in content:
+                if isinstance(blk, dict) and blk.get("type") == "text":
+                    t = blk.get("text") or ""
+                    if t:
+                        texts.append(t)
+        if texts:
+            return "\n".join(texts)
+        # openclaw otel toolResult 还会把完整结果放在 message.details.aggregated
+        details = tr_msg.get("details") if isinstance(tr_msg, dict) else None
+        if isinstance(details, dict):
+            agg = details.get("aggregated") or ""
+            if isinstance(agg, str):
+                return agg
+        return ""
+
+    def _emit_indirect(
+        call_id: str, tool_name: str, command_for_record: str, result_text: str
+    ) -> None:
+        """与 _build_extraction_from_observations._handle_indirect 等价的间接识别逻辑。
+
+        Shell 脚本包裹的 caw pact submit / tx call：toolCall.command 不是 caw.* 前缀
+        但 result 里有 pact_id / request_id JSON。
+        """
+        if not result_text or '"status"' not in result_text:
+            return
+        if '"pact_id"' in result_text:
+            pact_flags = _extract_pact_flags_from_output(result_text)
+            if pact_flags:
+                record = ToolCallRecord(
+                    call_id=call_id,
+                    name=tool_name,
+                    command=command_for_record or "(indirect via script)",
+                    caw_op="caw.pact.submit",
+                    category="auth",
+                    pact_flags=pact_flags,
+                    result_text=result_text,
+                    is_error=False,
+                )
+                all_calls.append(record)
+                pact_calls.append(record)
+        if '"request_id"' in result_text:
+            tx_indirect = _extract_tx_call_from_output(result_text)
+            if tx_indirect.get("_indirect"):
+                tx_synth = {
+                    k: tx_indirect[k]
+                    for k in ("transaction_id", "request_id", "status")
+                    if k in tx_indirect
+                }
+                record = ToolCallRecord(
+                    call_id=call_id,
+                    name=tool_name,
+                    command=command_for_record or "(indirect via script)",
+                    caw_op="caw.tx.call",
+                    category="transaction",
+                    result_text=result_text,
+                    tx_result=tx_synth,
+                    is_error=False,
+                )
+                all_calls.append(record)
+                tx_calls.append(record)
+
+    for ev in events:
+        msg = ev.get("message", {}) if isinstance(ev, dict) else {}
+        role = msg.get("role", "")
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            continue
+
+        # user_message：取首个 user 事件的首个 text block
+        if role == "user" and not user_message:
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    t = (block.get("text") or "").strip()
+                    if t:
+                        user_message = t
+                        break
+            continue
+
+        if role != "assistant":
+            continue
+
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "toolCall":
+                continue
+            call_id = block.get("id", "") or ""
+            tool_name = block.get("name") or "exec"
+            args = block.get("arguments") or {}
+            # 优先 command；CC native tool_use 的 input.command 由 _parse_session_file
+            # 已规范化到 arguments；openclaw otel 的 args.subcmd 极少出现（不是 exec 类
+            # 工具），保留兜底
+            command_str = ""
+            if isinstance(args, dict):
+                command_str = str(args.get("command") or "")
+                if not command_str and args.get("subcmd"):
+                    command_str = "caw " + str(args["subcmd"])
+
+            tr_ev = tool_results.get(call_id) or {}
+            result_text = _result_text_from_tr_event(tr_ev)
+
+            if not command_str:
+                _emit_indirect(call_id, tool_name, command_str, result_text)
+                continue
+
+            parsed = parse_caw_command(command_str)
+            if not parsed:
+                _emit_indirect(call_id, tool_name, command_str, result_text)
+                continue
+
+            caw_op, category, subcmd = parsed
+            flags = extract_caw_flags(subcmd)
+            tx_result = parse_tx_result(result_text) if result_text else {}
+
+            pact_flags: dict = {}
+            if caw_op == "caw.pact.submit":
+                pact_flags = extract_pact_submit_flags(command_str)
+
+            is_error = bool(tx_result.get("error_code")) or ('"error": true' in result_text.lower())
+
+            record = ToolCallRecord(
+                call_id=call_id,
+                name=tool_name,
+                command=command_str,
+                caw_op=caw_op,
+                category=category,
+                flags=flags,
+                pact_flags=pact_flags,
+                result_text=result_text,
+                tx_result=tx_result,
+                is_error=is_error,
+            )
+            all_calls.append(record)
+            if caw_op == "caw.pact.submit":
+                pact_calls.append(record)
+            elif category == "transaction":
+                tx_calls.append(record)
+
+    return StructuredExtraction(
+        user_message=user_message,
+        pact_tool_calls=pact_calls,
+        tx_tool_calls=tx_calls,
+        all_tool_calls=all_calls,
+    )
+
+
 def _build_session_text_from_observations(
     trace: Any,
     observations: list,
@@ -339,6 +525,13 @@ def _build_session_text_from_observations(
     for obs in observations:
         name = (obs.name or "").strip()
         if obs.type == "SPAN":
+            # Skip turn:N / session:X envelope spans — these are roll-ups whose
+            # `output` is the FINAL assistant message of the turn. Their child
+            # GENERATION/SPAN obs already render in chronological order below;
+            # rendering the envelope here puts the final answer BEFORE the events
+            # that produced it, which judges misread as turn-0 hallucination.
+            if name.startswith("turn:") or name.startswith("session:"):
+                continue
             command = _extract_command_from_obs(obs)
             if command:
                 tool = name.split(":", 1)[0] if name else "tool"
@@ -445,6 +638,157 @@ def _build_session_text_from_observations(
     return full
 
 
+def _build_session_text_from_jsonl(jsonl_path: str, max_chars: int = 60000) -> str:
+    """直接从 raw openclaw <item_id>.jsonl 构造 session 文本摘要。
+
+    用 ``_parse_session_file`` 复用既有的 session 解析（同时支持 openclaw
+    otel 和 CC native 两种格式），再按 ``[USER] / [TOOL] / [RESULT] /
+    [ASSISTANT]`` 渲染——格式与 ``_build_session_text_from_observations``
+    对齐，judge prompt 可直接替换数据源。
+
+    用途：替代 Langfuse 重建路径作为 judge 输入，规避：
+      - turn:N envelope 重复 + 顺序错乱（已修，但仍依赖正确的 obs 标签）
+      - 60KB 截断时把中段事件吞掉（envelope 占 ~2KB 无谓预算）
+      - obs.input/output JSON 二次序列化丢字段（如 toolResult 误标 ASSISTANT）
+
+    file_read / file_write 内容做 omit（路径 + 字节数），避免 SKILL.md 等
+    大文件原文撑爆 prompt（与 _build_session_text_from_observations:357-379 一致）。
+
+    caw 命令通过 ``parse_caw_command`` 分类得到 ``caw.pact.submit`` 等标签，
+    保持与现有 session_text 标签习惯一致。
+    """
+    from assertions import parse_caw_command  # 局部 import 与现有 caw 命令分类对齐
+
+    session = _parse_session_file(jsonl_path)
+    user_message = ""
+    parts: list[str] = []
+
+    events = _session_message_events(session)
+    tool_results = _session_tool_result_index(events)
+
+    for ev in events:
+        msg = ev.get("message", {})
+        role = msg.get("role", "")
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            content = []
+
+        if role == "user":
+            # 取首个 text block 当 user_message；同时把 [USER] 拼到顶部
+            if not user_message:
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        user_message = (block.get("text") or "").strip()
+                        if user_message:
+                            break
+                if user_message:
+                    parts.append(f"[USER] {user_message}")
+                    parts.append("")
+            continue
+
+        if role == "toolResult":
+            # 由 toolCall 一侧通过 tool_results index 取，跳过独立行
+            continue
+
+        if role != "assistant":
+            continue
+
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "text":
+                text = (block.get("text") or "").strip()
+                if text:
+                    parts.append(f"[ASSISTANT] {text}")
+                    parts.append("")
+            elif btype == "toolCall":
+                tname = block.get("name") or ""
+                args = block.get("arguments") or {}
+                # file_read / file_write：与 _build_session_text_from_observations 对齐，
+                # 仅渲染路径 + limit/offset + 输出字节数，不嵌入文件原文
+                if tname in ("read", "file_read", "write", "file_write"):
+                    if not isinstance(args, dict):
+                        args = {}
+                    path = args.get("path") or args.get("file_path") or ""
+                    limit = args.get("limit")
+                    offset = args.get("offset")
+                    extra = ""
+                    if limit is not None:
+                        extra += f" limit={limit}"
+                    if offset is not None and offset != 1:
+                        extra += f" offset={offset}"
+                    tc_id = block.get("id", "")
+                    tr_ev = tool_results.get(tc_id) or {}
+                    tr_msg = tr_ev.get("message", {}) if isinstance(tr_ev, dict) else {}
+                    tr_content = tr_msg.get("content", [])
+                    n_bytes = 0
+                    if isinstance(tr_content, list):
+                        for blk in tr_content:
+                            if isinstance(blk, dict) and blk.get("type") == "text":
+                                n_bytes += len(blk.get("text") or "")
+                    head = "file_read" if tname in ("read", "file_read") else "file_write"
+                    parts.append(
+                        f"[TOOL {head}] path={path}{extra} ({n_bytes} bytes, content omitted)"
+                    )
+                    parts.append("")
+                    continue
+
+                # caw 命令：用 parse_caw_command 取分类标签（与 _build_session_text_from_observations 一致）
+                command = ""
+                if isinstance(args, dict):
+                    if args.get("command"):
+                        command = str(args["command"])
+                    elif args.get("subcmd"):
+                        command = "caw " + str(args["subcmd"])
+                if command:
+                    parsed = parse_caw_command(command)
+                    if parsed:
+                        caw_op = parsed[0]
+                        parts.append(f"[TOOL {caw_op}] {command}")
+                    else:
+                        parts.append(f"[TOOL {tname or 'tool'}] {command}")
+                    tc_id = block.get("id", "")
+                    tr_ev = tool_results.get(tc_id) or {}
+                    tr_msg = tr_ev.get("message", {}) if isinstance(tr_ev, dict) else {}
+                    tr_content = tr_msg.get("content", [])
+                    out_text = ""
+                    if isinstance(tr_content, list):
+                        for blk in tr_content:
+                            if isinstance(blk, dict) and blk.get("type") == "text":
+                                out_text += blk.get("text") or ""
+                    if out_text.strip():
+                        parts.append(f"[RESULT] {out_text}")
+                    parts.append("")
+                    continue
+
+                # 其他工具：通用 input/output 渲染（与 _build_session_text_from_observations
+                # generic 分支一致，name=raw tool name）
+                in_str = json.dumps(args, ensure_ascii=False) if args else ""
+                tc_id = block.get("id", "")
+                tr_ev = tool_results.get(tc_id) or {}
+                tr_msg = tr_ev.get("message", {}) if isinstance(tr_ev, dict) else {}
+                tr_content = tr_msg.get("content", [])
+                out_text = ""
+                if isinstance(tr_content, list):
+                    for blk in tr_content:
+                        if isinstance(blk, dict) and blk.get("type") == "text":
+                            out_text += blk.get("text") or ""
+                if in_str or out_text:
+                    parts.append(f"[TOOL {tname or 'tool'}] input={in_str} output={out_text}")
+                    parts.append("")
+
+    if not parts:
+        full = f"[USER] {user_message}\n" if user_message else ""
+    else:
+        full = "\n".join(parts)
+    if len(full) > max_chars:
+        head = full[: max_chars // 2]
+        tail = full[-(max_chars // 2) :]
+        full = f"{head}\n\n... [中间内容截断] ...\n\n{tail}"
+    return full
+
+
 def _fetch_run_traces(lf: Any, dataset_name: str, run_name: str) -> dict[str, str]:
     """获取一个 dataset run 的所有 (item_metadata_id → trace_id) 映射。
 
@@ -467,6 +811,134 @@ def _fetch_run_traces(lf: Any, dataset_name: str, run_name: str) -> dict[str, st
         mid = item_id_map.get(ri.dataset_item_id, ri.dataset_item_id)
         result[mid] = ri.trace_id
     return result
+
+
+def _cleanup_replaced_traces(
+    lf: Any,
+    dataset_name: str,
+    run_name: str,
+    run_traces: dict[str, str],
+    *,
+    dry_run: bool = False,
+    score_name: str = "caw.e2e_composite",
+    time_window_hours: float = 24.0,
+) -> int:
+    """删除被 dataset_run_items 替换的旧 trace（同 case 的更早评分 trace）。
+
+    背景：``score_traces.py langfuse --judge-results`` 重跑时只在**当前关联** trace
+    上写新 score，但旧 trace 上的 score 残留。Langfuse run UI 按 ``trace.metadata.item_id``
+    而非 ``dataset_run_items`` 表聚合 run 平均分数 → 旧 trace 的低分会污染 run UI 平均
+    （参见 eval-oc-minimax-... 报告 §11.1：本轮一度显示 0.699 vs 实际 0.801）。
+
+    本函数对每个 ``case_metadata_id``：保留 ``run_traces`` 当前关联的 trace，
+    删除 Langfuse 上其他同 case + 在 run.created_at ± time_window 内的 trace。
+
+    用法：score_traces.py langfuse 流程末尾调一次（建议在 ``--judge-results`` 应用之后）。
+
+    Args:
+        run_traces: ``{case_metadata_id: trace_id}`` 当前 active 关联映射
+        dry_run: True 时只打印不删除
+        score_name: 反查 trace 用的 score 名（默认 ``caw.e2e_composite``）
+        time_window_hours: 限定 trace.timestamp 的时间窗（基于 run.created_at ± 此小时数）
+
+    Returns:
+        实际删除的 trace 数量
+    """
+    from datetime import datetime, timedelta, timezone
+
+    if not run_traces:
+        return 0
+    active_trace_ids = set(run_traces.values())
+    target_case_ids = set(run_traces.keys())
+
+    # 取 dataset run 的 created_at 作为时间窗中心
+    try:
+        run = lf.api.datasets.get_run(dataset_name=dataset_name, run_name=run_name)
+        run_created = run.created_at
+    except Exception as exc:
+        print(f"  [cleanup] 无法获取 run created_at: {exc!r}（跳过 cleanup）")
+        return 0
+    if isinstance(run_created, str):
+        try:
+            run_created = datetime.fromisoformat(run_created.replace("Z", "+00:00"))
+        except Exception:
+            print(f"  [cleanup] run.created_at 格式异常: {run_created!r}（跳过）")
+            return 0
+    if run_created.tzinfo is None:
+        run_created = run_created.replace(tzinfo=timezone.utc)
+
+    window_low = run_created - timedelta(hours=time_window_hours)
+    window_high = run_created + timedelta(hours=time_window_hours)
+
+    # 收集候选 trace_id：score_name 上有 score 且 timestamp 在时间窗内
+    candidate_trace_ids: set[str] = set()
+    page = 1
+    while page <= 30:
+        try:
+            res = lf.api.scores.get_many(name=score_name, limit=100, page=page)
+        except Exception as exc:
+            print(f"  [cleanup] scores.get_many page={page} 失败: {exc!r}")
+            break
+        for s in res.data:
+            tid = getattr(s, "trace_id", None)
+            ts = getattr(s, "timestamp", None)
+            if not tid or not ts:
+                continue
+            if isinstance(ts, str):
+                try:
+                    ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                except Exception:
+                    continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if window_low <= ts <= window_high:
+                candidate_trace_ids.add(tid)
+        if len(res.data) < 100:
+            break
+        page += 1
+
+    candidate_trace_ids -= active_trace_ids
+    if not candidate_trace_ids:
+        print(
+            f"  [cleanup] 时间窗 ±{time_window_hours}h 内无候选 trace（active={len(active_trace_ids)}）"
+        )
+        return 0
+
+    # 逐个验证 metadata.item_id 是否属于本 run 的 case
+    to_delete: list[tuple[str, str]] = []
+    for tid in candidate_trace_ids:
+        try:
+            t = lf.api.trace.get(tid)
+        except Exception:
+            continue
+        md = t.metadata if isinstance(t.metadata, dict) else {}
+        case_id = md.get("item_id")
+        if case_id and case_id in target_case_ids:
+            to_delete.append((tid, case_id))
+
+    if not to_delete:
+        print(
+            f"  [cleanup] 时间窗内 {len(candidate_trace_ids)} 个候选无属于本 run 的 case（无需清理）"
+        )
+        return 0
+
+    action = "DRY-RUN" if dry_run else "DELETE"
+    print(f"  [cleanup] [{action}] 发现 {len(to_delete)} 条被替换的旧 trace:")
+    for tid, case_id in sorted(to_delete, key=lambda x: x[1]):
+        print(f"    case={case_id:55s} trace={tid[:8]}")
+
+    if dry_run:
+        return 0
+
+    deleted = 0
+    for tid, case_id in to_delete:
+        try:
+            lf.api.trace.delete(tid)
+            deleted += 1
+        except Exception as exc:
+            print(f"  [cleanup] 删除 trace={tid[:8]} ({case_id}) 失败: {exc!r}")
+    print(f"  [cleanup] 已删除 {deleted}/{len(to_delete)} 条旧 trace")
+    return deleted
 
 
 # ── Stage content extractor ───────────────────────────────────────────────────
@@ -1030,7 +1502,7 @@ def _upload_scores(
     diagnostics_reasoning: str = "",
     run_metrics: dict | None = None,
     score_metadata: dict | None = None,
-    eval_mode: str = "standard",
+    eval_mode: str = "e2e",
 ) -> None:
     """上传评分到 Langfuse，comment 包含 reasoning，metadata 包含上下文信息。
 
@@ -1050,7 +1522,7 @@ def _upload_scores(
         if k
         in ("pact_structure_valid", "policies_correctness", "completion_conditions_correctness")
     }
-    if eval_mode == "recipe":
+    if eval_mode == "pact":
         s3_dims = {
             k: v
             for k, v in dimensions.items()
@@ -1072,13 +1544,13 @@ def _upload_scores(
     ef_action_score = ef_action_dim.score if ef_action_dim else 0.0
     ef_duration_score = ef_duration_dim.score if ef_duration_dim else 0.0
 
-    if eval_mode == "recipe":
+    if eval_mode == "pact":
         w = RECIPE_STAGE_WEIGHTS
         scores_to_upload: list[tuple[str, float, str]] = [
             (
                 "caw.e2e_composite",
                 composite,
-                f"E2E 综合 [recipe] ({scoring_source}) | {composite:.2f}\n"
+                f"E2E 综合 [pact] ({scoring_source}) | {composite:.2f}\n"
                 f"  = S1={s1_score:.2f}×{w['s1']}+"
                 f"S2={s2_score:.2f}×{w['s2']}+"
                 f"S3={s3_score:.2f}×{w['s3']}+"
@@ -1240,8 +1712,8 @@ def _compute_scores(
     item_expected: dict,
     item_metadata: dict,
     judge_result: dict[str, Any] | None,
-    eval_mode: str = "standard",
-    recipe_mode: str = "",
+    eval_mode: str = "e2e",
+    recipe_source: str = "",
 ) -> dict[str, Any]:
     """核心评分计算（纯函数，不 upload）：门槛 + judge → S1/S2/S3/TC/composite。
 
@@ -1337,7 +1809,7 @@ def _compute_scores(
             reasoning=ef_duration_reason,
         )
 
-        if eval_mode == "recipe":
+        if eval_mode == "pact":
             tx_sub_gate = check_tx_submission_gate(extraction)
             tx_sub_score = 1.0 if tx_sub_gate.passed else 0.0
             all_dimensions["tx_submission_success"] = DimensionScore(
@@ -1348,7 +1820,7 @@ def _compute_scores(
             )
             tcc = _dim_or_default("tx_construction_correctness", 0.5, _judge_unavail).score
             ra = _dim_or_default("recipe_adherence", 0.0, _judge_unavail).score
-            if recipe_mode == "cc_no_recipe":
+            if recipe_source == "empty":
                 s3_score = tcc * 0.7 + tx_sub_score * 0.3
             else:
                 s3_score = tcc * 0.5 + ra * 0.3 + tx_sub_score * 0.2
@@ -1356,7 +1828,7 @@ def _compute_scores(
                 dimension="task_completion",
                 score=0.0,
                 method="not_evaluated",
-                reasoning="Recipe 模式不评估 task_completion",
+                reasoning="pact 模式不评估 task_completion",
             )
             w = RECIPE_STAGE_WEIGHTS
             composite = (
@@ -1408,8 +1880,8 @@ def score_session_file(
     skip_llm_judge: bool = False,
     judge_model: str = "claude-sonnet-4-20250514",
     trace_id: str = "",
-    eval_mode: str = "standard",
-    recipe_mode: str = "",
+    eval_mode: str = "e2e",
+    recipe_source: str = "",
 ) -> dict[str, Any]:
     """
     评分管线：代码断言 + LLM Judge。
@@ -1449,7 +1921,7 @@ def score_session_file(
         item_metadata=item_metadata,
         judge_result=judge_result,
         eval_mode=eval_mode,
-        recipe_mode=recipe_mode,
+        recipe_source=recipe_source,
     )
     all_dimensions = scored["all_dimensions"]
     s1_score = scored["s1_score"]
@@ -1553,7 +2025,7 @@ def score_session_file(
         "model": item_metadata.get("model", ""),
         "type": _type,
         "eval_mode": eval_mode,
-        "recipe_mode": recipe_mode,
+        "recipe_source": recipe_source,
         "session_source": session_source,  # server / local / unknown
         # O1 版本化字段
         "skill_git_hash": local_hashes.get("skill", "")[:12],
@@ -1648,8 +2120,8 @@ def _score_extraction(
     dry_run: bool = False,
     lf: Any = None,
     extra_run_metrics: dict | None = None,
-    eval_mode: str = "standard",
-    recipe_mode: str = "",
+    eval_mode: str = "e2e",
+    recipe_source: str = "",
 ) -> dict[str, Any]:
     """评分核心逻辑（不依赖 session 文件）：断言 + LLM Judge → 综合分 → 上传 Langfuse。
 
@@ -1661,7 +2133,7 @@ def _score_extraction(
         item_metadata=item_metadata,
         judge_result=judge_result,
         eval_mode=eval_mode,
-        recipe_mode=recipe_mode,
+        recipe_source=recipe_source,
     )
     all_dimensions = scored["all_dimensions"]
     s1_score = scored["s1_score"]
@@ -1723,7 +2195,8 @@ def _score_extraction(
         "model": item_metadata.get("model", ""),
         "type": _type,
         "eval_mode": eval_mode,
-        "recipe_mode": item_metadata.get("recipe_mode", ""),
+        "recipe_source": item_metadata.get("recipe_source", "")
+        or item_metadata.get("recipe_mode", ""),
     }
     score_meta = {k: v for k, v in score_meta.items() if v}
 
@@ -1771,6 +2244,7 @@ def _build_judge_req_for_item(
     items_cache: dict,
     eval_mode: str = "standard",
     pact_specs: dict[str, dict] | None = None,
+    raw_sessions_dir: Path | None = None,
 ) -> dict | None:
     """为单个 (item_id, trace_id) 构建 judge request dict。失败返回 None。
 
@@ -1779,6 +2253,10 @@ def _build_judge_req_for_item(
     Args:
         pact_specs: 可选的 pact_id → `caw pact show` 输出字典，用于修正 shell 变量
             占位符导致的 trace 字面信息缺失。见 harness_pact_logger_bug.md。
+        raw_sessions_dir: 可选的本地 raw-sessions/ 目录路径。若提供且 ``<dir>/<item_id>.jsonl``
+            存在，则用 ``_build_session_text_from_jsonl`` 直读 raw 数据生成 session_text，
+            跳过 Langfuse observations 重建（规避 turn-envelope / 截断 / 伪 ASSISTANT 类失真）。
+            找不到对应 jsonl 时自动 fallback 到 Langfuse 重建路径。
 
     注意：judge_results.json 中每条必须含 trace_id 和 item_id 两个字段，
     否则 load_judge_results() 无法索引（LEARNING: 经 eval-oc-doubao-20260415-1530 验证）。
@@ -1787,7 +2265,30 @@ def _build_judge_req_for_item(
         trace = lf.api.trace.get(trace_id)
         obs_list = _fetch_observations(lf, trace_id)
         inp, exp, meta = items_cache.get(item_id, ({}, {}, {}))
-        extraction = _build_extraction_from_observations(trace, obs_list)
+        # 优先 raw jsonl 直读重建 extraction（assertion gate 评分用），原因：openclaw
+        # → Langfuse 上传 toolCall input 会截断 ~200 字符，多行 --policies / --completion-conditions
+        # 被砍空，pact_structure_valid 误判 fail。本地 jsonl 是无损源头。
+        # 找不到对应文件时 fallback 到 Langfuse observations 重建。
+        extraction = None
+        if raw_sessions_dir is not None:
+            jsonl_path = raw_sessions_dir / f"{item_id}.jsonl"
+            partial_path = raw_sessions_dir / f"{item_id}.partial.jsonl"
+            chosen = (
+                jsonl_path
+                if jsonl_path.exists()
+                else (partial_path if partial_path.exists() else None)
+            )
+            if chosen is not None:
+                try:
+                    extraction = _build_extraction_from_jsonl(chosen)
+                except Exception as e:
+                    print(
+                        f"  [{item_id}] WARN  raw jsonl extraction 失败 ({e})，"
+                        "fallback 到 Langfuse 重建"
+                    )
+                    extraction = None
+        if extraction is None:
+            extraction = _build_extraction_from_observations(trace, obs_list)
         if pact_specs:
             extraction = inject_backend_pact_specs(extraction, pact_specs)
         pact_gate = check_pact_structure_gate(extraction)
@@ -1808,7 +2309,43 @@ def _build_judge_req_for_item(
             f"[diag] error_type={diagnostics.error_type}, retry_count={diagnostics.retry_count}",
             allow_line,
         ]
-        session_text = _build_session_text_from_observations(trace, obs_list)
+        # 优先用本地 raw jsonl 直读；找不到时 fallback 到 Langfuse observations 重建
+        # 完整 session 优先（<item>.jsonl），缺时尝试 SIGTERM 归档的部分 session
+        # （<item>.partial.jsonl，由 run_eval_openclaw.py _sync_archive_session 在
+        # 远端 timeout 30s grace 期内拷出）；partial 在 session_text 顶部加 [TRUNCATED]
+        # 提示，并把 is_partial 透传到 judge req 让 judge prompt 知道这是非完整 trace。
+        session_text = ""
+        session_source = ""
+        is_partial = False
+        if raw_sessions_dir is not None:
+            jsonl_path = raw_sessions_dir / f"{item_id}.jsonl"
+            partial_path = raw_sessions_dir / f"{item_id}.partial.jsonl"
+            chosen_path: Path | None = None
+            if jsonl_path.exists():
+                chosen_path = jsonl_path
+            elif partial_path.exists():
+                chosen_path = partial_path
+                is_partial = True
+            if chosen_path is not None:
+                try:
+                    session_text = _build_session_text_from_jsonl(str(chosen_path))
+                    session_source = "raw_jsonl_partial" if is_partial else "raw_jsonl"
+                    if is_partial:
+                        session_text = (
+                            "[TRUNCATED] Session captured from SIGTERM archive — "
+                            "agent did not finish task within deadline (timeout). "
+                            "Tail events may be missing.\n\n" + session_text
+                        )
+                except Exception as e:
+                    print(
+                        f"  [{item_id}] WARN  raw jsonl 解析失败 ({e})，fallback 到 Langfuse 重建"
+                    )
+                    session_text = ""
+                    is_partial = False
+        if not session_text:
+            session_text = _build_session_text_from_observations(trace, obs_list)
+            session_source = session_source or "langfuse_rebuild"
+
         prompt = build_judge_prompt(
             user_message=inp.get("user_message", ""),
             expected=exp,
@@ -1826,6 +2363,8 @@ def _build_judge_req_for_item(
             "metadata": meta,
             "system_prompt": JUDGE_SYSTEM_PROMPT,
             "prompt": prompt,
+            "session_source": session_source,
+            "incomplete": is_partial,
         }
     except Exception as e:
         print(f"  [ERROR] build_judge_req {item_id}: {e}")
@@ -1842,6 +2381,7 @@ async def _watch_and_judge(
     watch_timeout: int,
     watch_interval: int,
     eval_mode: str = "standard",
+    raw_sessions_dir: Path | None = None,
 ) -> None:
     """轮询 Langfuse，新 trace 出现即生成 judge request 并追加到 out_path。
 
@@ -1887,6 +2427,7 @@ async def _watch_and_judge(
                 trace_id,
                 items_cache,
                 eval_mode=eval_mode,
+                raw_sessions_dir=raw_sessions_dir,
             )
             if req:
                 requests.append(req)
@@ -1995,15 +2536,24 @@ def langfuse_main() -> None:
     )
     parser.add_argument(
         "--eval-mode",
-        choices=["standard", "recipe"],
-        default="standard",
-        help="评测模式: standard（默认）或 recipe（交易构建模式）",
+        choices=["e2e", "pact", "onboard", "standard", "recipe"],
+        default="e2e",
+        help="评测模式: e2e（默认，全流程含 task_completion）/ pact（仅评 pact 构造）/ onboard"
+        "；老值 standard→e2e、recipe→pact 仍接受",
+    )
+    parser.add_argument(
+        "--recipe-source",
+        choices=["real", "seed", "empty"],
+        default="",
+        help="Recipe 来源: real（agent 调真实 backend）/ seed（注入 dataset 的 recipe）"
+        "/ empty（注入空 recipe，对照组）。仅 --eval-mode pact 时有意义",
     )
     parser.add_argument(
         "--recipe-mode",
         choices=["cc_with_recipe", "cc_no_recipe", "cc_real_recipe", "openclaw", "oc_real_recipe"],
         default="",
-        help="Recipe 对比模式（仅 --eval-mode recipe 时有效）",
+        help="[已弃用] 用 --recipe-source 替代；老 cli 兼容映射: cc_with_recipe/openclaw→seed,"
+        " cc_no_recipe→empty, cc_real_recipe/oc_real_recipe→real",
     )
     parser.add_argument(
         "--pact-specs-dir",
@@ -2012,6 +2562,34 @@ def langfuse_main() -> None:
             '当 agent 用 shell 变量传 --policies "$POLICIES" 提交 pact 时，'
             "openclaw tool logger 不展开变量导致 trace 字面信息缺失；"
             "提供此目录可用后端真实 spec 覆盖 pact_flags，避免 judge 误判 policies=0。"
+        ),
+    )
+    parser.add_argument(
+        "--raw-sessions-dir",
+        help=(
+            "raw-sessions 目录路径（默认 ~/.caw-eval/runs/<run>/raw-sessions/）。"
+            "judge prompt 的 session_text 优先从该目录的 <item_id>.jsonl 直读，"
+            "找不到自动 fallback 到 Langfuse observations 重建。"
+        ),
+    )
+    parser.add_argument(
+        "--legacy-langfuse-rebuild",
+        action="store_true",
+        help=(
+            "强制走 Langfuse observations 重建路径（不读本地 raw jsonl）。"
+            "Escape hatch：仅用于调试或对比。默认行为是优先 raw jsonl 直读，"
+            "因为 raw 路径规避了 turn-envelope / 60KB 截断丢中段 / 伪 ASSISTANT 类失真。"
+        ),
+    )
+    parser.add_argument(
+        "--cleanup-replaced-traces",
+        action="store_true",
+        help=(
+            "应用 --judge-results 后，删除 Langfuse 上被 dataset_run_items 替换的同 case 旧 trace。"
+            "时间窗 run.created_at ±24h 内、metadata.item_id 属于本 run 的 case 但 trace_id "
+            "不在 dataset_run_items 当前关联中的 trace 会被删除（一并删除其 score）。"
+            "用于消除 Langfuse run UI 平均被旧 trace 污染的问题（参见 minimax 04-28 评测 §11.1）。"
+            "建议正式重跑后启用；--dry-run 时只打印不删除。"
         ),
     )
     args = parser.parse_args()
@@ -2088,10 +2666,22 @@ def langfuse_main() -> None:
         print(f"[INFO] Loaded {len(judge_results_map)} judge result(s)")
 
     # 3b. 加载后端 pact spec（用于修正 shell 变量占位符导致的 trace 字面缺失）
+    # 默认从 ~/.caw-eval/runs/<run_name>/pact_specs/ 自动解析，与 --raw-sessions-dir 对齐：
+    # 该目录由 dispatch 端 _pull_pact_specs 拉回，已内置在评测产物里。手动 --pact-specs-dir
+    # 仍可显式覆盖（用于跨 run 调试 / 不规则放置场景）；显式传错路径仍 hard fail。
     pact_specs_map: dict[str, dict] = {}
-    if args.pact_specs_dir:
+    specs_dir: Path | None = None
+    explicit_specs_dir = bool(args.pact_specs_dir)
+    if explicit_specs_dir:
         specs_dir = Path(args.pact_specs_dir).expanduser()
+    elif args.run_name:
+        candidate = Path.home() / ".caw-eval" / "runs" / args.run_name / "pact_specs"
+        if candidate.is_dir():
+            specs_dir = candidate
+            print(f"[INFO] pact-specs-dir 自动解析: {specs_dir}")
+    if specs_dir is not None:
         if not specs_dir.is_dir():
+            # 显式传 → hard fail；自动推算分支已经过 is_dir 校验，进不到这里
             print(f"[ERROR] --pact-specs-dir 不存在: {specs_dir}", file=sys.stderr)
             sys.exit(1)
         for sf in specs_dir.glob("*.json"):
@@ -2107,6 +2697,24 @@ def langfuse_main() -> None:
             except Exception as e:
                 print(f"[WARN] skip {sf.name}: {e}", file=sys.stderr)
         print(f"[INFO] Loaded {len(pact_specs_map)} pact spec(s) from {specs_dir}")
+
+    # 3c. raw-sessions 目录自动解析（默认行为；--legacy-langfuse-rebuild 强制关闭）
+    raw_sessions_dir: Path | None = None
+    if args.legacy_langfuse_rebuild:
+        print("[INFO] --legacy-langfuse-rebuild: 强制走 Langfuse observations 重建路径")
+    else:
+        if args.raw_sessions_dir:
+            raw_sessions_dir = Path(args.raw_sessions_dir).expanduser()
+        elif args.run_name:
+            raw_sessions_dir = Path.home() / ".caw-eval" / "runs" / args.run_name / "raw-sessions"
+        if raw_sessions_dir is not None and not raw_sessions_dir.is_dir():
+            print(
+                f"[INFO] raw-sessions 目录不存在: {raw_sessions_dir} → 全部 fallback 到 Langfuse 重建",
+            )
+            raw_sessions_dir = None
+        elif raw_sessions_dir is not None:
+            n = len(list(raw_sessions_dir.glob("*.jsonl")))
+            print(f"[INFO] raw-sessions: {raw_sessions_dir} ({n} jsonl 文件)")
 
     # ── Phase 1: 生成 judge requests
     if args.dump_judge_requests:
@@ -2126,25 +2734,32 @@ def langfuse_main() -> None:
                     expected_count=expected,
                     watch_timeout=args.watch_timeout,
                     watch_interval=args.watch_interval,
-                    eval_mode=getattr(args, "eval_mode", "standard"),
+                    eval_mode=_normalize_eval_mode(getattr(args, "eval_mode", "")),
+                    raw_sessions_dir=raw_sessions_dir,
                 )
             )
             return
 
         # 普通一次性模式：对已有 run_traces 全量生成
         requests: list[dict] = []
+        source_counts: dict[str, int] = {}
         for item_id, trace_id in sorted(run_traces.items()):
             req = _build_judge_req_for_item(
                 lf,
                 item_id,
                 trace_id,
                 items_cache,
-                eval_mode=getattr(args, "eval_mode", "standard"),
+                eval_mode=_normalize_eval_mode(getattr(args, "eval_mode", "")),
                 pact_specs=pact_specs_map or None,
+                raw_sessions_dir=raw_sessions_dir,
             )
             if req:
                 requests.append(req)
-                print(f"  [{item_id}] judge req built (trace={trace_id[:8]}...)")
+                src = req.get("session_source", "?")
+                source_counts[src] = source_counts.get(src, 0) + 1
+                print(f"  [{item_id}] judge req built (trace={trace_id[:8]}..., source={src})")
+        if source_counts:
+            print(f"[INFO] session_source 分布: {source_counts}")
 
         Path(args.dump_judge_requests).write_text(
             json.dumps(requests, indent=2, ensure_ascii=False)
@@ -2173,8 +2788,38 @@ def langfuse_main() -> None:
             tmeta = trace.metadata if isinstance(trace.metadata, dict) else {}
             sf_metadata.setdefault("model", tmeta.get("model", ""))
             sf_metadata.setdefault("duration_seconds", tmeta.get("duration_seconds", 0))
+            # 检测 SIGTERM partial 标记：本地 raw-sessions 只有 <item>.partial.jsonl
+            # 而无完整 <item>.jsonl 时，标 incomplete=True，让分数 metadata 携带标签，
+            # 报告/Langfuse 端可凭此过滤"超时未完成"的 case，不与正常 case 混算。
+            if raw_sessions_dir is not None:
+                if (
+                    not (raw_sessions_dir / f"{item_id}.jsonl").exists()
+                    and (raw_sessions_dir / f"{item_id}.partial.jsonl").exists()
+                ):
+                    sf_metadata["incomplete"] = True
 
-            extraction = _build_extraction_from_observations(trace, obs_list)
+            # 优先 raw jsonl 直读重建 extraction（与 _build_judge_req_for_item 对齐）：
+            # 规避 openclaw → Langfuse 截断 toolCall input 导致的 pact_structure_valid 误判 fail。
+            extraction = None
+            if raw_sessions_dir is not None:
+                jsonl_path = raw_sessions_dir / f"{item_id}.jsonl"
+                partial_path = raw_sessions_dir / f"{item_id}.partial.jsonl"
+                chosen = (
+                    jsonl_path
+                    if jsonl_path.exists()
+                    else (partial_path if partial_path.exists() else None)
+                )
+                if chosen is not None:
+                    try:
+                        extraction = _build_extraction_from_jsonl(chosen)
+                    except Exception as e:
+                        print(
+                            f"  [{item_id}] WARN  raw jsonl extraction 失败 ({e})，"
+                            "fallback 到 Langfuse 重建"
+                        )
+                        extraction = None
+            if extraction is None:
+                extraction = _build_extraction_from_observations(trace, obs_list)
             if pact_specs_map:
                 extraction = inject_backend_pact_specs(extraction, pact_specs_map)
             # tool_call_count: 所有 SPAN observations
@@ -2194,8 +2839,11 @@ def langfuse_main() -> None:
                 tool_call_count=tool_call_count,
                 dry_run=args.dry_run,
                 lf=lf,
-                eval_mode=getattr(args, "eval_mode", "standard"),
-                recipe_mode=getattr(args, "recipe_mode", ""),
+                eval_mode=_normalize_eval_mode(getattr(args, "eval_mode", "")),
+                recipe_source=_normalize_recipe_source(
+                    getattr(args, "recipe_source", "") or "",
+                    getattr(args, "recipe_mode", "") or "",
+                ),
             )
             result["item_id"] = item_id
             results.append(result)
@@ -2210,6 +2858,24 @@ def langfuse_main() -> None:
             print(f"\n{'=' * 60}")
             print(f"Summary: {len(valid)} traces  |  E2E={avg_e2e:.3f}  TC={avg_tc:.3f}")
             print(f"{'=' * 60}")
+
+    # 清理被替换的旧 trace（仅 --judge-results + --cleanup-replaced-traces 启用时）
+    # 必须在 score 应用完成后做：cleanup 仅清理 dataset_run_items 不再指向的旧 trace，
+    # 不会动当前 active 关联，所以不影响本次 score 应用结果。
+    if (
+        getattr(args, "cleanup_replaced_traces", False)
+        and args.judge_results
+        and args.run_name
+        and run_traces
+    ):
+        print(f"\n=== Cleanup replaced traces (run={args.run_name}) ===")
+        _cleanup_replaced_traces(
+            lf=lf,
+            dataset_name=args.dataset_name,
+            run_name=args.run_name,
+            run_traces=run_traces,
+            dry_run=bool(args.dry_run),
+        )
 
     if args.output:
         Path(args.output).write_text(json.dumps(results, indent=2, ensure_ascii=False))
@@ -2276,15 +2942,24 @@ def session_main() -> None:
     )
     parser.add_argument(
         "--eval-mode",
-        choices=["standard", "recipe"],
-        default="standard",
-        help="评测模式: standard（默认）或 recipe（交易构建模式）",
+        choices=["e2e", "pact", "onboard", "standard", "recipe"],
+        default="e2e",
+        help="评测模式: e2e（默认，全流程含 task_completion）/ pact（仅评 pact 构造）/ onboard"
+        "；老值 standard→e2e、recipe→pact 仍接受",
+    )
+    parser.add_argument(
+        "--recipe-source",
+        choices=["real", "seed", "empty"],
+        default="",
+        help="Recipe 来源: real（agent 调真实 backend）/ seed（注入 dataset 的 recipe）"
+        "/ empty（注入空 recipe，对照组）。仅 --eval-mode pact 时有意义",
     )
     parser.add_argument(
         "--recipe-mode",
         choices=["cc_with_recipe", "cc_no_recipe", "cc_real_recipe", "openclaw", "oc_real_recipe"],
         default="",
-        help="Recipe 对比模式（仅 --eval-mode recipe 时有效）",
+        help="[已弃用] 用 --recipe-source 替代；老 cli 兼容映射: cc_with_recipe/openclaw→seed,"
+        " cc_no_recipe→empty, cc_real_recipe/oc_real_recipe→real",
     )
     args = parser.parse_args(sys.argv[2:])
 
@@ -2406,7 +3081,7 @@ def session_main() -> None:
                     best_pact_submit=best_pact,
                     is_refuse=is_refuse,
                     session_path=str(sf),
-                    eval_mode=getattr(args, "eval_mode", "standard"),
+                    eval_mode=_normalize_eval_mode(getattr(args, "eval_mode", "")),
                     recipe_content=sf_metadata.get("recipe", ""),
                 )
 
@@ -2481,8 +3156,11 @@ def session_main() -> None:
                 skip_llm_judge=skip_judge,
                 judge_model=getattr(args, "judge_model", "claude-sonnet-4-20250514"),
                 trace_id=mapped_trace_id,
-                eval_mode=getattr(args, "eval_mode", "standard"),
-                recipe_mode=getattr(args, "recipe_mode", ""),
+                eval_mode=_normalize_eval_mode(getattr(args, "eval_mode", "")),
+                recipe_source=_normalize_recipe_source(
+                    getattr(args, "recipe_source", "") or "",
+                    getattr(args, "recipe_mode", "") or "",
+                ),
             )
             results.append(result)
         except Exception as e:
@@ -2552,7 +3230,7 @@ def single_main() -> None:
 
     # 1. 构建 judge request（无 LLM 调用，仅组装 prompt）
     judge_req = _build_judge_req_for_item(
-        lf, item_id, args.trace_id, items_cache, eval_mode=args.eval_mode
+        lf, item_id, args.trace_id, items_cache, eval_mode=_normalize_eval_mode(args.eval_mode)
     )
 
     # 2. 从 Langfuse 拉取 trace + observations
@@ -2578,8 +3256,10 @@ def single_main() -> None:
         tool_call_count=tool_call_count,
         dry_run=True,
         lf=lf,
-        eval_mode=args.eval_mode,
-        recipe_mode=args.recipe_mode,
+        eval_mode=_normalize_eval_mode(args.eval_mode),
+        recipe_source=_normalize_recipe_source(
+            getattr(args, "recipe_source", "") or "", args.recipe_mode
+        ),
     )
 
     # 4. 提取失败的断言维度

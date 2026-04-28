@@ -165,7 +165,7 @@ Then submit via `caw pact submit`. Run `caw pact submit -h` to see the exact fla
 
 **Step 2 — Recipe:**
 
-`caw recipe search --query "How do I swap USDC to ETH on Base"` → matches Uniswap V3 on Base recipe.
+`caw recipe search --keywords swap,usdc,eth,base` → matches Uniswap V3 on Base recipe.
 
 **Step 3 — Plan:**
 
