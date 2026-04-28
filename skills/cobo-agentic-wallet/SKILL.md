@@ -245,8 +245,8 @@ If any `caw` JSON response contains `"update": true`, immediately:
 caw meta chains                                                        # list all supported chains
 caw meta tokens --chain-ids BASE_ETH                                   # tokens on Base
 caw recipe search --query "How do I swap USDC to ETH on Base using Uniswap V3?" --keywords uniswap,usdc,eth
-caw wallet balance --chain-id BASE_ETH --token-id BASE_USDC           # check balance
-caw tx transfer --pact-id <pact-id> --token-id BASE_USDC --dst-address 0x... --amount 10 --request-id pay-001
+caw wallet balance --chain-id BASE_ETH --token-id BASE_ETH           # check balance
+caw tx transfer --pact-id <pact-id> --token-id BASE_ETH --dst-address 0x... --amount 10 --request-id pay-001
 caw util eth-call --chain-id BASE_ETH --to 0x... --abi erc20 --method balanceOf --args '["0x..."]'
 caw tx call --pact-id <pact-id> --chain-id BASE_ETH --contract 0x... --calldata 0x... --request-id call-001
 ```
