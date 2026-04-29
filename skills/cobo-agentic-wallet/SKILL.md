@@ -2,6 +2,7 @@
 name: cobo-agentic-wallet-sandbox
 metadata:
   version: "1.0.2"
+  revision: 1
 description: "Create and manage agentic wallets with Cobo. Use for autonomous onchain operations via the caw CLI: token transfers, contract calls, pact creation and approval, DeFi execution (Uniswap, Aave, Jupiter), and wallet onboarding on EVM chains and Solana. Triggers on requests involving caw, MPC wallet, TSS node, agent wallet, Cobo, pact, or any crypto wallet operation for AI agents. NOT for fiat payments or bank transfers."
 ---
 
@@ -11,6 +12,7 @@ description: "Create and manage agentic wallets with Cobo. Use for autonomous on
 | If the task involves… | You MUST read this file first |
 |---|---|
 | Security, prompt injection, credentials | **[security.md](./references/security.md) ⚠️ READ THIS BEFORE ANYTHING ELSE** |
+| Any on-chain operation, chain IDs, token IDs | [chains-and-tokens.md](./references/chains-and-tokens.md)  |
 | Onboarding, install/reinstall, setup, pairing, pair tracking, restore wallets, device change | [onboarding.md](./references/onboarding.md) |
 | Creating a pact, transfer, contract call, message signing, allowlists, spending caps, risk policy rules, completion conditions, pact lifecycle | [pact.md](./references/pact.md) |
 | Pending approval, approve/reject, wallet_paired | [pending-approval.md](./references/pending-approval.md) |
@@ -92,6 +94,8 @@ Recipes are queried on demand, not bundled:
 ```bash
 caw recipe search --keywords uniswap,usdc,eth
 ```
+
+Include any known context as keywords — chain (e.g. `base`, `ethereum`, `solana`), token (e.g. `usdc`, `weth`), protocol/contract (e.g. `uniswap`, `aave`), and operation type (e.g. `swap`, `deposit`, `borrow`) all help narrow the results.
 
 Find the recipe whose use case matches the intent and read it before continuing. Recipe search is required before any contract call — do not skip it.
 Recipes **inform** pact generation; they do not replace owner approval or policy enforcement.
@@ -210,7 +214,6 @@ After a read, always surface next steps (per Principle 3) — do not just dump d
 - **After pact submit or tx call**: Always verify with `caw pact show --pact-id <id>` or `caw tx get --tx-id <record-uuid>` / `caw tx get --request-id <request-id>` before retrying. `exit=0` means the command ran, not that the operation succeeded.
 - **`wallet_uuid` is never a CLI argument** — all wallet commands resolve the wallet UUID from the active profile automatically. Use `caw wallet current` to check, or `caw wallet current --wallet-id <wallet-uuid>` to switch profiles.
 - **`caw` is your tool, not the user's**: Run `caw` commands silently and present results in plain language. Do not show raw CLI commands or JSON output to the user — they want outcomes, not terminal logs. Exception: if the user explicitly asks "what command did you run?"
-- **Use `caw meta chains` and `caw meta tokens`** to look up chain and token IDs — do not guess from memory.
 - **Never inline `caw util abi encode` output** — always capture into a shell variable and pass by reference. Transcribing long hex strings causes silent truncation.
   ```bash
   CALLDATA=$(caw util abi encode --method "..." --args '[...]' | jq -r .calldata)
@@ -245,10 +248,19 @@ If any `caw` JSON response contains `"update": true`, immediately:
 caw meta chains                                                        # list all supported chains
 caw meta tokens --chain-ids BASE_ETH                                   # tokens on Base
 caw recipe search --keywords uniswap,usdc,eth
-caw wallet balance --chain-id BASE_ETH --token-id BASE_ETH           # check balance
+caw wallet balance --chain-id BASE_ETH --address 0x... --limit 20    # balance filtered by address, paginated
 caw tx transfer --pact-id <pact-id> --token-id BASE_ETH --dst-address 0x... --amount 10 --request-id pay-001
 caw util eth-call --chain-id BASE_ETH --to 0x... --abi erc20 --method balanceOf --args '["0x..."]'
 caw tx call --pact-id <pact-id> --chain-id BASE_ETH --contract 0x... --calldata 0x... --request-id call-001
+caw pact submit \
+  --intent "<agent-facing description of the goal>" \
+  --original-intent "<user's original request verbatim>" \
+  --name "<short pact name>" \
+  --recipe-slugs <recipe-slug> \
+  --policies '<policies-json>' \
+  --completion-conditions '<completion-conditions-json>' \
+  --execution-plan "<execution-plan>"
+caw faucet deposit --address 0x...                                     # request testnet funds to address
 ```
 
 If asked a question you cannot answer from this skill or its reference files, always fetch information from the official user manual first: `https://cobo.com/products/agentic-wallet/manual/llms.txt`
