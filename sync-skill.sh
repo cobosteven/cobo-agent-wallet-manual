@@ -13,7 +13,7 @@ GITHUB_URL="https://github.com/cobosteven/cobo-agent-wallet-manual/tree/master/s
 SKILL_MAPS=(
     "cobo-agentic-wallet-sandbox:cobo-agentic-wallet"
     "evm-defi-dex-swap:evm-defi-dex-swap"
-    "caw-eval:caw-eval"
+    # "caw-eval:caw-eval"
 )
 
 # Colors for output
